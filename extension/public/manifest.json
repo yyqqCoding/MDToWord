@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "MD To Word",
+  "version": "0.1.0",
+  "description": "Export pasted Markdown with formulas and tables to Word.",
+  "action": {
+    "default_title": "MD To Word"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "side_panel": {
+    "default_path": "index.html"
+  },
+  "permissions": ["storage", "downloads", "sidePanel"],
+  "host_permissions": ["http://*/*", "https://*/*"]
+}
