@@ -71,6 +71,10 @@ def test_reference_docx_defines_chinese_word_styles(tmp_path):
     assert 'w:styleId="Heading1"' in styles_xml
     assert 'w:styleId="Heading6"' in styles_xml
     assert 'w:eastAsia="黑体"' in styles_xml
+    for heading_style_id in ["Heading1", "Heading2", "Heading3", "Heading4", "Heading5", "Heading6"]:
+        heading_style = extract_style(styles_xml, heading_style_id)
+        assert 'w:color w:val="000000"' in heading_style
+        assert "w:themeColor" not in heading_style
 
 
 def test_convert_invalid_formula_raises_conversion_error(tmp_path):
@@ -84,3 +88,10 @@ def test_convert_invalid_formula_raises_conversion_error(tmp_path):
 
 def subprocess_completed():
     return type("Completed", (), {"returncode": 0, "stderr": ""})()
+
+
+def extract_style(styles_xml: str, style_id: str) -> str:
+    marker = f'w:styleId="{style_id}"'
+    start = styles_xml.index(marker)
+    end = styles_xml.index("</w:style>", start)
+    return styles_xml[start:end]
