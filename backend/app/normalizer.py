@@ -28,7 +28,7 @@ def _normalize_formula_spacing(markdown: str) -> str:
 
 def _normalize_ai_parenthesized_math(markdown: str) -> str:
     parts = DOLLAR_MATH_PATTERN.split(markdown)
-    return "".join(part if _is_dollar_math(part) else _replace_math_parentheses(part) for part in parts)
+    return "".join(_repair_math(part) if _is_dollar_math(part) else _replace_math_parentheses(part) for part in parts)
 
 
 def _is_dollar_math(value: str) -> bool:
@@ -55,7 +55,7 @@ def _replace_math_parentheses(text: str) -> str:
 
         content = text[index + 1 : close_index].strip()
         if _looks_like_math_fragment(content):
-            result.append(f"${content}$")
+            result.append(f"${_repair_math_content(content)}$")
         else:
             result.append(text[index : close_index + 1])
         index = close_index + 1
@@ -84,3 +84,16 @@ def _looks_like_math_fragment(content: str) -> bool:
     if re.search(r"[\\_^=<>|{}]", content):
         return True
     return bool(re.fullmatch(r"[A-Za-z]", content))
+
+
+def _repair_math(math: str) -> str:
+    if math.startswith("$$") and math.endswith("$$"):
+        return f"$${_repair_math_content(math[2:-2])}$$"
+    if math.startswith("$") and math.endswith("$"):
+        return f"${_repair_math_content(math[1:-1])}$"
+    return math
+
+
+def _repair_math_content(content: str) -> str:
+    repaired = re.sub(r"\*\{([^}\n]+)\}", r"_{\1}", content)
+    return re.sub(r"(?<=[}|])\*([A-Za-z0-9])", r"_\1", repaired)

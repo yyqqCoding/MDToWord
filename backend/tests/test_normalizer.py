@@ -33,6 +33,28 @@ def test_normalize_ai_parenthesized_math_fragments_to_dollars():
     assert result == "给定初始潜噪声 $z_T$，其中 $K_A$ 生成模板，普通说明 (Render) 保持文本。"
 
 
+def test_repair_ai_asterisk_subscripts_inside_math_only():
+    markdown = (
+        "正文里的 a*b 保持不变。\n\n"
+        "[\n"
+        "S_A=\\frac{\\langle \\tilde{z}*{LL}-\\mu*{\\tilde{z}}\\rangle}\n"
+        "{|\\tilde{z}*{LL}|*2}.\n"
+        "]\n\n"
+        "行内公式 (\\tilde{M}*i=1)。"
+    )
+
+    result = normalize_markdown(markdown)
+
+    assert result == (
+        "正文里的 a*b 保持不变。\n\n"
+        "$$\n"
+        "S_A=\\frac{\\langle \\tilde{z}_{LL}-\\mu_{\\tilde{z}}\\rangle}\n"
+        "{|\\tilde{z}_{LL}|_2}.\n"
+        "$$\n\n"
+        "行内公式 $\\tilde{M}_i=1$。"
+    )
+
+
 def test_preserve_existing_dollar_formulas_and_table():
     markdown = (
         "行内公式 $a^2 + b^2 = c^2$。\n\n"
