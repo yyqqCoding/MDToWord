@@ -75,6 +75,14 @@ def test_escape_visible_set_braces_without_breaking_tex_grouping():
     )
 
 
+def test_escape_set_braces_after_relation_commands():
+    markdown = "给定版权载荷 (m\\in{0,1}^{L})，码字 (b\\in{0,1}^{N})。"
+
+    result = normalize_markdown(markdown)
+
+    assert result == "给定版权载荷 $m\\in\\{0,1\\}^{L}$，码字 $b\\in\\{0,1\\}^{N}$。"
+
+
 def test_repair_single_backslash_line_breaks_in_cases_environment():
     markdown = (
         "[\n"

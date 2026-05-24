@@ -2,6 +2,29 @@ const INLINE_PARENS_PATTERN = /\\\(([\s\S]+?)\\\)/g;
 const BLOCK_BRACKETS_PATTERN = /(?:[ \t]*\n)?[ \t]*\\\[([\s\S]+?)\\\][ \t]*(?:\n[ \t]*)?/g;
 const BARE_BLOCK_BRACKETS_PATTERN = /(?:[ \t]*\n)?[ \t]*\[\s*\n([\s\S]+?)\n[ \t]*\][ \t]*(?:\n[ \t]*)?/g;
 const DOLLAR_MATH_PATTERN = /(\$\$[\s\S]*?\$\$|\$[^$\n]+\$)/g;
+const GROUP_ARGUMENT_COMMANDS = new Set([
+  'begin',
+  'end',
+  'frac',
+  'sqrt',
+  'left',
+  'right',
+  'mathbb',
+  'mathcal',
+  'mathbf',
+  'mathrm',
+  'mathit',
+  'mathsf',
+  'mathtt',
+  'operatorname',
+  'text',
+  'overline',
+  'underline',
+  'hat',
+  'tilde',
+  'bar',
+  'vec',
+]);
 
 export function normalizeMarkdown(value: string): string {
   let normalized = value
@@ -167,7 +190,9 @@ function isTexGroupBrace(content: string, index: number): boolean {
   if (index > 0 && ['_', '^', '\\'].includes(content[index - 1])) {
     return true;
   }
-  return /\\[A-Za-z]+$/.test(content.slice(0, index));
+
+  const command = content.slice(0, index).match(/\\[A-Za-z]+$/)?.[0].slice(1);
+  return Boolean(command && GROUP_ARGUMENT_COMMANDS.has(command));
 }
 
 function findMatchingBrace(content: string, openIndex: number): number | null {

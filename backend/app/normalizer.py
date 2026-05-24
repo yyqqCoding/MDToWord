@@ -5,6 +5,29 @@ INLINE_PARENS_PATTERN = re.compile(r"\\\((.+?)\\\)", re.DOTALL)
 BLOCK_BRACKETS_PATTERN = re.compile(r"(?:[ \t]*\n)?[ \t]*\\\[(.+?)\\\][ \t]*(?:\n[ \t]*)?", re.DOTALL)
 BARE_BLOCK_BRACKETS_PATTERN = re.compile(r"(?:[ \t]*\n)?[ \t]*\[\s*\n(.+?)\n[ \t]*\][ \t]*(?:\n[ \t]*)?", re.DOTALL)
 DOLLAR_MATH_PATTERN = re.compile(r"(\$\$.*?\$\$|\$[^$\n]+\$)", re.DOTALL)
+GROUP_ARGUMENT_COMMANDS = {
+    "begin",
+    "end",
+    "frac",
+    "sqrt",
+    "left",
+    "right",
+    "mathbb",
+    "mathcal",
+    "mathbf",
+    "mathrm",
+    "mathit",
+    "mathsf",
+    "mathtt",
+    "operatorname",
+    "text",
+    "overline",
+    "underline",
+    "hat",
+    "tilde",
+    "bar",
+    "vec",
+}
 
 
 def normalize_markdown(markdown: str) -> str:
@@ -148,7 +171,7 @@ def _is_tex_group_brace(content: str, index: int) -> bool:
         return True
 
     command_match = re.search(r"\\[A-Za-z]+$", content[:index])
-    return bool(command_match)
+    return bool(command_match and command_match.group(0)[1:] in GROUP_ARGUMENT_COMMANDS)
 
 
 def _find_matching_brace(content: str, open_index: int) -> int | None:
