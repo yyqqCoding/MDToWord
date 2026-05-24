@@ -6,6 +6,8 @@ from pathlib import Path
 from app.normalizer import normalize_markdown
 from app.settings import settings
 
+REFERENCE_DOC_PATH = Path(__file__).with_name("reference.docx")
+
 
 class ConversionError(Exception):
     def __init__(self, message: str, details: list[str] | None = None) -> None:
@@ -35,6 +37,7 @@ def _convert(markdown: str, work_dir: Path) -> bytes:
         "markdown+tex_math_dollars+tex_math_single_backslash+pipe_tables+grid_tables",
         "--to",
         "docx",
+        f"--reference-doc={REFERENCE_DOC_PATH}",
         "--output",
         str(output_path),
     ]

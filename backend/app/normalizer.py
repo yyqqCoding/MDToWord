@@ -5,6 +5,8 @@ INLINE_PARENS_PATTERN = re.compile(r"\\\((.+?)\\\)", re.DOTALL)
 BLOCK_BRACKETS_PATTERN = re.compile(r"(?:[ \t]*\n)?[ \t]*\\\[(.+?)\\\][ \t]*(?:\n[ \t]*)?", re.DOTALL)
 BARE_BLOCK_BRACKETS_PATTERN = re.compile(r"(?:[ \t]*\n)?[ \t]*\[\s*\n(.+?)\n[ \t]*\][ \t]*(?:\n[ \t]*)?", re.DOTALL)
 DOLLAR_MATH_PATTERN = re.compile(r"(\$\$.*?\$\$|\$[^$\n]+\$)", re.DOTALL)
+DEEP_HEADING_PATTERN = re.compile(r"^(#{7,})[ \t]+(.+?)([ \t]*\r?\n?)$")
+FENCE_PATTERN = re.compile(r"^[ \t]{0,3}(```|~~~)")
 GROUP_ARGUMENT_COMMANDS = {
     "begin",
     "end",
@@ -36,11 +38,31 @@ GROUP_ARGUMENT_COMMANDS = {
 
 def normalize_markdown(markdown: str) -> str:
     """Normalize supported formula delimiters into Pandoc-friendly Markdown."""
-    normalized = BLOCK_BRACKETS_PATTERN.sub(_replace_block_formula, markdown)
+    normalized = _normalize_deep_headings(markdown)
+    normalized = BLOCK_BRACKETS_PATTERN.sub(_replace_block_formula, normalized)
     normalized = BARE_BLOCK_BRACKETS_PATTERN.sub(_replace_block_formula, normalized)
     normalized = _normalize_formula_spacing(normalized)
     normalized = INLINE_PARENS_PATTERN.sub(lambda match: f"${match.group(1).strip()}$", normalized)
     return _normalize_ai_parenthesized_math(normalized)
+
+
+def _normalize_deep_headings(markdown: str) -> str:
+    lines: list[str] = []
+    in_fence = False
+
+    for line in markdown.splitlines(keepends=True):
+        if FENCE_PATTERN.match(line):
+            in_fence = not in_fence
+            lines.append(line)
+            continue
+
+        match = DEEP_HEADING_PATTERN.match(line)
+        if match and not in_fence:
+            lines.append(f"{match.group(2).rstrip()}{match.group(3)}")
+        else:
+            lines.append(line)
+
+    return "".join(lines)
 
 
 def _replace_block_formula(match: re.Match[str]) -> str:

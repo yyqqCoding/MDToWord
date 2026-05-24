@@ -1,5 +1,6 @@
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -27,6 +28,51 @@ def test_convert_markdown_to_docx_creates_word_document(tmp_path):
     assert "<w:tbl>" in document_xml
 
 
+def test_convert_uses_reference_docx_for_word_styles(tmp_path):
+    markdown = "# 标题\n\n正文"
+
+    def fake_run(command, **kwargs):
+        (tmp_path / "result.docx").write_bytes(b"PK fake docx bytes")
+        assert any(arg.startswith("--reference-doc=") for arg in command)
+        return subprocess_completed()
+
+    with patch("app.pandoc_runner.subprocess.run", side_effect=fake_run):
+        docx_bytes = convert_markdown_to_docx(markdown, tmp_path)
+
+    assert docx_bytes == b"PK fake docx bytes"
+
+
+def test_reference_docx_defines_chinese_word_styles(tmp_path):
+    markdown = "\n\n".join(
+        [
+            "# 一级标题",
+            "## 二级标题",
+            "### 三级标题",
+            "#### 四级标题",
+            "##### 五级标题",
+            "###### 六级标题",
+            "正文内容",
+        ],
+    )
+
+    docx_bytes = convert_markdown_to_docx(markdown, tmp_path)
+    docx_path = tmp_path / "styled.docx"
+    docx_path.write_bytes(docx_bytes)
+
+    with zipfile.ZipFile(docx_path) as archive:
+        styles_xml = archive.read("word/styles.xml").decode("utf-8")
+
+    assert 'w:styleId="Normal"' in styles_xml
+    assert 'w:eastAsia="宋体"' in styles_xml
+    assert 'w:sz w:val="24"' in styles_xml
+    assert 'w:line="360"' in styles_xml
+    assert 'w:before="0"' in styles_xml
+    assert 'w:after="0"' in styles_xml
+    assert 'w:styleId="Heading1"' in styles_xml
+    assert 'w:styleId="Heading6"' in styles_xml
+    assert 'w:eastAsia="黑体"' in styles_xml
+
+
 def test_convert_invalid_formula_raises_conversion_error(tmp_path):
     markdown = (FIXTURES / "sample_invalid_formula.md").read_text(encoding="utf-8")
 
@@ -34,3 +80,7 @@ def test_convert_invalid_formula_raises_conversion_error(tmp_path):
         convert_markdown_to_docx(markdown, tmp_path)
 
     assert exc_info.value.message
+
+
+def subprocess_completed():
+    return type("Completed", (), {"returncode": 0, "stderr": ""})()

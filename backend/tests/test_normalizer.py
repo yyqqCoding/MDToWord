@@ -25,6 +25,14 @@ def test_normalize_bare_block_bracket_formula_to_double_dollars():
     assert result == "本文首先对其进行分解：\n\n$$\n(z_{LL},z_{LH})=DWT(z_T),\n$$\n\n结束。"
 
 
+def test_normalize_deep_markdown_headings_to_body_text():
+    markdown = "# 一级标题\n\n###### 六级标题\n\n####### 超过六级标题\n\n正文"
+
+    result = normalize_markdown(markdown)
+
+    assert result == "# 一级标题\n\n###### 六级标题\n\n超过六级标题\n\n正文"
+
+
 def test_normalize_ai_parenthesized_math_fragments_to_dollars():
     markdown = "给定初始潜噪声 (z_T)，其中 (K_A) 生成模板，普通说明 (Render) 保持文本。"
 

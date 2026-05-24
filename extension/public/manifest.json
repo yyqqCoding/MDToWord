@@ -3,8 +3,15 @@
   "name": "MD To Word",
   "version": "0.1.0",
   "description": "Export pasted Markdown with formulas and tables to Word.",
+  "icons": {
+    "16": "icon.svg",
+    "32": "icon.svg",
+    "48": "icon.svg",
+    "128": "icon.svg"
+  },
   "action": {
-    "default_title": "MD To Word"
+    "default_title": "MD To Word",
+    "default_icon": "icon.svg"
   },
   "background": {
     "service_worker": "background.js",
