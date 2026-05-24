@@ -150,7 +150,7 @@ def _expand_tall_parentheses(content: str) -> str:
     index = 0
 
     while index < len(content):
-        if content[index] != "(" or (index > 0 and content[index - 1] == "\\"):
+        if content[index] != "(" or _is_already_sized_delimiter(content, index):
             result.append(content[index])
             index += 1
             continue
@@ -173,6 +173,14 @@ def _expand_tall_parentheses(content: str) -> str:
 
 def _has_tall_math(content: str) -> bool:
     return bool(re.search(r"\\(?:underbrace|overbrace|frac|sqrt|sum|prod|int|begin)\b", content))
+
+
+def _is_already_sized_delimiter(content: str, index: int) -> bool:
+    if index > 0 and content[index - 1] == "\\":
+        return True
+
+    prefix = content[:index]
+    return bool(re.search(r"\\(?:left|right|big|Big|bigg|Bigg)$", prefix))
 
 
 def _escape_visible_set_braces(content: str) -> str:

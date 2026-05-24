@@ -123,6 +123,23 @@ def test_expand_parentheses_around_tall_function_arguments():
     assert ",t\\right)" in result
 
 
+def test_do_not_expand_existing_sized_delimiters():
+    markdown = (
+        "$$\n"
+        "q(x_t\\mid x_{t-1})=\\mathcal N\\big(x_t;\\ \\sqrt{1-\\beta_t}\\,x_{t-1}\\big)\n"
+        "\\tilde\\mu_t=\\frac{1}{\\sqrt{\\alpha_t}}\\left(x_t-\\frac{\\beta_t}{\\sqrt{1-\\bar\\alpha_t}}\\epsilon\\right)\n"
+        "$$"
+    )
+
+    result = normalize_markdown(markdown)
+
+    assert "\\big\\left" not in result
+    assert "\\left\\left" not in result
+    assert "\\right\\right" not in result
+    assert "\\mathcal N\\big(" in result
+    assert "\\left(x_t-" in result
+
+
 def test_repair_single_backslash_line_breaks_in_cases_environment():
     markdown = (
         "[\n"

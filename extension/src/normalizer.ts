@@ -171,7 +171,7 @@ function expandTallParentheses(content: string): string {
   let index = 0;
 
   while (index < content.length) {
-    if (content[index] !== '(' || (index > 0 && content[index - 1] === '\\')) {
+    if (content[index] !== '(' || isAlreadySizedDelimiter(content, index)) {
       result += content[index];
       index += 1;
       continue;
@@ -194,6 +194,14 @@ function expandTallParentheses(content: string): string {
 
 function hasTallMath(content: string): boolean {
   return /\\(?:underbrace|overbrace|frac|sqrt|sum|prod|int|begin)\b/.test(content);
+}
+
+function isAlreadySizedDelimiter(content: string, index: number): boolean {
+  if (index > 0 && content[index - 1] === '\\') {
+    return true;
+  }
+
+  return /\\(?:left|right|big|Big|bigg|Bigg)$/.test(content.slice(0, index));
 }
 
 function escapeVisibleSetBraces(content: string): string {
