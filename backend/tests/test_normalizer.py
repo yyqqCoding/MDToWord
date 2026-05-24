@@ -83,6 +83,31 @@ def test_escape_set_braces_after_relation_commands():
     assert result == "给定版权载荷 $m\\in\\{0,1\\}^{L}$，码字 $b\\in\\{0,1\\}^{N}$。"
 
 
+def test_preserve_underbrace_arguments_while_escaping_sets():
+    markdown = (
+        "$$\n"
+        "\\text{ELBO}=\\underbrace{\\mathbb E_q[\\log p_\\theta(x_T)]}_{\\text{先验项}}\n"
+        "+\\sum_{t=1}^T \\underbrace{\\mathbb E_q\\left[\\log\\frac{p_\\theta(x_{t-1}\\mid x_t)}"
+        "{q(x_{t-1}\\mid x_t,x_0)}\\right]}_{\\text{反向匹配项}}\n"
+        "+m\\in{0,1}^{L}\n"
+        "$$"
+    )
+
+    result = normalize_markdown(markdown)
+
+    assert "\\underbrace{" in result
+    assert "\\underbrace\\{" not in result
+    assert "m\\in\\{0,1\\}^{L}" in result
+
+
+def test_preserve_second_frac_argument_with_comma():
+    markdown = "$\\frac{p_\\theta(x_{t-1}\\mid x_t)}{q(x_{t-1}\\mid x_t,x_0)}$"
+
+    result = normalize_markdown(markdown)
+
+    assert result == markdown
+
+
 def test_repair_single_backslash_line_breaks_in_cases_environment():
     markdown = (
         "[\n"

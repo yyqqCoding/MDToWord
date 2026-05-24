@@ -24,6 +24,10 @@ const GROUP_ARGUMENT_COMMANDS = new Set([
   'tilde',
   'bar',
   'vec',
+  'underbrace',
+  'overbrace',
+  'underset',
+  'overset',
 ]);
 
 export function normalizeMarkdown(value: string): string {
@@ -192,7 +196,46 @@ function isTexGroupBrace(content: string, index: number): boolean {
   }
 
   const command = content.slice(0, index).match(/\\[A-Za-z]+$/)?.[0].slice(1);
+  if (command && GROUP_ARGUMENT_COMMANDS.has(command)) {
+    return true;
+  }
+
+  return continuesGroupArgumentCommand(content, index);
+}
+
+function continuesGroupArgumentCommand(content: string, index: number): boolean {
+  let previousIndex = index - 1;
+  while (previousIndex >= 0 && /\s/.test(content[previousIndex])) {
+    previousIndex -= 1;
+  }
+
+  if (previousIndex < 0 || content[previousIndex] !== '}') {
+    return false;
+  }
+
+  const previousOpen = findMatchingOpenBrace(content, previousIndex);
+  if (previousOpen === null) {
+    return false;
+  }
+
+  const command = content.slice(0, previousOpen).match(/\\[A-Za-z]+$/)?.[0].slice(1);
   return Boolean(command && GROUP_ARGUMENT_COMMANDS.has(command));
+}
+
+function findMatchingOpenBrace(content: string, closeIndex: number): number | null {
+  let depth = 0;
+  for (let index = closeIndex; index >= 0; index -= 1) {
+    const char = content[index];
+    if (char === '}') {
+      depth += 1;
+    } else if (char === '{') {
+      depth -= 1;
+      if (depth === 0) {
+        return index;
+      }
+    }
+  }
+  return null;
 }
 
 function findMatchingBrace(content: string, openIndex: number): number | null {

@@ -27,6 +27,10 @@ GROUP_ARGUMENT_COMMANDS = {
     "tilde",
     "bar",
     "vec",
+    "underbrace",
+    "overbrace",
+    "underset",
+    "overset",
 }
 
 
@@ -171,7 +175,39 @@ def _is_tex_group_brace(content: str, index: int) -> bool:
         return True
 
     command_match = re.search(r"\\[A-Za-z]+$", content[:index])
+    if command_match and command_match.group(0)[1:] in GROUP_ARGUMENT_COMMANDS:
+        return True
+
+    return _continues_group_argument_command(content, index)
+
+
+def _continues_group_argument_command(content: str, index: int) -> bool:
+    previous_index = index - 1
+    while previous_index >= 0 and content[previous_index].isspace():
+        previous_index -= 1
+
+    if previous_index < 0 or content[previous_index] != "}":
+        return False
+
+    previous_open = _find_matching_open_brace(content, previous_index)
+    if previous_open is None:
+        return False
+
+    command_match = re.search(r"\\[A-Za-z]+$", content[:previous_open])
     return bool(command_match and command_match.group(0)[1:] in GROUP_ARGUMENT_COMMANDS)
+
+
+def _find_matching_open_brace(content: str, close_index: int) -> int | None:
+    depth = 0
+    for index in range(close_index, -1, -1):
+        char = content[index]
+        if char == "}":
+            depth += 1
+        elif char == "{":
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
 
 
 def _find_matching_brace(content: str, open_index: int) -> int | None:
