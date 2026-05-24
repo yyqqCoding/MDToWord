@@ -125,11 +125,10 @@ function repairMath(value: string): string {
 }
 
 function repairMathContent(content: string): string {
-  const repaired = expandTallParentheses(
-    repairEnvironmentLineBreaks(
-    content.replace(/\*\{([^}\n]+)\}/g, '_{$1}').replace(/(?<=[}|])\*([A-Za-z0-9])/g, '_$1'),
-    ),
-  );
+  let repaired = content.replace(/\*\{([^}\n]+)\}/g, '_{$1}').replace(/(?<=[}|])\*([A-Za-z0-9])/g, '_$1');
+  repaired = repairEnvironmentLineBreaks(repaired);
+  repaired = expandTallParentheses(repaired);
+  repaired = wrapUnderbraceParenthesesForWord(repaired);
   return escapeVisibleSetBraces(repaired);
 }
 
@@ -202,6 +201,75 @@ function isAlreadySizedDelimiter(content: string, index: number): boolean {
   }
 
   return /\\(?:left|right|big|Big|bigg|Bigg)$/.test(content.slice(0, index));
+}
+
+function wrapUnderbraceParenthesesForWord(content: string): string {
+  let result = '';
+  let index = 0;
+
+  while (index < content.length) {
+    if (!content.startsWith('\\left(', index)) {
+      result += content[index];
+      index += 1;
+      continue;
+    }
+
+    const match = findMatchingRightDelimiter(content, index);
+    if (match === null) {
+      result += content[index];
+      index += 1;
+      continue;
+    }
+
+    const [rightIndex, delimiterEnd] = match;
+    const inner = content.slice(index + '\\left('.length, rightIndex);
+    result += needsWordUnderbraceHeightWrap(inner)
+      ? `\\left(\\begin{matrix}${inner}\\end{matrix}\\right)`
+      : content.slice(index, delimiterEnd);
+    index = delimiterEnd;
+  }
+
+  return result;
+}
+
+function findMatchingRightDelimiter(content: string, leftIndex: number): [number, number] | null {
+  let depth = 1;
+  let index = leftIndex + '\\left('.length;
+
+  while (index < content.length) {
+    if (content.startsWith('\\left', index)) {
+      depth += 1;
+      index += '\\left'.length;
+      continue;
+    }
+
+    if (content.startsWith('\\right', index)) {
+      const delimiterIndex = index + '\\right'.length;
+      if (delimiterIndex >= content.length) {
+        return null;
+      }
+
+      depth -= 1;
+      const delimiterEnd = delimiterIndex + 1;
+      if (depth === 0) {
+        return [index, delimiterEnd];
+      }
+      index = delimiterEnd;
+      continue;
+    }
+
+    index += 1;
+  }
+
+  return null;
+}
+
+function needsWordUnderbraceHeightWrap(inner: string): boolean {
+  if (/^\s*\\begin\{(?:matrix|array)\}/.test(inner)) {
+    return false;
+  }
+
+  return inner.includes('\\underbrace') && /\\underbrace\b[\s\S]*?_\{/.test(inner);
 }
 
 function escapeVisibleSetBraces(content: string): string {

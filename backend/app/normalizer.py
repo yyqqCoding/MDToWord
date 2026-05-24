@@ -126,6 +126,7 @@ def _repair_math_content(content: str) -> str:
     repaired = re.sub(r"(?<=[}|])\*([A-Za-z0-9])", r"_\1", repaired)
     repaired = _repair_environment_line_breaks(repaired)
     repaired = _expand_tall_parentheses(repaired)
+    repaired = _wrap_underbrace_parentheses_for_word(repaired)
     return _escape_visible_set_braces(repaired)
 
 
@@ -181,6 +182,67 @@ def _is_already_sized_delimiter(content: str, index: int) -> bool:
 
     prefix = content[:index]
     return bool(re.search(r"\\(?:left|right|big|Big|bigg|Bigg)$", prefix))
+
+
+def _wrap_underbrace_parentheses_for_word(content: str) -> str:
+    result: list[str] = []
+    index = 0
+
+    while index < len(content):
+        if not content.startswith("\\left(", index):
+            result.append(content[index])
+            index += 1
+            continue
+
+        match = _find_matching_right_delimiter(content, index)
+        if match is None:
+            result.append(content[index])
+            index += 1
+            continue
+
+        right_index, delimiter_end = match
+        inner_start = index + len("\\left(")
+        inner = content[inner_start:right_index]
+        if _needs_word_underbrace_height_wrap(inner):
+            result.append(f"\\left(\\begin{{matrix}}{inner}\\end{{matrix}}\\right)")
+        else:
+            result.append(content[index:delimiter_end])
+        index = delimiter_end
+
+    return "".join(result)
+
+
+def _find_matching_right_delimiter(content: str, left_index: int) -> tuple[int, int] | None:
+    depth = 1
+    index = left_index + len("\\left(")
+
+    while index < len(content):
+        if content.startswith("\\left", index):
+            depth += 1
+            index += len("\\left")
+            continue
+
+        if content.startswith("\\right", index):
+            delimiter_index = index + len("\\right")
+            if delimiter_index >= len(content):
+                return None
+            depth -= 1
+            delimiter_end = delimiter_index + 1
+            if depth == 0:
+                return index, delimiter_end
+            index = delimiter_end
+            continue
+
+        index += 1
+
+    return None
+
+
+def _needs_word_underbrace_height_wrap(inner: str) -> bool:
+    if re.match(r"\s*\\begin\{(?:matrix|array)\}", inner):
+        return False
+
+    return "\\underbrace" in inner and re.search(r"\\underbrace\b[\s\S]*?_\{", inner) is not None
 
 
 def _escape_visible_set_braces(content: str) -> str:

@@ -119,8 +119,23 @@ def test_expand_parentheses_around_tall_function_arguments():
 
     result = normalize_markdown(markdown)
 
-    assert "\\epsilon_\\theta\\left(\\underbrace" in result
-    assert ",t\\right)" in result
+    assert "\\epsilon_\\theta\\left(\\begin{matrix}\\underbrace" in result
+    assert ",t\\end{matrix}\\right)" in result
+
+
+def test_wrap_underbrace_function_arguments_for_word_delimiter_height():
+    markdown = (
+        "$$\n"
+        "\\big[\\|\\epsilon-\\epsilon_\\theta("
+        "\\underbrace{\\sqrt{\\bar\\alpha_t}x_0+\\sqrt{1-\\bar\\alpha_t}\\epsilon}_{x_t},t"
+        ")\\|^2\\big]\n"
+        "$$"
+    )
+
+    result = normalize_markdown(markdown)
+
+    assert "\\epsilon_\\theta\\left(\\begin{matrix}\\underbrace" in result
+    assert ",t\\end{matrix}\\right)" in result
 
 
 def test_do_not_expand_existing_sized_delimiters():
