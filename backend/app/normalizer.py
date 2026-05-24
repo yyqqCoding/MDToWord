@@ -97,7 +97,24 @@ def _repair_math(math: str) -> str:
 def _repair_math_content(content: str) -> str:
     repaired = re.sub(r"\*\{([^}\n]+)\}", r"_{\1}", content)
     repaired = re.sub(r"(?<=[}|])\*([A-Za-z0-9])", r"_\1", repaired)
+    repaired = _repair_environment_line_breaks(repaired)
     return _escape_visible_set_braces(repaired)
+
+
+def _repair_environment_line_breaks(content: str) -> str:
+    environments = ("cases", "aligned", "array", "matrix", "pmatrix", "bmatrix", "vmatrix")
+    for environment in environments:
+        content = re.sub(
+            rf"(\\begin\{{{environment}\}}.*?\\end\{{{environment}\}})",
+            _repair_single_environment_line_breaks,
+            content,
+            flags=re.DOTALL,
+        )
+    return content
+
+
+def _repair_single_environment_line_breaks(match: re.Match[str]) -> str:
+    return re.sub(r"(?<!\\)\\(?=\n)", r"\\\\", match.group(1))
 
 
 def _escape_visible_set_braces(content: str) -> str:

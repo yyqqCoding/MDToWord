@@ -98,8 +98,43 @@ function repairMath(value: string): string {
 }
 
 function repairMathContent(content: string): string {
-  const repaired = content.replace(/\*\{([^}\n]+)\}/g, '_{$1}').replace(/(?<=[}|])\*([A-Za-z0-9])/g, '_$1');
+  const repaired = repairEnvironmentLineBreaks(
+    content.replace(/\*\{([^}\n]+)\}/g, '_{$1}').replace(/(?<=[}|])\*([A-Za-z0-9])/g, '_$1'),
+  );
   return escapeVisibleSetBraces(repaired);
+}
+
+function repairEnvironmentLineBreaks(content: string): string {
+  const environments = ['cases', 'aligned', 'array', 'matrix', 'pmatrix', 'bmatrix', 'vmatrix'];
+  return environments.reduce((result, environment) => repairEnvironment(result, environment), content);
+}
+
+function repairEnvironment(content: string, environment: string): string {
+  const begin = `\\begin{${environment}}`;
+  const end = `\\end{${environment}}`;
+  let result = '';
+  let index = 0;
+
+  while (index < content.length) {
+    const beginIndex = content.indexOf(begin, index);
+    if (beginIndex === -1) {
+      result += content.slice(index);
+      break;
+    }
+
+    const endIndex = content.indexOf(end, beginIndex + begin.length);
+    if (endIndex === -1) {
+      result += content.slice(index);
+      break;
+    }
+
+    const closeIndex = endIndex + end.length;
+    result += content.slice(index, beginIndex);
+    result += content.slice(beginIndex, closeIndex).replace(/(?<!\\)\\(?=\n)/g, '\\\\');
+    index = closeIndex;
+  }
+
+  return result;
 }
 
 function escapeVisibleSetBraces(content: string): string {

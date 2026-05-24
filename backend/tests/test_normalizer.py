@@ -75,6 +75,30 @@ def test_escape_visible_set_braces_without_breaking_tex_grouping():
     )
 
 
+def test_repair_single_backslash_line_breaks_in_cases_environment():
+    markdown = (
+        "[\n"
+        "z_i^{w}=\n"
+        "\\begin{cases}\n"
+        "|z_i|, & b_j=0,\\\n"
+        "-|z_i|, & b_j=1.\n"
+        "\\end{cases}\n"
+        "]"
+    )
+
+    result = normalize_markdown(markdown)
+
+    assert result == (
+        "\n\n$$\n"
+        "z_i^{w}=\n"
+        "\\begin{cases}\n"
+        "|z_i|, & b_j=0,\\\\\n"
+        "-|z_i|, & b_j=1.\n"
+        "\\end{cases}\n"
+        "$$\n\n"
+    )
+
+
 def test_preserve_existing_dollar_formulas_and_table():
     markdown = (
         "行内公式 $a^2 + b^2 = c^2$。\n\n"
