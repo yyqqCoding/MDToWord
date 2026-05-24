@@ -129,6 +129,8 @@ function repairMathContent(content: string): string {
   repaired = repairEnvironmentLineBreaks(repaired);
   repaired = expandTallParentheses(repaired);
   repaired = wrapUnderbraceParenthesesForWord(repaired);
+  repaired = expandTallSquareBrackets(repaired);
+  repaired = expandTallNormDelimiters(repaired);
   return escapeVisibleSetBraces(repaired);
 }
 
@@ -274,6 +276,129 @@ function needsWordTallHeightWrap(inner: string): boolean {
   }
 
   return /\\frac\b/.test(inner);
+}
+
+function expandTallSquareBrackets(content: string): string {
+  let result = '';
+  let index = 0;
+
+  while (index < content.length) {
+    const sizeCommand = sizedSquareOpenCommand(content, index);
+    if (sizeCommand) {
+      const openIndex = index + sizeCommand.length - 1;
+      const closeIndex = findMatchingSquareBracket(content, openIndex);
+      if (closeIndex === null) {
+        result += content[index];
+        index += 1;
+        continue;
+      }
+
+      const closeStart = sizedSquareCloseStart(content, closeIndex);
+      const inner = content.slice(openIndex + 1, closeStart);
+      result += hasTallMath(inner) ? `\\left[${inner}\\right]` : content.slice(index, closeIndex + 1);
+      index = closeIndex + 1;
+      continue;
+    }
+
+    if (content[index] !== '[' || isAlreadySizedDelimiter(content, index)) {
+      result += content[index];
+      index += 1;
+      continue;
+    }
+
+    const closeIndex = findMatchingSquareBracket(content, index);
+    if (closeIndex === null) {
+      result += content[index];
+      index += 1;
+      continue;
+    }
+
+    const inner = content.slice(index + 1, closeIndex);
+    result += hasTallMath(inner) ? `\\left[${inner}\\right]` : content.slice(index, closeIndex + 1);
+    index = closeIndex + 1;
+  }
+
+  return result;
+}
+
+function sizedSquareOpenCommand(content: string, index: number): string | null {
+  for (const command of ['\\big[', '\\Big[', '\\bigg[', '\\Bigg[']) {
+    if (content.startsWith(command, index)) {
+      return command;
+    }
+  }
+  return null;
+}
+
+function sizedSquareCloseStart(content: string, closeIndex: number): number {
+  const prefix = content.slice(0, closeIndex);
+  for (const command of ['\\big', '\\Big', '\\bigg', '\\Bigg']) {
+    if (prefix.endsWith(command)) {
+      return closeIndex - command.length;
+    }
+  }
+  return closeIndex;
+}
+
+function findMatchingSquareBracket(content: string, openIndex: number): number | null {
+  let depth = 0;
+  for (let index = openIndex; index < content.length; index += 1) {
+    const char = content[index];
+    if (char === '[' && !isEscapedDelimiter(content, index)) {
+      depth += 1;
+    } else if (char === ']' && !isEscapedDelimiter(content, index)) {
+      depth -= 1;
+      if (depth === 0) {
+        return index;
+      }
+    }
+  }
+  return null;
+}
+
+function expandTallNormDelimiters(content: string): string {
+  let result = '';
+  let index = 0;
+
+  while (index < content.length) {
+    if (!content.startsWith('\\|', index) || isAlreadySizedNorm(content, index)) {
+      result += content[index];
+      index += 1;
+      continue;
+    }
+
+    const closeIndex = findNextUnsizedNormDelimiter(content, index + 2);
+    if (closeIndex === null) {
+      result += content[index];
+      index += 1;
+      continue;
+    }
+
+    const inner = content.slice(index + 2, closeIndex);
+    result += hasTallMath(inner) ? `\\left\\|${inner}\\right\\|` : content.slice(index, closeIndex + 2);
+    index = closeIndex + 2;
+  }
+
+  return result;
+}
+
+function findNextUnsizedNormDelimiter(content: string, startIndex: number): number | null {
+  let index = startIndex;
+  while (index < content.length) {
+    if (content.startsWith('\\|', index) && !isAlreadySizedNorm(content, index)) {
+      return index;
+    }
+    index += 1;
+  }
+  return null;
+}
+
+function isAlreadySizedNorm(content: string, index: number): boolean {
+  return /\\(?:left|right)$/.test(content.slice(0, index));
+}
+
+function isEscapedDelimiter(content: string, index: number): boolean {
+  return index > 0 && content[index - 1] === '\\';
 }
 
 function escapeVisibleSetBraces(content: string): string {

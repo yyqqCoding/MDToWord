@@ -138,6 +138,24 @@ def test_wrap_underbrace_function_arguments_for_word_delimiter_height():
     assert ",t\\end{matrix}\\right)" in result
 
 
+def test_expand_problematic_square_brackets_and_norms_for_word():
+    markdown = (
+        "$$\n"
+        "\\mathcal L(\\theta)=\\mathbb E_q\n"
+        "\\big[\\|\\epsilon-\\epsilon_\\theta("
+        "\\underbrace{\\sqrt{\\bar\\alpha_t}x_0+\\sqrt{1-\\bar\\alpha_t}\\epsilon}_{x_t},t"
+        ")\\|^2\\big]\n"
+        "$$"
+    )
+
+    result = normalize_markdown(markdown)
+
+    assert "\\left[\\left\\|\\epsilon-\\epsilon_\\theta\\left(\\begin{matrix}\\underbrace" in result
+    assert ",t\\end{matrix}\\right)\\right\\|^2\\right]" in result
+    assert "\\big[" not in result
+    assert "\\big]" not in result
+
+
 def test_do_not_expand_existing_sized_delimiters():
     markdown = (
         "$$\n"

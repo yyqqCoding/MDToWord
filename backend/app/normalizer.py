@@ -127,6 +127,8 @@ def _repair_math_content(content: str) -> str:
     repaired = _repair_environment_line_breaks(repaired)
     repaired = _expand_tall_parentheses(repaired)
     repaired = _wrap_underbrace_parentheses_for_word(repaired)
+    repaired = _expand_tall_square_brackets(repaired)
+    repaired = _expand_tall_norm_delimiters(repaired)
     return _escape_visible_set_braces(repaired)
 
 
@@ -246,6 +248,122 @@ def _needs_word_tall_height_wrap(inner: str) -> bool:
         return True
 
     return bool(re.search(r"\\frac\b", inner))
+
+
+def _expand_tall_square_brackets(content: str) -> str:
+    result: list[str] = []
+    index = 0
+
+    while index < len(content):
+        size_command = _sized_square_open_command(content, index)
+        if size_command:
+            open_index = index + len(size_command) - 1
+            close_index = _find_matching_square_bracket(content, open_index)
+            if close_index is None:
+                result.append(content[index])
+                index += 1
+                continue
+
+            close_start = _sized_square_close_start(content, close_index)
+            inner = content[open_index + 1 : close_start]
+            if _has_tall_math(inner):
+                result.append(f"\\left[{inner}\\right]")
+            else:
+                result.append(content[index : close_index + 1])
+            index = close_index + 1
+            continue
+
+        if content[index] != "[" or _is_already_sized_delimiter(content, index):
+            result.append(content[index])
+            index += 1
+            continue
+
+        close_index = _find_matching_square_bracket(content, index)
+        if close_index is None:
+            result.append(content[index])
+            index += 1
+            continue
+
+        inner = content[index + 1 : close_index]
+        if _has_tall_math(inner):
+            result.append(f"\\left[{inner}\\right]")
+        else:
+            result.append(content[index : close_index + 1])
+        index = close_index + 1
+
+    return "".join(result)
+
+
+def _sized_square_open_command(content: str, index: int) -> str | None:
+    for command in ("\\big[", "\\Big[", "\\bigg[", "\\Bigg["):
+        if content.startswith(command, index):
+            return command
+    return None
+
+
+def _sized_square_close_start(content: str, close_index: int) -> int:
+    prefix = content[:close_index]
+    for command in ("\\big", "\\Big", "\\bigg", "\\Bigg"):
+        if prefix.endswith(command):
+            return close_index - len(command)
+    return close_index
+
+
+def _find_matching_square_bracket(content: str, open_index: int) -> int | None:
+    depth = 0
+    for index in range(open_index, len(content)):
+        char = content[index]
+        if char == "[" and not _is_escaped_delimiter(content, index):
+            depth += 1
+        elif char == "]" and not _is_escaped_delimiter(content, index):
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
+def _expand_tall_norm_delimiters(content: str) -> str:
+    result: list[str] = []
+    index = 0
+
+    while index < len(content):
+        if not content.startswith("\\|", index) or _is_already_sized_norm(content, index):
+            result.append(content[index])
+            index += 1
+            continue
+
+        close_index = _find_next_unsized_norm_delimiter(content, index + 2)
+        if close_index is None:
+            result.append(content[index])
+            index += 1
+            continue
+
+        inner = content[index + 2 : close_index]
+        if _has_tall_math(inner):
+            result.append(f"\\left\\|{inner}\\right\\|")
+        else:
+            result.append(content[index : close_index + 2])
+        index = close_index + 2
+
+    return "".join(result)
+
+
+def _find_next_unsized_norm_delimiter(content: str, start_index: int) -> int | None:
+    index = start_index
+    while index < len(content):
+        if content.startswith("\\|", index) and not _is_already_sized_norm(content, index):
+            return index
+        index += 1
+    return None
+
+
+def _is_already_sized_norm(content: str, index: int) -> bool:
+    prefix = content[:index]
+    return bool(re.search(r"\\(?:left|right)$", prefix))
+
+
+def _is_escaped_delimiter(content: str, index: int) -> bool:
+    return index > 0 and content[index - 1] == "\\"
 
 
 def _escape_visible_set_braces(content: str) -> str:
