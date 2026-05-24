@@ -125,6 +125,7 @@ def _repair_math_content(content: str) -> str:
     repaired = re.sub(r"\*\{([^}\n]+)\}", r"_{\1}", content)
     repaired = re.sub(r"(?<=[}|])\*([A-Za-z0-9])", r"_\1", repaired)
     repaired = _repair_environment_line_breaks(repaired)
+    repaired = _expand_tall_parentheses(repaired)
     return _escape_visible_set_braces(repaired)
 
 
@@ -142,6 +143,36 @@ def _repair_environment_line_breaks(content: str) -> str:
 
 def _repair_single_environment_line_breaks(match: re.Match[str]) -> str:
     return re.sub(r"(?<!\\)\\(?=\n)", r"\\\\", match.group(1))
+
+
+def _expand_tall_parentheses(content: str) -> str:
+    result: list[str] = []
+    index = 0
+
+    while index < len(content):
+        if content[index] != "(" or (index > 0 and content[index - 1] == "\\"):
+            result.append(content[index])
+            index += 1
+            continue
+
+        close_index = _find_matching_parenthesis(content, index)
+        if close_index is None:
+            result.append(content[index])
+            index += 1
+            continue
+
+        inner = content[index + 1 : close_index]
+        if _has_tall_math(inner):
+            result.append(f"\\left({inner}\\right)")
+        else:
+            result.append(content[index : close_index + 1])
+        index = close_index + 1
+
+    return "".join(result)
+
+
+def _has_tall_math(content: str) -> bool:
+    return bool(re.search(r"\\(?:underbrace|overbrace|frac|sqrt|sum|prod|int|begin)\b", content))
 
 
 def _escape_visible_set_braces(content: str) -> str:

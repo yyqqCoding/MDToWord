@@ -125,8 +125,10 @@ function repairMath(value: string): string {
 }
 
 function repairMathContent(content: string): string {
-  const repaired = repairEnvironmentLineBreaks(
+  const repaired = expandTallParentheses(
+    repairEnvironmentLineBreaks(
     content.replace(/\*\{([^}\n]+)\}/g, '_{$1}').replace(/(?<=[}|])\*([A-Za-z0-9])/g, '_$1'),
+    ),
   );
   return escapeVisibleSetBraces(repaired);
 }
@@ -162,6 +164,36 @@ function repairEnvironment(content: string, environment: string): string {
   }
 
   return result;
+}
+
+function expandTallParentheses(content: string): string {
+  let result = '';
+  let index = 0;
+
+  while (index < content.length) {
+    if (content[index] !== '(' || (index > 0 && content[index - 1] === '\\')) {
+      result += content[index];
+      index += 1;
+      continue;
+    }
+
+    const closeIndex = findMatchingParenthesis(content, index);
+    if (closeIndex === null) {
+      result += content[index];
+      index += 1;
+      continue;
+    }
+
+    const inner = content.slice(index + 1, closeIndex);
+    result += hasTallMath(inner) ? `\\left(${inner}\\right)` : content.slice(index, closeIndex + 1);
+    index = closeIndex + 1;
+  }
+
+  return result;
+}
+
+function hasTallMath(content: string): boolean {
+  return /\\(?:underbrace|overbrace|frac|sqrt|sum|prod|int|begin)\b/.test(content);
 }
 
 function escapeVisibleSetBraces(content: string): string {

@@ -108,6 +108,21 @@ def test_preserve_second_frac_argument_with_comma():
     assert result == markdown
 
 
+def test_expand_parentheses_around_tall_function_arguments():
+    markdown = (
+        "$$\n"
+        "\\big[\\|\\epsilon-\\epsilon_\\theta("
+        "\\underbrace{\\sqrt{\\bar\\alpha_t}x_0+\\sqrt{1-\\bar\\alpha_t}\\epsilon}_{x_t},t"
+        ")\\|^2\\big]\n"
+        "$$"
+    )
+
+    result = normalize_markdown(markdown)
+
+    assert "\\epsilon_\\theta\\left(\\underbrace" in result
+    assert ",t\\right)" in result
+
+
 def test_repair_single_backslash_line_breaks_in_cases_environment():
     markdown = (
         "[\n"
