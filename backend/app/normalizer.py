@@ -96,4 +96,52 @@ def _repair_math(math: str) -> str:
 
 def _repair_math_content(content: str) -> str:
     repaired = re.sub(r"\*\{([^}\n]+)\}", r"_{\1}", content)
-    return re.sub(r"(?<=[}|])\*([A-Za-z0-9])", r"_\1", repaired)
+    repaired = re.sub(r"(?<=[}|])\*([A-Za-z0-9])", r"_\1", repaired)
+    return _escape_visible_set_braces(repaired)
+
+
+def _escape_visible_set_braces(content: str) -> str:
+    result: list[str] = []
+    index = 0
+
+    while index < len(content):
+        if content[index] != "{" or _is_tex_group_brace(content, index):
+            result.append(content[index])
+            index += 1
+            continue
+
+        close_index = _find_matching_brace(content, index)
+        if close_index is None:
+            result.append(content[index])
+            index += 1
+            continue
+
+        inner = content[index + 1 : close_index]
+        if "," in inner:
+            result.append(f"\\{{{inner}\\}}")
+        else:
+            result.append(content[index : close_index + 1])
+        index = close_index + 1
+
+    return "".join(result)
+
+
+def _is_tex_group_brace(content: str, index: int) -> bool:
+    if index > 0 and content[index - 1] in "_^\\":
+        return True
+
+    command_match = re.search(r"\\[A-Za-z]+$", content[:index])
+    return bool(command_match)
+
+
+def _find_matching_brace(content: str, open_index: int) -> int | None:
+    depth = 0
+    for index in range(open_index, len(content)):
+        char = content[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return index
+    return None

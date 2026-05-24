@@ -55,6 +55,26 @@ def test_repair_ai_asterisk_subscripts_inside_math_only():
     )
 
 
+def test_escape_visible_set_braces_without_breaking_tex_grouping():
+    markdown = (
+        "将 ({z_{LH},z_{HL},z_{HH}}) 定义为信道 B。\n\n"
+        "[\n"
+        "\\langle z_{LL}^{w}-z_{LL},{z_{LH}^{w}-z_{LH},z_{HL}^{w}-z_{HL}}\\rangle=0.\n"
+        "]\n\n"
+        "标准公式 $\\frac{1}{N}\\mathbb{I}(z_{LL})$ 保持不变。"
+    )
+
+    result = normalize_markdown(markdown)
+
+    assert result == (
+        "将 $\\{z_{LH},z_{HL},z_{HH}\\}$ 定义为信道 B。\n\n"
+        "$$\n"
+        "\\langle z_{LL}^{w}-z_{LL},\\{z_{LH}^{w}-z_{LH},z_{HL}^{w}-z_{HL}\\}\\rangle=0.\n"
+        "$$\n\n"
+        "标准公式 $\\frac{1}{N}\\mathbb{I}(z_{LL})$ 保持不变。"
+    )
+
+
 def test_preserve_existing_dollar_formulas_and_table():
     markdown = (
         "行内公式 $a^2 + b^2 = c^2$。\n\n"

@@ -2,6 +2,8 @@ import MarkdownIt from 'markdown-it';
 import katex from 'katex';
 import 'katex/dist/katex.min.css';
 
+import { normalizeMarkdown } from './normalizer';
+
 const markdown = new MarkdownIt({
   html: false,
   linkify: true,
@@ -15,7 +17,7 @@ export function MarkdownPreview({ value }: { value: string }) {
 
 function renderMarkdownWithMath(value: string): string {
   const protectedMath: string[] = [];
-  const protectedValue = value
+  const protectedValue = normalizeMarkdown(value)
     .replace(/\\\[([\s\S]+?)\\\]/g, (_match, formula: string) => {
       const index = protectedMath.push(renderFormula(formula, true)) - 1;
       return `@@MATH_${index}@@`;
