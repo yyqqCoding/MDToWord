@@ -152,7 +152,7 @@ def test_do_not_expand_existing_sized_delimiters():
     assert "\\left\\left" not in result
     assert "\\right\\right" not in result
     assert "\\mathcal N\\big(" in result
-    assert "\\left(x_t-" in result
+    assert "\\left(\\begin{matrix}x_t-" in result
 
 
 def test_repair_single_backslash_line_breaks_in_cases_environment():

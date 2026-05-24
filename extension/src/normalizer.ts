@@ -223,7 +223,7 @@ function wrapUnderbraceParenthesesForWord(content: string): string {
 
     const [rightIndex, delimiterEnd] = match;
     const inner = content.slice(index + '\\left('.length, rightIndex);
-    result += needsWordUnderbraceHeightWrap(inner)
+    result += needsWordTallHeightWrap(inner)
       ? `\\left(\\begin{matrix}${inner}\\end{matrix}\\right)`
       : content.slice(index, delimiterEnd);
     index = delimiterEnd;
@@ -264,12 +264,16 @@ function findMatchingRightDelimiter(content: string, leftIndex: number): [number
   return null;
 }
 
-function needsWordUnderbraceHeightWrap(inner: string): boolean {
+function needsWordTallHeightWrap(inner: string): boolean {
   if (/^\s*\\begin\{(?:matrix|array)\}/.test(inner)) {
     return false;
   }
 
-  return inner.includes('\\underbrace') && /\\underbrace\b[\s\S]*?_\{/.test(inner);
+  if (inner.includes('\\underbrace') && /\\underbrace\b[\s\S]*?_\{/.test(inner)) {
+    return true;
+  }
+
+  return /\\frac\b/.test(inner);
 }
 
 function escapeVisibleSetBraces(content: string): string {

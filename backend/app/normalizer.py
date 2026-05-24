@@ -203,7 +203,7 @@ def _wrap_underbrace_parentheses_for_word(content: str) -> str:
         right_index, delimiter_end = match
         inner_start = index + len("\\left(")
         inner = content[inner_start:right_index]
-        if _needs_word_underbrace_height_wrap(inner):
+        if _needs_word_tall_height_wrap(inner):
             result.append(f"\\left(\\begin{{matrix}}{inner}\\end{{matrix}}\\right)")
         else:
             result.append(content[index:delimiter_end])
@@ -238,11 +238,14 @@ def _find_matching_right_delimiter(content: str, left_index: int) -> tuple[int, 
     return None
 
 
-def _needs_word_underbrace_height_wrap(inner: str) -> bool:
+def _needs_word_tall_height_wrap(inner: str) -> bool:
     if re.match(r"\s*\\begin\{(?:matrix|array)\}", inner):
         return False
 
-    return "\\underbrace" in inner and re.search(r"\\underbrace\b[\s\S]*?_\{", inner) is not None
+    if "\\underbrace" in inner and re.search(r"\\underbrace\b[\s\S]*?_\{", inner) is not None:
+        return True
+
+    return bool(re.search(r"\\frac\b", inner))
 
 
 def _escape_visible_set_braces(content: str) -> str:
