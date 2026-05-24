@@ -1,0 +1,8 @@
+{
+  "extensionName": {
+    "message": "MD To Word"
+  },
+  "extensionDescription": {
+    "message": "将 Markdown、公式和表格一键导出为 Word 文档。"
+  }
+}

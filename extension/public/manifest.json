@@ -1,8 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "MD To Word",
+  "name": "__MSG_extensionName__",
   "version": "0.1.0",
-  "description": "Export pasted Markdown with formulas and tables to Word.",
+  "default_locale": "zh_CN",
+  "description": "__MSG_extensionDescription__",
   "icons": {
     "16": "icon.svg",
     "32": "icon.svg",
@@ -21,5 +22,5 @@
     "default_path": "index.html"
   },
   "permissions": ["storage", "downloads", "sidePanel"],
-  "host_permissions": ["http://*/*", "https://*/*"]
+  "host_permissions": ["https://mdtoword.onrender.com/*"]
 }
