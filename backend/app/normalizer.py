@@ -29,6 +29,7 @@ GROUP_ARGUMENT_COMMANDS = {
     "tilde",
     "bar",
     "vec",
+    "boxed",
     "underbrace",
     "overbrace",
     "underset",

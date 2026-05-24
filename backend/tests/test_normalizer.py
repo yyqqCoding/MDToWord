@@ -108,6 +108,20 @@ def test_preserve_underbrace_arguments_while_escaping_sets():
     assert "m\\in\\{0,1\\}^{L}" in result
 
 
+def test_preserve_boxed_formula_argument_with_commas():
+    markdown = (
+        "$$\n"
+        "\\boxed{\\text{Attention}(Q,K,V)=\\text{softmax}\\left(\\frac{QK^\\top}{\\sqrt{d_k}}\\right)V}\n"
+        "$$"
+    )
+
+    result = normalize_markdown(markdown)
+
+    assert "\\boxed{" in result
+    assert "\\boxed\\{" not in result
+    assert "\\text{Attention}(Q,K,V)" in result
+
+
 def test_preserve_second_frac_argument_with_comma():
     markdown = "$\\frac{p_\\theta(x_{t-1}\\mid x_t)}{q(x_{t-1}\\mid x_t,x_0)}$"
 
