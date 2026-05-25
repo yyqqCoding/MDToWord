@@ -101,6 +101,22 @@ def test_repair_ai_asterisk_subscripts_inside_math_only():
     )
 
 
+def test_escape_literal_percent_signs_inside_math():
+    markdown = (
+        "判决阈值在目标误检率 (\\mathrm{FPR}=1%) 的约束下确定。"
+        "检测性能采用 (\\mathrm{TPR@1%FPR})。"
+        "普通文本 100% 保持不变，已转义公式 $A\\%=B$ 保持不重复转义。"
+    )
+
+    result = normalize_markdown(markdown)
+
+    assert result == (
+        "判决阈值在目标误检率 $\\mathrm{FPR}=1\\%$ 的约束下确定。"
+        "检测性能采用 $\\mathrm{TPR@1\\%FPR}$。"
+        "普通文本 100% 保持不变，已转义公式 $A\\%=B$ 保持不重复转义。"
+    )
+
+
 def test_escape_visible_set_braces_without_breaking_tex_grouping():
     markdown = (
         "将 ({z_{LH},z_{HL},z_{HH}}) 定义为信道 B。\n\n"

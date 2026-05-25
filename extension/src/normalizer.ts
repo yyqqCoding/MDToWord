@@ -135,12 +135,17 @@ function repairMath(value: string): string {
 
 function repairMathContent(content: string): string {
   let repaired = content.replace(/\*\{([^}\n]+)\}/g, '_{$1}').replace(/(?<=[}|])\*([A-Za-z0-9])/g, '_$1');
+  repaired = escapeLiteralPercentSigns(repaired);
   repaired = repairEnvironmentLineBreaks(repaired);
   repaired = expandTallParentheses(repaired);
   repaired = wrapUnderbraceParenthesesForWord(repaired);
   repaired = expandTallSquareBrackets(repaired);
   repaired = expandTallNormDelimiters(repaired);
   return escapeVisibleSetBraces(repaired);
+}
+
+function escapeLiteralPercentSigns(content: string): string {
+  return content.replace(/(^|[^\\])%/g, '$1\\%');
 }
 
 function repairEnvironmentLineBreaks(content: string): string {

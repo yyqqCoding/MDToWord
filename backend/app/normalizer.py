@@ -152,12 +152,17 @@ def _repair_math(math: str) -> str:
 def _repair_math_content(content: str) -> str:
     repaired = re.sub(r"\*\{([^}\n]+)\}", r"_{\1}", content)
     repaired = re.sub(r"(?<=[}|])\*([A-Za-z0-9])", r"_\1", repaired)
+    repaired = _escape_literal_percent_signs(repaired)
     repaired = _repair_environment_line_breaks(repaired)
     repaired = _expand_tall_parentheses(repaired)
     repaired = _wrap_underbrace_parentheses_for_word(repaired)
     repaired = _expand_tall_square_brackets(repaired)
     repaired = _expand_tall_norm_delimiters(repaired)
     return _escape_visible_set_braces(repaired)
+
+
+def _escape_literal_percent_signs(content: str) -> str:
+    return re.sub(r"(?<!\\)%", r"\\%", content)
 
 
 def _repair_environment_line_breaks(content: str) -> str:
