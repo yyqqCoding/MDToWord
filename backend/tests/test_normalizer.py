@@ -25,6 +25,44 @@ def test_normalize_bare_block_bracket_formula_to_double_dollars():
     assert result == "本文首先对其进行分解：\n\n$$\n(z_{LL},z_{LH})=DWT(z_T),\n$$\n\n结束。"
 
 
+def test_remove_blank_lines_inside_block_formula_for_pandoc_math_parsing():
+    markdown = (
+        "[\n"
+        "z_T^{w}\n"
+        "=\n"
+        "\n"
+        "\\operatorname{Norm}\\left(\n"
+        "\\mathcal{W}^{-1}\n"
+        "\\left(\n"
+        "\\tilde{z}_T^{LL},\n"
+        "\\tilde{z}_T^{LH},\n"
+        "\\tilde{z}_T^{HL},\n"
+        "\\tilde{z}_T^{HH}\n"
+        "\\right)\n"
+        "\\right),\n"
+        "]"
+    )
+
+    result = normalize_markdown(markdown)
+
+    assert "\n\n\\operatorname{Norm}" not in result
+    assert result == (
+        "\n\n$$\n"
+        "z_T^{w}\n"
+        "=\n"
+        "\\operatorname{Norm}\\left(\n"
+        "\\mathcal{W}^{-1}\n"
+        "\\left(\n"
+        "\\tilde{z}_T^{LL},\n"
+        "\\tilde{z}_T^{LH},\n"
+        "\\tilde{z}_T^{HL},\n"
+        "\\tilde{z}_T^{HH}\n"
+        "\\right)\n"
+        "\\right),\n"
+        "$$\n\n"
+    )
+
+
 def test_normalize_deep_markdown_headings_to_body_text():
     markdown = "# 一级标题\n\n###### 六级标题\n\n####### 超过六级标题\n\n正文"
 

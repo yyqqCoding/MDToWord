@@ -41,7 +41,16 @@ export function normalizeMarkdown(value: string): string {
 }
 
 function replaceBlockFormula(formula: string): string {
-  return `\n\n$$\n${formula.trim()}\n$$\n\n`;
+  return `\n\n$$\n${normalizeBlockFormulaContent(formula)}\n$$\n\n`;
+}
+
+function normalizeBlockFormulaContent(value: string): string {
+  return value
+    .trim()
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter((line) => line.trim())
+    .join('\n');
 }
 
 function normalizeFormulaSpacing(value: string): string {

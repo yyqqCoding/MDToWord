@@ -67,8 +67,13 @@ def _normalize_deep_headings(markdown: str) -> str:
 
 
 def _replace_block_formula(match: re.Match[str]) -> str:
-    formula = match.group(1).strip()
+    formula = _normalize_block_formula_content(match.group(1))
     return f"\n\n$$\n{formula}\n$$\n\n"
+
+
+def _normalize_block_formula_content(content: str) -> str:
+    lines = [line.rstrip() for line in content.strip().splitlines()]
+    return "\n".join(line for line in lines if line.strip())
 
 
 def _normalize_formula_spacing(markdown: str) -> str:
