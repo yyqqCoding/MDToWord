@@ -6,6 +6,12 @@ export interface MarkdownDialog {
   markdown: string;
 }
 
+export interface MarkdownFolder {
+  id: string;
+  name: string;
+  dialogs: MarkdownDialog[];
+}
+
 export interface ConvertOptions {
   filename: string;
 }
