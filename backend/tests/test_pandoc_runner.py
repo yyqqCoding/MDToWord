@@ -1,4 +1,6 @@
+import io
 import zipfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from unittest.mock import patch
 
@@ -28,18 +30,49 @@ def test_convert_markdown_to_docx_creates_word_document(tmp_path):
     assert "<w:tbl>" in document_xml
 
 
+def test_convert_markdown_table_uses_three_line_table_borders(tmp_path):
+    markdown = (Path(__file__).parents[2] / "logs" / "runlog.txt").read_text(encoding="utf-8")
+
+    docx_bytes = convert_markdown_to_docx(markdown, tmp_path)
+    docx_path = tmp_path / "three_line_table.docx"
+    docx_path.write_bytes(docx_bytes)
+
+    with zipfile.ZipFile(docx_path) as archive:
+        document_xml = archive.read("word/document.xml")
+
+    table = ET.fromstring(document_xml).find(".//w:tbl", WORD_XML_NAMESPACES)
+    assert table is not None
+
+    table_borders = table.find("./w:tblPr/w:tblBorders", WORD_XML_NAMESPACES)
+    assert table_borders is not None
+    assert border_attributes(table_borders, "top") == {"val": "single", "sz": "12"}
+    assert border_attributes(table_borders, "bottom") == {"val": "single", "sz": "12"}
+    assert border_attributes(table_borders, "left") == {"val": "nil"}
+    assert border_attributes(table_borders, "right") == {"val": "nil"}
+    assert border_attributes(table_borders, "insideH") == {"val": "nil"}
+    assert border_attributes(table_borders, "insideV") == {"val": "nil"}
+
+    first_row_bottom_borders = [
+        border_attributes(cell_borders, "bottom")
+        for cell_borders in table.findall("./w:tr[1]/w:tc/w:tcPr/w:tcBorders", WORD_XML_NAMESPACES)
+    ]
+    assert first_row_bottom_borders
+    assert all(attributes == {"val": "single", "sz": "6"} for attributes in first_row_bottom_borders)
+
+
 def test_convert_uses_reference_docx_for_word_styles(tmp_path):
     markdown = "# 标题\n\n正文"
+    fake_docx = minimal_docx_bytes()
 
     def fake_run(command, **kwargs):
-        (tmp_path / "result.docx").write_bytes(b"PK fake docx bytes")
+        (tmp_path / "result.docx").write_bytes(fake_docx)
         assert any(arg.startswith("--reference-doc=") for arg in command)
         return subprocess_completed()
 
     with patch("app.pandoc_runner.subprocess.run", side_effect=fake_run):
         docx_bytes = convert_markdown_to_docx(markdown, tmp_path)
 
-    assert docx_bytes == b"PK fake docx bytes"
+    assert docx_bytes == fake_docx
 
 
 def test_reference_docx_defines_chinese_word_styles(tmp_path):
@@ -90,8 +123,36 @@ def subprocess_completed():
     return type("Completed", (), {"returncode": 0, "stderr": ""})()
 
 
+def minimal_docx_bytes() -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr(
+            "word/document.xml",
+            (
+                '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                f'<w:document xmlns:w="{WORD_XML_NAMESPACES["w"]}">'
+                "<w:body><w:p /></w:body>"
+                "</w:document>"
+            ),
+        )
+    return buffer.getvalue()
+
+
 def extract_style(styles_xml: str, style_id: str) -> str:
     marker = f'w:styleId="{style_id}"'
     start = styles_xml.index(marker)
     end = styles_xml.index("</w:style>", start)
     return styles_xml[start:end]
+
+
+WORD_XML_NAMESPACES = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+
+
+def border_attributes(parent: ET.Element, border_name: str) -> dict[str, str]:
+    namespace = WORD_XML_NAMESPACES["w"]
+    border = parent.find(f"./w:{border_name}", WORD_XML_NAMESPACES)
+    assert border is not None
+    attributes = {"val": border.attrib[f"{{{namespace}}}val"]}
+    if f"{{{namespace}}}sz" in border.attrib:
+        attributes["sz"] = border.attrib[f"{{{namespace}}}sz"]
+    return attributes
