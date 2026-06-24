@@ -10,9 +10,12 @@
 </p>
 
 ---
+## 🎯 Edge插件地址
+
+[Edge浏览器插件地址](https://microsoftedge.microsoft.com/addons/detail/md-to-word/cippambdocmalcoceomjlibolaeicmoe?hl=zh-CN)
+
 
 ## 🎯 为什么需要它
-
 AI 网页端给出的内容看着是 Markdown，但**复制到 Word 里往往一团糟** 😩：
 
 - 表格变成一堆 `| --- | --- |` 竖线文字
