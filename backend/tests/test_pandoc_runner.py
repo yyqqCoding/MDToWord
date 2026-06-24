@@ -60,6 +60,28 @@ def test_convert_markdown_table_uses_three_line_table_borders(tmp_path):
     assert all(attributes == {"val": "single", "sz": "6"} for attributes in first_row_bottom_borders)
 
 
+def test_convert_table_glued_to_title_still_produces_word_table(tmp_path):
+    markdown = (
+        "**表 5-2 美的集团第二类代理成本相关指标变动（2012—2024 年）**\n"
+        "| 年份 | 关联交易占营收比例 | 现金分红比例 | 股权激励支付率 |\n"
+        "| :--- | :--- | :--- | :--- |\n"
+        "| 2012 | 1.12% | 31.25% | 31.25% |\n"
+        "| 2024 | 0.91% | 58.35% | 58.35% |\n"
+        "\n"
+        "数据来源：美的集团历年年报"
+    )
+
+    docx_bytes = convert_markdown_to_docx(markdown, tmp_path)
+    docx_path = tmp_path / "glued_table.docx"
+    docx_path.write_bytes(docx_bytes)
+
+    with zipfile.ZipFile(docx_path) as archive:
+        document_xml = archive.read("word/document.xml").decode("utf-8")
+
+    assert "<w:tbl>" in document_xml
+    assert "| 年份 |" not in document_xml
+
+
 def test_convert_uses_reference_docx_for_word_styles(tmp_path):
     markdown = "# 标题\n\n正文"
     fake_docx = minimal_docx_bytes()

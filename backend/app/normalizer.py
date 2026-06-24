@@ -7,6 +7,7 @@ BARE_BLOCK_BRACKETS_PATTERN = re.compile(r"(?:[ \t]*\n)?[ \t]*\[\s*\n(.+?)\n[ \t
 DOLLAR_MATH_PATTERN = re.compile(r"(\$\$.*?\$\$|\$[^$\n]+\$)", re.DOTALL)
 DEEP_HEADING_PATTERN = re.compile(r"^(#{7,})[ \t]+(.+?)([ \t]*\r?\n?)$")
 FENCE_PATTERN = re.compile(r"^[ \t]{0,3}(```|~~~)")
+TABLE_DELIMITER_PATTERN = re.compile(r"^[ \t]*\|?[ \t]*:?-{1,}:?[ \t]*(\|[ \t]*:?-{1,}:?[ \t]*)+\|?[ \t]*$")
 GROUP_ARGUMENT_COMMANDS = {
     "begin",
     "end",
@@ -40,11 +41,62 @@ GROUP_ARGUMENT_COMMANDS = {
 def normalize_markdown(markdown: str) -> str:
     """Normalize supported formula delimiters into Pandoc-friendly Markdown."""
     normalized = _normalize_deep_headings(markdown)
+    normalized = _ensure_table_blank_lines(normalized)
     normalized = BLOCK_BRACKETS_PATTERN.sub(_replace_block_formula, normalized)
     normalized = BARE_BLOCK_BRACKETS_PATTERN.sub(_replace_block_formula, normalized)
     normalized = _normalize_formula_spacing(normalized)
     normalized = INLINE_PARENS_PATTERN.sub(lambda match: f"${match.group(1).strip()}$", normalized)
     return _normalize_ai_parenthesized_math(normalized)
+
+
+def _ensure_table_blank_lines(markdown: str) -> str:
+    """Surround pipe-table blocks with blank lines so Pandoc recognizes them.
+
+    Pandoc's pipe_tables extension only parses a table when it is separated from
+    surrounding text by a blank line; the markdown-it preview is more lenient, so
+    AI output that glues a table to the line above renders as a table in preview
+    but as literal ``|`` text after export. Inserting the blank lines keeps the
+    two paths consistent.
+    """
+    lines = markdown.split("\n")
+    result: list[str] = []
+    in_fence = False
+    index = 0
+
+    while index < len(lines):
+        line = lines[index]
+        if FENCE_PATTERN.match(line):
+            in_fence = not in_fence
+            result.append(line)
+            index += 1
+            continue
+
+        is_table_start = (
+            not in_fence
+            and line.strip() != ""
+            and "|" in line
+            and index + 1 < len(lines)
+            and TABLE_DELIMITER_PATTERN.match(lines[index + 1]) is not None
+        )
+        if not is_table_start:
+            result.append(line)
+            index += 1
+            continue
+
+        if result and result[-1].strip() != "":
+            result.append("")
+
+        result.append(line)
+        result.append(lines[index + 1])
+        index += 2
+        while index < len(lines) and lines[index].strip() != "" and "|" in lines[index]:
+            result.append(lines[index])
+            index += 1
+
+        if index < len(lines) and lines[index].strip() != "":
+            result.append("")
+
+    return "\n".join(result)
 
 
 def _normalize_deep_headings(markdown: str) -> str:

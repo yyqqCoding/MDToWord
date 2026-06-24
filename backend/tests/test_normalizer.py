@@ -79,6 +79,46 @@ def test_normalize_ai_parenthesized_math_fragments_to_dollars():
     assert result == "给定初始潜噪声 $z_T$，其中 $K_A$ 生成模板，普通说明 (Render) 保持文本。"
 
 
+def test_insert_blank_line_before_table_glued_to_preceding_text():
+    markdown = (
+        "**表 1：指标体系**\n"
+        "| 变量代码 | 指标名称 |\n"
+        "| --- | --- |\n"
+        "| X1 | 营业收入 |\n"
+        "说明文字。"
+    )
+
+    result = normalize_markdown(markdown)
+
+    assert result == (
+        "**表 1：指标体系**\n"
+        "\n"
+        "| 变量代码 | 指标名称 |\n"
+        "| --- | --- |\n"
+        "| X1 | 营业收入 |\n"
+        "\n"
+        "说明文字。"
+    )
+
+
+def test_keep_table_already_separated_by_blank_lines_unchanged():
+    markdown = (
+        "标题\n\n"
+        "| A | B |\n"
+        "| --- | --- |\n"
+        "| 1 | 2 |\n\n"
+        "正文"
+    )
+
+    assert normalize_markdown(markdown) == markdown
+
+
+def test_do_not_treat_fenced_pipe_lines_as_table():
+    markdown = "```\n| a | b |\n| --- | --- |\n```"
+
+    assert normalize_markdown(markdown) == markdown
+
+
 def test_repair_ai_asterisk_subscripts_inside_math_only():
     markdown = (
         "正文里的 a*b 保持不变。\n\n"

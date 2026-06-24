@@ -2,6 +2,8 @@ const INLINE_PARENS_PATTERN = /\\\(([\s\S]+?)\\\)/g;
 const BLOCK_BRACKETS_PATTERN = /(?:[ \t]*\n)?[ \t]*\\\[([\s\S]+?)\\\][ \t]*(?:\n[ \t]*)?/g;
 const BARE_BLOCK_BRACKETS_PATTERN = /(?:[ \t]*\n)?[ \t]*\[\s*\n([\s\S]+?)\n[ \t]*\][ \t]*(?:\n[ \t]*)?/g;
 const DOLLAR_MATH_PATTERN = /(\$\$[\s\S]*?\$\$|\$[^$\n]+\$)/g;
+const FENCE_PATTERN = /^[ \t]{0,3}(```|~~~)/;
+const TABLE_DELIMITER_PATTERN = /^[ \t]*\|?[ \t]*:?-{1,}:?[ \t]*(\|[ \t]*:?-{1,}:?[ \t]*)+\|?[ \t]*$/;
 const GROUP_ARGUMENT_COMMANDS = new Set([
   'begin',
   'end',
@@ -31,13 +33,60 @@ const GROUP_ARGUMENT_COMMANDS = new Set([
 ]);
 
 export function normalizeMarkdown(value: string): string {
-  let normalized = value
+  let normalized = ensureTableBlankLines(value)
     .replace(BLOCK_BRACKETS_PATTERN, (_match, formula: string) => replaceBlockFormula(formula))
     .replace(BARE_BLOCK_BRACKETS_PATTERN, (_match, formula: string) => replaceBlockFormula(formula));
 
   normalized = normalizeFormulaSpacing(normalized);
   normalized = normalized.replace(INLINE_PARENS_PATTERN, (_match, formula: string) => `$${formula.trim()}$`);
   return normalizeAiParenthesizedMath(normalized);
+}
+
+function ensureTableBlankLines(value: string): string {
+  const lines = value.split('\n');
+  const result: string[] = [];
+  let inFence = false;
+  let index = 0;
+
+  while (index < lines.length) {
+    const line = lines[index];
+    if (FENCE_PATTERN.test(line)) {
+      inFence = !inFence;
+      result.push(line);
+      index += 1;
+      continue;
+    }
+
+    const isTableStart =
+      !inFence &&
+      line.trim() !== '' &&
+      line.includes('|') &&
+      index + 1 < lines.length &&
+      TABLE_DELIMITER_PATTERN.test(lines[index + 1]);
+    if (!isTableStart) {
+      result.push(line);
+      index += 1;
+      continue;
+    }
+
+    if (result.length > 0 && result[result.length - 1].trim() !== '') {
+      result.push('');
+    }
+
+    result.push(line);
+    result.push(lines[index + 1]);
+    index += 2;
+    while (index < lines.length && lines[index].trim() !== '' && lines[index].includes('|')) {
+      result.push(lines[index]);
+      index += 1;
+    }
+
+    if (index < lines.length && lines[index].trim() !== '') {
+      result.push('');
+    }
+  }
+
+  return result.join('\n');
 }
 
 function replaceBlockFormula(formula: string): string {
