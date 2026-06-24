@@ -3,7 +3,10 @@ const BLOCK_BRACKETS_PATTERN = /(?:[ \t]*\n)?[ \t]*\\\[([\s\S]+?)\\\][ \t]*(?:\n
 const BARE_BLOCK_BRACKETS_PATTERN = /(?:[ \t]*\n)?[ \t]*\[\s*\n([\s\S]+?)\n[ \t]*\][ \t]*(?:\n[ \t]*)?/g;
 const DOLLAR_MATH_PATTERN = /(\$\$[\s\S]*?\$\$|\$[^$\n]+\$)/g;
 const FENCE_PATTERN = /^[ \t]{0,3}(```|~~~)/;
+const ATX_NO_SPACE_PATTERN = /^(#{1,6})([A-Za-z一-鿿])/;
 const TABLE_DELIMITER_PATTERN = /^[ \t]*\|?[ \t]*:?-{1,}:?[ \t]*(\|[ \t]*:?-{1,}:?[ \t]*)+\|?[ \t]*$/;
+const FULLWIDTH_PIPE = '｜';
+const TABLE_DASH_PATTERN = /[-—–−－]/g;
 const GROUP_ARGUMENT_COMMANDS = new Set([
   'begin',
   'end',
@@ -33,7 +36,7 @@ const GROUP_ARGUMENT_COMMANDS = new Set([
 ]);
 
 export function normalizeMarkdown(value: string): string {
-  let normalized = ensureTableBlankLines(value)
+  let normalized = normalizeTables(normalizeHeadings(value))
     .replace(BLOCK_BRACKETS_PATTERN, (_match, formula: string) => replaceBlockFormula(formula))
     .replace(BARE_BLOCK_BRACKETS_PATTERN, (_match, formula: string) => replaceBlockFormula(formula));
 
@@ -42,7 +45,21 @@ export function normalizeMarkdown(value: string): string {
   return normalizeAiParenthesizedMath(normalized);
 }
 
-function ensureTableBlankLines(value: string): string {
+function normalizeHeadings(value: string): string {
+  let inFence = false;
+  return value
+    .split('\n')
+    .map((line) => {
+      if (FENCE_PATTERN.test(line)) {
+        inFence = !inFence;
+        return line;
+      }
+      return inFence ? line : line.replace(ATX_NO_SPACE_PATTERN, '$1 $2');
+    })
+    .join('\n');
+}
+
+function normalizeTables(value: string): string {
   const lines = value.split('\n');
   const result: string[] = [];
   let inFence = false;
@@ -58,11 +75,7 @@ function ensureTableBlankLines(value: string): string {
     }
 
     const isTableStart =
-      !inFence &&
-      line.trim() !== '' &&
-      line.includes('|') &&
-      index + 1 < lines.length &&
-      TABLE_DELIMITER_PATTERN.test(lines[index + 1]);
+      !inFence && isTableRow(line) && index + 1 < lines.length && isTableDelimiter(lines[index + 1]);
     if (!isTableStart) {
       result.push(line);
       index += 1;
@@ -73,11 +86,11 @@ function ensureTableBlankLines(value: string): string {
       result.push('');
     }
 
-    result.push(line);
-    result.push(lines[index + 1]);
+    result.push(repairTablePipes(line));
+    result.push(repairDelimiterRow(lines[index + 1]));
     index += 2;
-    while (index < lines.length && lines[index].trim() !== '' && lines[index].includes('|')) {
-      result.push(lines[index]);
+    while (index < lines.length && isTableRow(lines[index])) {
+      result.push(repairTablePipes(lines[index]));
       index += 1;
     }
 
@@ -87,6 +100,22 @@ function ensureTableBlankLines(value: string): string {
   }
 
   return result.join('\n');
+}
+
+function isTableRow(line: string): boolean {
+  return line.trim() !== '' && (line.includes('|') || line.includes(FULLWIDTH_PIPE));
+}
+
+function isTableDelimiter(line: string): boolean {
+  return TABLE_DELIMITER_PATTERN.test(repairDelimiterRow(line));
+}
+
+function repairTablePipes(line: string): string {
+  return line.split(FULLWIDTH_PIPE).join('|');
+}
+
+function repairDelimiterRow(line: string): string {
+  return repairTablePipes(line).replace(TABLE_DASH_PATTERN, '-');
 }
 
 function replaceBlockFormula(formula: string): string {

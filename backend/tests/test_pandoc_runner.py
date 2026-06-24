@@ -82,6 +82,53 @@ def test_convert_table_glued_to_title_still_produces_word_table(tmp_path):
     assert "| 年份 |" not in document_xml
 
 
+def test_convert_list_without_blank_line_renders_as_list(tmp_path):
+    markdown = "说明：\n- 第一项\n- 第二项\n"
+
+    docx_bytes = convert_markdown_to_docx(markdown, tmp_path)
+    docx_path = tmp_path / "list.docx"
+    docx_path.write_bytes(docx_bytes)
+
+    with zipfile.ZipFile(docx_path) as archive:
+        document_xml = archive.read("word/document.xml").decode("utf-8")
+
+    assert "第一项" in document_xml
+    assert "第二项" in document_xml
+    assert "- 第一项" not in document_xml
+
+
+def test_warn_on_unparsed_tables_logs_warning(tmp_path, caplog):
+    from app.pandoc_runner import _warn_on_unparsed_tables
+
+    docx_path = tmp_path / "leaked_table.docx"
+    with zipfile.ZipFile(docx_path, "w") as archive:
+        archive.writestr(
+            "word/document.xml",
+            f'<w:document xmlns:w="{WORD_XML_NAMESPACES["w"]}"><w:body>'
+            "<w:p><w:r><w:t>标题 | 年份 | 占比 | --- | --- | --- | 2012 | 1% | 2%</w:t></w:r></w:p>"
+            "</w:body></w:document>",
+        )
+
+    with caplog.at_level("WARNING"):
+        _warn_on_unparsed_tables(docx_path)
+
+    assert "unparsed Markdown table" in caplog.text
+
+
+def test_no_warning_for_properly_parsed_table(tmp_path, caplog):
+    from app.pandoc_runner import _warn_on_unparsed_tables
+
+    markdown = (Path(__file__).parents[2] / "logs" / "runlog.txt").read_text(encoding="utf-8")
+    docx_bytes = convert_markdown_to_docx(markdown, tmp_path)
+    docx_path = tmp_path / "ok_table.docx"
+    docx_path.write_bytes(docx_bytes)
+
+    with caplog.at_level("WARNING"):
+        _warn_on_unparsed_tables(docx_path)
+
+    assert "unparsed Markdown table" not in caplog.text
+
+
 def test_convert_uses_reference_docx_for_word_styles(tmp_path):
     markdown = "# 标题\n\n正文"
     fake_docx = minimal_docx_bytes()

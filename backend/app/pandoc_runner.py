@@ -1,3 +1,5 @@
+import logging
+import re
 import shutil
 import subprocess
 import tempfile
@@ -7,6 +9,8 @@ from pathlib import Path
 
 from app.normalizer import normalize_markdown
 from app.settings import settings
+
+logger = logging.getLogger(__name__)
 
 REFERENCE_DOC_PATH = Path(__file__).with_name("reference.docx")
 WORD_NAMESPACE = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -38,6 +42,10 @@ TABLE_BORDER_SPECS = {
 HEADER_SEPARATOR_BORDER_SPECS = {
     "bottom": {"val": "single", "sz": "6"},
 }
+# A Markdown table that Pandoc failed to parse leaks its delimiter row into the
+# document as literal text (two dash runs separated by a pipe). Used as a final
+# safety net to surface tables that slipped through normalization.
+UNPARSED_TABLE_PATTERN = re.compile(r":?-{2,}:?[ \t]*\|[ \t]*:?-{2,}:?")
 
 for prefix, namespace in DOCX_XML_NAMESPACES.items():
     ET.register_namespace(prefix, namespace)
@@ -68,7 +76,7 @@ def _convert(markdown: str, work_dir: Path) -> bytes:
         _resolve_pandoc_binary(),
         str(input_path),
         "--from",
-        "markdown+tex_math_dollars+tex_math_single_backslash+pipe_tables+grid_tables",
+        "markdown+tex_math_dollars+tex_math_single_backslash+pipe_tables+grid_tables+lists_without_preceding_blankline",
         "--to",
         "docx",
         f"--reference-doc={REFERENCE_DOC_PATH}",
@@ -102,6 +110,7 @@ def _convert(markdown: str, work_dir: Path) -> bytes:
         raise ConversionError("Pandoc completed but did not create a DOCX file.")
 
     _apply_three_line_table_borders(output_path)
+    _warn_on_unparsed_tables(output_path)
 
     return output_path.read_bytes()
 
@@ -144,6 +153,26 @@ def _apply_three_line_table_borders(docx_path: Path) -> None:
     with zipfile.ZipFile(docx_path, "w") as archive:
         for filename, (info, content) in entries.items():
             archive.writestr(info, updated_document_xml if filename == "word/document.xml" else content)
+
+
+def _warn_on_unparsed_tables(docx_path: Path) -> None:
+    """Log a warning if the exported document still contains a literal table.
+
+    Normalization repairs the known table failure modes before Pandoc runs; this
+    is the last line of defense so any future regression (a malformed table that
+    exported as plain ``|`` text) is visible in the logs instead of silent.
+    """
+    try:
+        with zipfile.ZipFile(docx_path) as archive:
+            document_xml = archive.read("word/document.xml").decode("utf-8", errors="ignore")
+    except (KeyError, zipfile.BadZipFile, OSError):
+        return
+
+    text = re.sub(r"<[^>]+>", "", document_xml)
+    match = UNPARSED_TABLE_PATTERN.search(text)
+    if match:
+        snippet = " ".join(text[max(0, match.start() - 40) : match.start() + 60].split())
+        logger.warning("Exported DOCX may contain an unparsed Markdown table near: %r", snippet)
 
 
 def _format_three_line_table(table: ET.Element) -> None:

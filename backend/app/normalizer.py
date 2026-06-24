@@ -6,8 +6,11 @@ BLOCK_BRACKETS_PATTERN = re.compile(r"(?:[ \t]*\n)?[ \t]*\\\[(.+?)\\\][ \t]*(?:\
 BARE_BLOCK_BRACKETS_PATTERN = re.compile(r"(?:[ \t]*\n)?[ \t]*\[\s*\n(.+?)\n[ \t]*\][ \t]*(?:\n[ \t]*)?", re.DOTALL)
 DOLLAR_MATH_PATTERN = re.compile(r"(\$\$.*?\$\$|\$[^$\n]+\$)", re.DOTALL)
 DEEP_HEADING_PATTERN = re.compile(r"^(#{7,})[ \t]+(.+?)([ \t]*\r?\n?)$")
+ATX_NO_SPACE_PATTERN = re.compile(r"^(#{1,6})([A-Za-z一-鿿])")
 FENCE_PATTERN = re.compile(r"^[ \t]{0,3}(```|~~~)")
 TABLE_DELIMITER_PATTERN = re.compile(r"^[ \t]*\|?[ \t]*:?-{1,}:?[ \t]*(\|[ \t]*:?-{1,}:?[ \t]*)+\|?[ \t]*$")
+FULLWIDTH_PIPE = "｜"  # ｜
+TABLE_DASH_PATTERN = re.compile(r"[-—–−－]")  # - — – − －
 GROUP_ARGUMENT_COMMANDS = {
     "begin",
     "end",
@@ -40,8 +43,8 @@ GROUP_ARGUMENT_COMMANDS = {
 
 def normalize_markdown(markdown: str) -> str:
     """Normalize supported formula delimiters into Pandoc-friendly Markdown."""
-    normalized = _normalize_deep_headings(markdown)
-    normalized = _ensure_table_blank_lines(normalized)
+    normalized = _normalize_headings(markdown)
+    normalized = _normalize_tables(normalized)
     normalized = BLOCK_BRACKETS_PATTERN.sub(_replace_block_formula, normalized)
     normalized = BARE_BLOCK_BRACKETS_PATTERN.sub(_replace_block_formula, normalized)
     normalized = _normalize_formula_spacing(normalized)
@@ -49,14 +52,19 @@ def normalize_markdown(markdown: str) -> str:
     return _normalize_ai_parenthesized_math(normalized)
 
 
-def _ensure_table_blank_lines(markdown: str) -> str:
-    """Surround pipe-table blocks with blank lines so Pandoc recognizes them.
+def _normalize_tables(markdown: str) -> str:
+    """Repair common AI pipe-table mistakes so Pandoc reliably parses them.
 
-    Pandoc's pipe_tables extension only parses a table when it is separated from
-    surrounding text by a blank line; the markdown-it preview is more lenient, so
-    AI output that glues a table to the line above renders as a table in preview
-    but as literal ``|`` text after export. Inserting the blank lines keeps the
-    two paths consistent.
+    The markdown-it preview tolerates issues that Pandoc rejects, which makes a
+    table render in preview yet export as literal ``|`` text. This repairs the
+    high-frequency cases as a fallback:
+
+    - a table glued to the line above/below (Pandoc needs blank-line separation);
+    - full-width ``｜`` used as the column separator;
+    - Unicode dashes (``— – − －``) used in the delimiter row instead of ``-``.
+
+    Pipe and dash repairs are scoped to recognized table blocks so ordinary text
+    (e.g. ``2012—2024`` in a data cell) is never touched.
     """
     lines = markdown.split("\n")
     result: list[str] = []
@@ -73,10 +81,9 @@ def _ensure_table_blank_lines(markdown: str) -> str:
 
         is_table_start = (
             not in_fence
-            and line.strip() != ""
-            and "|" in line
+            and _is_table_row(line)
             and index + 1 < len(lines)
-            and TABLE_DELIMITER_PATTERN.match(lines[index + 1]) is not None
+            and _is_table_delimiter(lines[index + 1])
         )
         if not is_table_start:
             result.append(line)
@@ -86,11 +93,11 @@ def _ensure_table_blank_lines(markdown: str) -> str:
         if result and result[-1].strip() != "":
             result.append("")
 
-        result.append(line)
-        result.append(lines[index + 1])
+        result.append(_repair_table_pipes(line))
+        result.append(_repair_delimiter_row(lines[index + 1]))
         index += 2
-        while index < len(lines) and lines[index].strip() != "" and "|" in lines[index]:
-            result.append(lines[index])
+        while index < len(lines) and _is_table_row(lines[index]):
+            result.append(_repair_table_pipes(lines[index]))
             index += 1
 
         if index < len(lines) and lines[index].strip() != "":
@@ -99,7 +106,30 @@ def _ensure_table_blank_lines(markdown: str) -> str:
     return "\n".join(result)
 
 
-def _normalize_deep_headings(markdown: str) -> str:
+def _is_table_row(line: str) -> bool:
+    return line.strip() != "" and ("|" in line or FULLWIDTH_PIPE in line)
+
+
+def _is_table_delimiter(line: str) -> bool:
+    return TABLE_DELIMITER_PATTERN.match(_repair_delimiter_row(line)) is not None
+
+
+def _repair_table_pipes(line: str) -> str:
+    return line.replace(FULLWIDTH_PIPE, "|")
+
+
+def _repair_delimiter_row(line: str) -> str:
+    return TABLE_DASH_PATTERN.sub("-", line.replace(FULLWIDTH_PIPE, "|"))
+
+
+def _normalize_headings(markdown: str) -> str:
+    """Repair ATX headings and downgrade unsupported deep headings.
+
+    - ``#标题`` (no space after the hashes) is recognized as a heading by neither
+      Pandoc nor the markdown-it preview, so a missing space is inserted.
+    - headings deeper than level 6 are not valid Markdown, so they are flattened
+      to body text instead of leaking literal ``#`` characters into the document.
+    """
     lines: list[str] = []
     in_fence = False
 
@@ -109,11 +139,16 @@ def _normalize_deep_headings(markdown: str) -> str:
             lines.append(line)
             continue
 
-        match = DEEP_HEADING_PATTERN.match(line)
-        if match and not in_fence:
-            lines.append(f"{match.group(2).rstrip()}{match.group(3)}")
-        else:
+        if in_fence:
             lines.append(line)
+            continue
+
+        deep = DEEP_HEADING_PATTERN.match(line)
+        if deep:
+            lines.append(f"{deep.group(2).rstrip()}{deep.group(3)}")
+            continue
+
+        lines.append(ATX_NO_SPACE_PATTERN.sub(r"\1 \2", line))
 
     return "".join(lines)
 

@@ -71,6 +71,20 @@ def test_normalize_deep_markdown_headings_to_body_text():
     assert result == "# 一级标题\n\n###### 六级标题\n\n超过六级标题\n\n正文"
 
 
+def test_normalize_atx_heading_missing_space():
+    markdown = "##标题\n\n###Section\n\n正文"
+
+    result = normalize_markdown(markdown)
+
+    assert result == "## 标题\n\n### Section\n\n正文"
+
+
+def test_keep_hashtag_like_text_without_following_letter_unchanged():
+    markdown = "#1 是编号，不是标题"
+
+    assert normalize_markdown(markdown) == markdown
+
+
 def test_normalize_ai_parenthesized_math_fragments_to_dollars():
     markdown = "给定初始潜噪声 (z_T)，其中 (K_A) 生成模板，普通说明 (Render) 保持文本。"
 
@@ -117,6 +131,22 @@ def test_do_not_treat_fenced_pipe_lines_as_table():
     markdown = "```\n| a | b |\n| --- | --- |\n```"
 
     assert normalize_markdown(markdown) == markdown
+
+
+def test_repair_fullwidth_pipes_inside_table():
+    markdown = "标题\n\n｜ A ｜ B ｜\n｜ --- ｜ --- ｜\n｜ 1 ｜ 2 ｜\n\n正文"
+
+    result = normalize_markdown(markdown)
+
+    assert result == "标题\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\n正文"
+
+
+def test_repair_unicode_dashes_only_in_delimiter_row():
+    markdown = "标题\n\n| 年份 | 区间 |\n| —— | —— |\n| 2012 | 2012—2024 |\n\n正文"
+
+    result = normalize_markdown(markdown)
+
+    assert result == "标题\n\n| 年份 | 区间 |\n| -- | -- |\n| 2012 | 2012—2024 |\n\n正文"
 
 
 def test_repair_ai_asterisk_subscripts_inside_math_only():
