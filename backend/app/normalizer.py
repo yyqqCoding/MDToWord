@@ -45,11 +45,39 @@ def normalize_markdown(markdown: str) -> str:
     """Normalize supported formula delimiters into Pandoc-friendly Markdown."""
     normalized = _normalize_headings(markdown)
     normalized = _normalize_tables(normalized)
+    normalized = _escape_yaml_front_matter_markers(normalized)
     normalized = BLOCK_BRACKETS_PATTERN.sub(_replace_block_formula, normalized)
     normalized = BARE_BLOCK_BRACKETS_PATTERN.sub(_replace_block_formula, normalized)
     normalized = _normalize_formula_spacing(normalized)
     normalized = INLINE_PARENS_PATTERN.sub(lambda match: f"${match.group(1).strip()}$", normalized)
     return _normalize_ai_parenthesized_math(normalized)
+
+
+def _escape_yaml_front_matter_markers(markdown: str) -> str:
+    """Escape standalone --- lines that Pandoc interprets as YAML front matter.
+
+    A line containing only --- (with optional surrounding whitespace) triggers
+    Pandoc's YAML front matter parser. If the content that follows is not valid
+    YAML, Pandoc fails with a parse error. This escapes such lines to prevent
+    the misinterpretation while preserving them as horizontal rules in the output.
+    """
+    lines = markdown.split("\n")
+    result: list[str] = []
+    in_fence = False
+
+    for line in lines:
+        if FENCE_PATTERN.match(line):
+            in_fence = not in_fence
+            result.append(line)
+            continue
+
+        # Only escape --- outside code fences
+        if not in_fence and line.strip() == "---":
+            result.append("\\---")
+        else:
+            result.append(line)
+
+    return "\n".join(result)
 
 
 def _normalize_tables(markdown: str) -> str:

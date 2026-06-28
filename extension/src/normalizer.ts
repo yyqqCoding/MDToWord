@@ -36,7 +36,7 @@ const GROUP_ARGUMENT_COMMANDS = new Set([
 ]);
 
 export function normalizeMarkdown(value: string): string {
-  let normalized = normalizeTables(normalizeHeadings(value))
+  let normalized = escapeYamlFrontMatterMarkers(normalizeTables(normalizeHeadings(value)))
     .replace(BLOCK_BRACKETS_PATTERN, (_match, formula: string) => replaceBlockFormula(formula))
     .replace(BARE_BLOCK_BRACKETS_PATTERN, (_match, formula: string) => replaceBlockFormula(formula));
 
@@ -55,6 +55,21 @@ function normalizeHeadings(value: string): string {
         return line;
       }
       return inFence ? line : line.replace(ATX_NO_SPACE_PATTERN, '$1 $2');
+    })
+    .join('\n');
+}
+
+function escapeYamlFrontMatterMarkers(value: string): string {
+  let inFence = false;
+  return value
+    .split('\n')
+    .map((line) => {
+      if (FENCE_PATTERN.test(line)) {
+        inFence = !inFence;
+        return line;
+      }
+      // Only escape --- outside code fences
+      return !inFence && line.trim() === '---' ? '\\---' : line;
     })
     .join('\n');
 }

@@ -354,3 +354,19 @@ def test_preserve_existing_dollar_formulas_and_table():
     result = normalize_markdown(markdown)
 
     assert result == markdown
+
+
+def test_escape_yaml_front_matter_markers_to_prevent_pandoc_parse_error():
+    markdown = "第一段内容。\n\n---\n## 第二部分标题\n内容继续。"
+
+    result = normalize_markdown(markdown)
+
+    assert result == "第一段内容。\n\n\\---\n## 第二部分标题\n内容继续。"
+
+
+def test_do_not_escape_yaml_markers_inside_code_fence():
+    markdown = "```\n---\ncode: value\n---\n```"
+
+    result = normalize_markdown(markdown)
+
+    assert result == "```\n---\ncode: value\n---\n```"
