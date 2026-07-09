@@ -73,9 +73,14 @@ async def feedback(request: FeedbackRequest) -> FeedbackResponse:
             json=payload,
         )
         if resp.status_code >= 400:
+            detail = resp.text[:200] if resp.text else "no response body"
             return JSONResponse(
                 status_code=502,
-                content={"success": False, "id": None, "message": "反馈提交失败，请稍后重试"},
+                content={
+                    "success": False,
+                    "id": None,
+                    "message": f"反馈提交失败: {resp.status_code} {detail}",
+                },
             )
 
     return FeedbackResponse(success=True, id=feedback_id)
