@@ -50,6 +50,15 @@ def convert(request: ConvertRequest) -> Response:
     return Response(content=docx_bytes, media_type=DOCX_MEDIA_TYPE, headers=headers)
 
 
+@app.get("/feedback/debug")
+def feedback_debug() -> dict:
+    return {
+        "supabase_url_set": bool(settings.supabase_url),
+        "supabase_key_set": bool(settings.supabase_key),
+        "supabase_url_prefix": settings.supabase_url[:30] if settings.supabase_url else "",
+    }
+
+
 @app.post("/feedback")
 async def feedback(request: FeedbackRequest) -> FeedbackResponse:
     feedback_id = str(uuid.uuid4())
@@ -61,26 +70,36 @@ async def feedback(request: FeedbackRequest) -> FeedbackResponse:
         "contact": request.contact,
     }
 
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{settings.supabase_url}/rest/v1/feedback",
-            headers={
-                "apikey": settings.supabase_key,
-                "Authorization": f"Bearer {settings.supabase_key}",
-                "Content-Type": "application/json",
-                "Prefer": "return=minimal",
-            },
-            json=payload,
-        )
-        if resp.status_code >= 400:
-            detail = resp.text[:200] if resp.text else "no response body"
-            return JSONResponse(
-                status_code=502,
-                content={
-                    "success": False,
-                    "id": None,
-                    "message": f"反馈提交失败: {resp.status_code} {detail}",
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{settings.supabase_url}/rest/v1/feedback",
+                headers={
+                    "apikey": settings.supabase_key,
+                    "Authorization": f"Bearer {settings.supabase_key}",
+                    "Content-Type": "application/json",
+                    "Prefer": "return=minimal",
                 },
+                json=payload,
             )
+            if resp.status_code >= 400:
+                detail = resp.text[:200] if resp.text else "no response body"
+                return JSONResponse(
+                    status_code=502,
+                    content={
+                        "success": False,
+                        "id": None,
+                        "message": f"supabase {resp.status_code}: {detail}",
+                    },
+                )
+    except Exception as exc:
+        return JSONResponse(
+            status_code=502,
+            content={
+                "success": False,
+                "id": None,
+                "message": f"request error: {type(exc).__name__}: {exc}",
+            },
+        )
 
     return FeedbackResponse(success=True, id=feedback_id)
