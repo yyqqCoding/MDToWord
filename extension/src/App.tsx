@@ -9,6 +9,7 @@ import {
   Folder,
   FolderPlus,
   ListChecks,
+  MessageSquare,
   Move,
   Pencil,
   Plus,
@@ -18,7 +19,7 @@ import {
 import type { CSSProperties, DragEvent } from 'react';
 import { useEffect, useMemo, useState } from 'react';
 
-import { checkHealth, convertToDocx, downloadDocx } from './api';
+import { checkHealth, convertToDocx, downloadDocx, submitFeedback } from './api';
 import { createDialog, createFolder, moveDialogBetweenFolders } from './folders';
 import { MarkdownPreview } from './preview';
 import { loadFolders, loadOnboardingCompleted, saveFolders, saveOnboardingCompleted } from './storage';
@@ -165,6 +166,13 @@ export function App() {
   const [onboardingActive, setOnboardingActive] = useState(false);
   const [onboardingStepIndex, setOnboardingStepIndex] = useState(0);
   const [spotlightRect, setSpotlightRect] = useState<SpotlightRect | null>(null);
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [feedbackTab, setFeedbackTab] = useState<'bug' | 'feature'>('bug');
+  const [feedbackMd, setFeedbackMd] = useState('');
+  const [feedbackDesc, setFeedbackDesc] = useState('');
+  const [feedbackContact, setFeedbackContact] = useState('');
+  const [feedbackFeature, setFeedbackFeature] = useState('');
+  const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
 
   const openFolder = useMemo(
     () => folders.find((folder) => folder.id === openFolderId),
@@ -517,6 +525,118 @@ export function App() {
     } finally {
       setIsExporting(false);
     }
+  }
+
+  async function handleFeedbackSubmit() {
+    if (feedbackTab === 'bug') {
+      if (!feedbackMd.trim() || !feedbackDesc.trim()) return;
+    } else {
+      if (!feedbackFeature.trim()) return;
+    }
+    setFeedbackSubmitting(true);
+    try {
+      await submitFeedback(SERVICE_URL, {
+        feedback_type: feedbackTab,
+        markdown_content: feedbackTab === 'bug' ? feedbackMd : '',
+        description: feedbackTab === 'bug' ? feedbackDesc : feedbackFeature,
+        contact: feedbackContact,
+      });
+      setFeedbackOpen(false);
+      setFeedbackMd('');
+      setFeedbackDesc('');
+      setFeedbackFeature('');
+      setFeedbackContact('');
+      setMessage('反馈已提交，感谢！');
+    } catch {
+      setMessage('反馈提交失败，请稍后重试');
+    } finally {
+      setFeedbackSubmitting(false);
+    }
+  }
+
+  function renderFeedbackModal() {
+    if (!feedbackOpen) return null;
+
+    const bugFormValid = feedbackMd.trim() && feedbackDesc.trim();
+    const featureFormValid = feedbackFeature.trim();
+    const canSubmit = feedbackTab === 'bug' ? bugFormValid : featureFormValid;
+
+    return (
+      <div className="onboarding-layer" role="dialog" aria-modal="true" aria-labelledby="feedback-title">
+        <div className="onboarding-backdrop" onClick={() => setFeedbackOpen(false)} />
+        <section className="feedback-modal">
+          <div className="feedback-tabs">
+            <button
+              type="button"
+              className={`feedback-tab ${feedbackTab === 'bug' ? 'active' : ''}`}
+              onClick={() => setFeedbackTab('bug')}
+            >
+              问题反馈
+            </button>
+            <button
+              type="button"
+              className={`feedback-tab ${feedbackTab === 'feature' ? 'active' : ''}`}
+              onClick={() => setFeedbackTab('feature')}
+            >
+              功能建议
+            </button>
+          </div>
+          {feedbackTab === 'bug' ? (
+            <>
+              <p className="feedback-hint">粘贴解析失败的 Markdown 内容，帮助我们改进转换质量。</p>
+              <label>
+                Markdown 内容 <span className="required">*</span>
+                <textarea
+                  value={feedbackMd}
+                  onChange={(e) => setFeedbackMd(e.target.value)}
+                  placeholder="粘贴解析失败的 Markdown 原文..."
+                  rows={4}
+                />
+              </label>
+              <label>
+                问题描述 <span className="required">*</span>
+                <input
+                  type="text"
+                  value={feedbackDesc}
+                  onChange={(e) => setFeedbackDesc(e.target.value)}
+                  placeholder="例如：表格没对齐、公式丢失..."
+                />
+              </label>
+            </>
+          ) : (
+            <>
+              <p className="feedback-hint">告诉我们你希望增加的功能。</p>
+              <label>
+                功能描述 <span className="required">*</span>
+                <textarea
+                  value={feedbackFeature}
+                  onChange={(e) => setFeedbackFeature(e.target.value)}
+                  placeholder="描述你希望增加的功能..."
+                  rows={4}
+                />
+              </label>
+            </>
+          )}
+          <label>
+            联系方式
+            <input
+              type="text"
+              value={feedbackContact}
+              onChange={(e) => setFeedbackContact(e.target.value)}
+              placeholder="邮箱或微信（选填，方便回复）"
+            />
+          </label>
+          <div className="feedback-actions">
+            <button type="button" className="secondary" onClick={() => setFeedbackOpen(false)}>
+              取消
+            </button>
+            <button type="button" disabled={!canSubmit || feedbackSubmitting} onClick={() => void handleFeedbackSubmit()}>
+              {feedbackSubmitting ? '提交中...' : '提交'}
+            </button>
+          </div>
+        </section>
+      </div>
+    );
   }
 
   function renderOnboardingGuide() {
@@ -883,6 +1003,10 @@ export function App() {
               <button type="button" className="guide-button" onClick={startOnboarding}>
                 使用指南
               </button>
+              <button type="button" className="guide-button feedback-button" onClick={() => setFeedbackOpen(true)}>
+                <MessageSquare size={12} />
+                问题反馈
+              </button>
             </div>
             <p>Markdown 一键转 Word</p>
           </div>
@@ -896,6 +1020,7 @@ export function App() {
       ) : null}
       <section className="workspace">{openFolder ? renderFolderDetail() : renderFolderList()}</section>
       {renderOnboardingGuide()}
+      {renderFeedbackModal()}
     </main>
   );
 }

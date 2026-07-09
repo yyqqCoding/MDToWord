@@ -30,3 +30,22 @@ class ConversionErrorResponse(BaseModel):
     error: str
     message: str
     details: list[str] = Field(default_factory=list)
+
+
+class FeedbackRequest(BaseModel):
+    feedback_type: str = Field(default="bug", pattern=r"^(bug|feature)$")
+    markdown_content: str = Field(default="", max_length=50000)
+    description: str = Field(min_length=1, max_length=1000)
+    contact: str = Field(default="", max_length=200)
+
+    @field_validator("description")
+    @classmethod
+    def description_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("description must not be blank")
+        return value
+
+
+class FeedbackResponse(BaseModel):
+    success: bool
+    id: str

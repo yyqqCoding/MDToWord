@@ -60,6 +60,25 @@ export function downloadDocx(blob: Blob, filename: string): void {
   URL.revokeObjectURL(url);
 }
 
+export interface FeedbackPayload {
+  feedback_type: 'bug' | 'feature';
+  markdown_content?: string;
+  description: string;
+  contact?: string;
+}
+
+export async function submitFeedback(serviceUrl: string, payload: FeedbackPayload): Promise<void> {
+  const response = await fetch(`${trimTrailingSlash(serviceUrl)}/feedback`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    throw new Error('反馈提交失败，请稍后重试');
+  }
+}
+
 function trimTrailingSlash(value: string): string {
   return value.trim().replace(/\/+$/, '');
 }
