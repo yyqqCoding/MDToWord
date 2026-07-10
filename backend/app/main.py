@@ -50,15 +50,6 @@ def convert(request: ConvertRequest) -> Response:
     return Response(content=docx_bytes, media_type=DOCX_MEDIA_TYPE, headers=headers)
 
 
-@app.get("/feedback/debug")
-def feedback_debug() -> dict:
-    return {
-        "supabase_url_set": bool(settings.supabase_url),
-        "supabase_key_set": bool(settings.supabase_key),
-        "supabase_url_prefix": settings.supabase_url[:30] if settings.supabase_url else "",
-    }
-
-
 @app.post("/feedback")
 async def feedback(request: FeedbackRequest) -> FeedbackResponse:
     feedback_id = str(uuid.uuid4())

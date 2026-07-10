@@ -19,6 +19,8 @@ import {
 import type { CSSProperties, DragEvent } from 'react';
 import { useEffect, useMemo, useState } from 'react';
 
+import confetti from 'canvas-confetti';
+
 import { checkHealth, convertToDocx, downloadDocx, submitFeedback } from './api';
 import { createDialog, createFolder, moveDialogBetweenFolders } from './folders';
 import { MarkdownPreview } from './preview';
@@ -70,11 +72,18 @@ function createExportFilename(folder: MarkdownFolder, selectionIds: string[]): s
 
 type OnboardingView = 'folder-list' | 'folder-detail';
 
+interface OnboardingExample {
+  input: string;
+  output: string;
+  outputType?: 'text' | 'table' | 'headings';
+}
+
 interface OnboardingStep {
   title: string;
   body: string;
   target?: string;
   view?: OnboardingView;
+  example?: OnboardingExample;
 }
 
 interface SpotlightRect {
@@ -86,12 +95,33 @@ interface SpotlightRect {
 
 const ONBOARDING_STEPS: OnboardingStep[] = [
   {
-    title: '欢迎使用 MD To Word',
-    body:
-      '直接复制网页端 AI 生成的内容，连同公式一起转换为可编辑的 Word 文档。',
+    title: '公式自动转换',
+    body: '复制 AI 对话中的公式，导出后自动转为 Word 可编辑公式，无需截图。',
+    example: {
+      input: '$$E = mc^2$$',
+      output: 'E = mc²  可编辑公式',
+    },
   },
   {
-    title: '第一步：新建文件夹',
+    title: '表格转三线表',
+    body: '复制 AI 生成的表格，导出时自动转为规范的三线表格式。',
+    example: {
+      input: '| 方法 | 准确率 |\n|------|--------|\n| CNN  | 95.2%  |',
+      output: '',
+      outputType: 'table',
+    },
+  },
+  {
+    title: '标题自动识别',
+    body: '带 # 的行自动转为对应级别标题。你也可以手动添加多个 # 来控制段落层级。',
+    example: {
+      input: '# 一级标题\n## 二级标题\n### 三级标题',
+      output: '',
+      outputType: 'headings',
+    },
+  },
+  {
+    title: '新建文件夹',
     body: '开始一个主题或章节前，先新建文件夹。每个文件夹里的对话互相隔离，后续导出也只会处理当前文件夹。',
     target: 'add-folder',
     view: 'folder-list',
@@ -527,31 +557,42 @@ export function App() {
     }
   }
 
-  async function handleFeedbackSubmit() {
+  function handleFeedbackSubmit() {
     if (feedbackTab === 'bug') {
       if (!feedbackMd.trim() || !feedbackDesc.trim()) return;
     } else {
       if (!feedbackFeature.trim()) return;
     }
-    setFeedbackSubmitting(true);
-    try {
-      await submitFeedback(SERVICE_URL, {
-        feedback_type: feedbackTab,
-        markdown_content: feedbackTab === 'bug' ? feedbackMd : '',
-        description: feedbackTab === 'bug' ? feedbackDesc : feedbackFeature,
-        contact: feedbackContact,
-      });
-      setFeedbackOpen(false);
-      setFeedbackMd('');
-      setFeedbackDesc('');
-      setFeedbackFeature('');
-      setFeedbackContact('');
-      setMessage('反馈已提交，感谢！');
-    } catch {
+
+    const payload = {
+      feedback_type: feedbackTab,
+      markdown_content: feedbackTab === 'bug' ? feedbackMd : '',
+      description: feedbackTab === 'bug' ? feedbackDesc : feedbackFeature,
+      contact: feedbackContact,
+    };
+
+    setFeedbackOpen(false);
+    setFeedbackMd('');
+    setFeedbackDesc('');
+    setFeedbackFeature('');
+    setFeedbackContact('');
+    confetti({ particleCount: 80, spread: 70, origin: { y: 0.6 } });
+    setTimeout(() => confetti({ particleCount: 50, spread: 100, origin: { y: 0.5 } }), 200);
+
+    (async () => {
+      const maxRetries = 3;
+      for (let attempt = 0; attempt < maxRetries; attempt++) {
+        try {
+          await submitFeedback(SERVICE_URL, payload);
+          return;
+        } catch {
+          if (attempt < maxRetries - 1) {
+            await new Promise((r) => setTimeout(r, 1000 * 2 ** attempt));
+          }
+        }
+      }
       setMessage('反馈提交失败，请稍后重试');
-    } finally {
-      setFeedbackSubmitting(false);
-    }
+    })();
   }
 
   function renderFeedbackModal() {
@@ -630,8 +671,8 @@ export function App() {
             <button type="button" className="secondary" onClick={() => setFeedbackOpen(false)}>
               取消
             </button>
-            <button type="button" disabled={!canSubmit || feedbackSubmitting} onClick={() => void handleFeedbackSubmit()}>
-              {feedbackSubmitting ? '提交中...' : '提交'}
+            <button type="button" disabled={!canSubmit} onClick={handleFeedbackSubmit}>
+              提交
             </button>
           </div>
         </section>
@@ -662,6 +703,32 @@ export function App() {
             {onboardingStepIndex + 1} / {ONBOARDING_STEPS.length}
           </div>
           <h2 id="onboarding-title">{onboardingStep.title}</h2>
+          {onboardingStep.example && (
+            <div className="onboarding-example">
+              <div className="onboarding-example-input">
+                <span className="onboarding-example-label">复制内容</span>
+                <code>{onboardingStep.example.input}</code>
+              </div>
+              <div className="onboarding-example-arrow">↓</div>
+              <div className="onboarding-example-output">
+                <span className="onboarding-example-label">Word 效果</span>
+                {onboardingStep.example.outputType === 'table' ? (
+                  <table className="onboarding-mini-table">
+                    <thead><tr><th>方法</th><th>准确率</th></tr></thead>
+                    <tbody><tr><td>CNN</td><td>95.2%</td></tr></tbody>
+                  </table>
+                ) : onboardingStep.example.outputType === 'headings' ? (
+                  <div className="onboarding-headings-demo">
+                    <div className="demo-h1">一级标题</div>
+                    <div className="demo-h2">二级标题</div>
+                    <div className="demo-h3">三级标题</div>
+                  </div>
+                ) : (
+                  <span>{onboardingStep.example.output}</span>
+                )}
+              </div>
+            </div>
+          )}
           <p>{onboardingStep.body}</p>
           <div className="onboarding-actions">
             <button type="button" className="secondary" onClick={() => void completeOnboarding()}>
