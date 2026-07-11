@@ -95,30 +95,9 @@ interface SpotlightRect {
 
 const ONBOARDING_STEPS: OnboardingStep[] = [
   {
-    title: '公式自动转换',
-    body: '复制 AI 对话中的公式，导出后自动转为 Word 可编辑公式，无需截图。',
-    example: {
-      input: '$$E = mc^2$$',
-      output: 'E = mc²  可编辑公式',
-    },
-  },
-  {
-    title: '表格转三线表',
-    body: '复制 AI 生成的表格，导出时自动转为规范的三线表格式。',
-    example: {
-      input: '| 方法 | 准确率 |\n|------|--------|\n| CNN  | 95.2%  |',
-      output: '',
-      outputType: 'table',
-    },
-  },
-  {
-    title: '标题自动识别',
-    body: '带 # 的行自动转为对应级别标题。你也可以手动添加多个 # 来控制段落层级。',
-    example: {
-      input: '# 一级标题\n## 二级标题\n### 三级标题',
-      output: '',
-      outputType: 'headings',
-    },
+    title: '问题反馈 & AI 自动修复',
+    body: '遇到转换问题？点击这里提交反馈，我们已接入 AI Agent，会自动分析并修复后端转换问题，无需等待人工处理。',
+    target: 'feedback-button',
   },
   {
     title: '新建文件夹',
@@ -694,11 +673,17 @@ export function App() {
         } satisfies CSSProperties)
       : undefined;
 
+    const cardPositionStyle: CSSProperties | undefined = spotlightRect
+      ? spotlightRect.top < window.innerHeight / 2
+        ? { top: spotlightRect.top + spotlightRect.height + 24, left: '50%', transform: 'translateX(-50%)' }
+        : { bottom: window.innerHeight - spotlightRect.top + 24, left: '50%', transform: 'translateX(-50%)' }
+      : undefined;
+
     return (
       <div className="onboarding-layer" role="dialog" aria-modal="true" aria-labelledby="onboarding-title">
         <div className={`onboarding-backdrop ${spotlightStyle ? 'spotlight-mode' : ''}`} />
         {spotlightStyle ? <div className="onboarding-spotlight" style={spotlightStyle} /> : null}
-        <section className={`onboarding-card ${spotlightStyle ? 'anchored' : 'intro'}`}>
+        <section className={`onboarding-card ${spotlightStyle ? 'anchored' : 'intro'}`} style={cardPositionStyle}>
           <div className="onboarding-step-count">
             {onboardingStepIndex + 1} / {ONBOARDING_STEPS.length}
           </div>
@@ -1070,7 +1055,7 @@ export function App() {
               <button type="button" className="guide-button" onClick={startOnboarding}>
                 使用指南
               </button>
-              <button type="button" className="guide-button feedback-button" onClick={() => setFeedbackOpen(true)}>
+              <button type="button" className="guide-button feedback-button" data-onboarding-target="feedback-button" onClick={() => setFeedbackOpen(true)}>
                 <MessageSquare size={12} />
                 问题反馈
               </button>
