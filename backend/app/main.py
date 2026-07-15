@@ -33,7 +33,6 @@ app.add_middleware(
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    """完整健康检查，供浏览器和普通 GET 请求调用。"""
     return {
         "status": "ok",
         "engine": "pandoc",
@@ -42,7 +41,7 @@ def health() -> dict[str, str]:
 
 @app.head("/health", include_in_schema=False)
 def health_head() -> Response:
-    """轻量健康检查，兼容 UptimeRobot 的 HEAD 请求。"""
+    """兼容 UptimeRobot 默认发送的 HEAD 健康检查。"""
     return Response(status_code=200)
 
 
@@ -79,9 +78,7 @@ def convert(request: ConvertRequest) -> Response:
 
 
 @app.post("/feedback")
-async def feedback(
-    request: FeedbackRequest,
-) -> FeedbackResponse | JSONResponse:
+async def feedback(request: FeedbackRequest) -> FeedbackResponse:
     feedback_id = str(uuid.uuid4())
 
     payload = {
@@ -98,9 +95,7 @@ async def feedback(
                 f"{settings.supabase_url}/rest/v1/feedback",
                 headers={
                     "apikey": settings.supabase_key,
-                    "Authorization": (
-                        f"Bearer {settings.supabase_key}"
-                    ),
+                    "Authorization": f"Bearer {settings.supabase_key}",
                     "Content-Type": "application/json",
                     "Prefer": "return=minimal",
                 },
@@ -120,8 +115,7 @@ async def feedback(
                         "success": False,
                         "id": None,
                         "message": (
-                            f"supabase {resp.status_code}: "
-                            f"{detail}"
+                            f"supabase {resp.status_code}: {detail}"
                         ),
                     },
                 )
