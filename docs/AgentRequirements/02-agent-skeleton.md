@@ -90,19 +90,32 @@ def build_fingerprint(feedback_type: str, markdown: str, description: str) -> st
 
 ## 验收清单
 
-- [ ] `python -m agent.cli --help` 正常;缺 `--feedback-id` 时报错信息明确;
-- [ ] Agent 单元测试通过 —— `python -m pytest agent/tests -q`,exit 0;
+- [x] `python -m agent.cli --help` 正常;缺 `--feedback-id` 时报错信息明确;
+- [x] Agent 单元测试通过 —— `python -m pytest agent/tests -q`,exit 0;
 - [ ] `fetch` 能读取阶段 01 的测试反馈并原子领取(二次领取失败);
 - [ ] 能创建 `agent_run` 记录;
-- [ ] `task.json` 中不存在 `contact` 字段 —— `python -c "import json;d=json.load(open('task.json'));assert 'contact' not in d"`;
-- [ ] 401 / 429 / 500 分别映射为不同错误码(单测覆盖);
-- [ ] 相同输入指纹稳定,CRLF 与 LF 归一后指纹一致(单测覆盖);
-- [ ] dry-run 路径不要求 GitHub 写权限。
+- [x] `task.json` 中不存在 `contact` 字段 —— `python -c "import json;d=json.load(open('task.json'));assert 'contact' not in d"`(单测 + 结构上 TaskArtifact 无该字段);
+- [x] 401 / 429 / 500 分别映射为不同错误码(单测覆盖);
+- [x] 相同输入指纹稳定,CRLF 与 LF 归一后指纹一致(单测覆盖);
+- [x] dry-run 路径不要求 GitHub 写权限(fetch 仅依赖 Supabase 凭据)。
 
 ## 状态
 
-未开始
+进行中(代码与单测完成,待用真实 Supabase 验证 fetch 领取)
 
 ## 验收记录
 
-(完成后填写)
+- 日期:2026-07-26;分支:`feat/feedback-repair-agent`
+- Agent 单测:**31 passed**(`python -m pytest agent/tests -q`,exit 0)
+- 交付物齐备:`config / domain / state_machine / exceptions /
+  feedback_repository / logging_utils / cli / requirements.txt / tests`
+- 与 spec 的实现说明:
+  - `fetch` 完整实现(读取→指纹去重→RPC 领取→建 run→脱敏 task);
+    `classify/repair/validate/finalize` 留桩至对应阶段;
+  - TaskArtifact 额外携带 `agent_run_id`,供阶段 08 Job E 回写(结构上无 `contact`);
+  - CLI 退出码约定:0 成功 / 1 错误 / 2 参数错误 / 20 重复反馈 / 21 领取失败;
+  - 错误码映射:401/403→`supabase_unauthorized`(不重试)、429→`supabase_rate_limited`、
+    5xx→`supabase_server_error`(各有限重试 3 次)
+- 待真实环境验证命令(需 `SUPABASE_URL` + Service Role Key 映射的 `SUPABASE_KEY`):
+  `python -m agent.cli fetch --feedback-id <阶段01测试id> --output task.json`
+  (二次执行应 exit 21;Supabase 中应出现 agent_runs 记录)

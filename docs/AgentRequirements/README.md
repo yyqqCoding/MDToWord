@@ -23,7 +23,7 @@
 | 阶段 | 内容 | 可用增量 | 状态 | 验收日期 | PR |
 |---|---|---|---|---|---|
 | [01](01-foundation.md) | 基线验证 + Supabase 迁移 | 任务可领取、可追踪 | 已验收 | 2026-07-26 | — |
-| [02](02-agent-skeleton.md) | Agent Python 骨架 + Repository | CLI 可读取反馈 | 未开始 | — | — |
+| [02](02-agent-skeleton.md) | Agent Python 骨架 + Repository | CLI 可读取反馈 | 进行中 | — | — |
 | [03](03-model-provider.md) | Model Provider 抽象 | 可切换模型 API | 未开始 | — | — |
 | [04](04-classification-dryrun.md) | 分类 Dry Run | **第 1 个可用版本:反馈分诊** | 未开始 | — | — |
 | [05](05-patch-safety.md) | Workspace + 补丁安全策略 | 补丁可安全应用 | 未开始 | — | — |
