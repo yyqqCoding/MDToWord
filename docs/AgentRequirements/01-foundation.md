@@ -138,20 +138,29 @@ values (gen_random_uuid(), 'bug',
 
 ## 验收清单
 
-- [ ] 后端全量测试通过 —— `cd backend; .venv\Scripts\python.exe -m pytest -q`,预期 exit 0,记录用例数;
-- [ ] 最小转换脚本输出 DOCX,文件头 `PK`,Word 能打开;
+- [x] 后端全量测试通过 —— `cd backend; .venv\Scripts\python.exe -m pytest -q`,预期 exit 0,记录用例数;
+- [x] 最小转换脚本输出 DOCX,文件头 `PK`,Word 能打开;
 - [ ] `feedback` 新字段存在 —— Supabase 控制台或 `select column_name from information_schema.columns where table_name='feedback';`;
 - [ ] `agent_runs` 表存在;
 - [ ] `claim_feedback` 首次调用返回记录,同一反馈第二次调用返回空;
 - [ ] 手工把测试记录改回 `claimed` 且 `claimed_at` 设为 3 小时前,再次调用可领取(超时回收生效);
 - [ ] `attempt_count` 达到 `p_max_attempts` 后调用返回空;
 - [ ] 匿名角色调用 RPC 被拒绝;
-- [ ] 基线 commit SHA 与测试数量已记录到下方"验收记录"。
+- [x] 基线 commit SHA 与测试数量已记录到下方"验收记录"。
 
 ## 状态
 
-未开始
+进行中(本地基线完成,待在 Supabase 控制台执行迁移并验证 RPC)
 
 ## 验收记录
 
-(完成后填写:日期 / 基线 commit / 测试数量 / 执行人)
+- 日期:2026-07-26;执行:本地(Windows,uv + CPython 3.12.10)
+- 基线 commit:`27f7978`(main);开发分支:`feat/feedback-repair-agent`
+- 后端全量测试:**42 passed**(pytest -q,exit 0)
+- 基线修正:原 `.venv` 为 Linux 结构不可用,已重建;
+  `test_pandoc_runner.py` 中两个测试依赖仓库外未跟踪文件 `logs/runlog.txt`
+  (已被无关日志覆盖导致失败),改为使用新增 fixture
+  `backend/tests/fixtures/sample_three_line_table.md`
+- 最小转换:PK 头 / `w:tbl` / `m:oMath` 节点均通过(10938 bytes)
+- 迁移文件已创建:`supabase/migrations/20260710_feedback_repair_agent.sql`
+  (待在 Supabase SQL Editor 执行)

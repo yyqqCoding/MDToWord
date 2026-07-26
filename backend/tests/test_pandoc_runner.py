@@ -31,7 +31,7 @@ def test_convert_markdown_to_docx_creates_word_document(tmp_path):
 
 
 def test_convert_markdown_table_uses_three_line_table_borders(tmp_path):
-    markdown = (Path(__file__).parents[2] / "logs" / "runlog.txt").read_text(encoding="utf-8")
+    markdown = (FIXTURES / "sample_three_line_table.md").read_text(encoding="utf-8")
 
     docx_bytes = convert_markdown_to_docx(markdown, tmp_path)
     docx_path = tmp_path / "three_line_table.docx"
@@ -118,7 +118,7 @@ def test_warn_on_unparsed_tables_logs_warning(tmp_path, caplog):
 def test_no_warning_for_properly_parsed_table(tmp_path, caplog):
     from app.pandoc_runner import _warn_on_unparsed_tables
 
-    markdown = (Path(__file__).parents[2] / "logs" / "runlog.txt").read_text(encoding="utf-8")
+    markdown = (FIXTURES / "sample_three_line_table.md").read_text(encoding="utf-8")
     docx_bytes = convert_markdown_to_docx(markdown, tmp_path)
     docx_path = tmp_path / "ok_table.docx"
     docx_path.write_bytes(docx_bytes)
