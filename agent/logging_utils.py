@@ -14,8 +14,10 @@ import sys
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
+# `token(?!s)`:拦截 claim_token / github_token 等凭据,
+# 放行 input_tokens / output_tokens 等用量计数(阶段 09 指标需要)
 SENSITIVE_KEY_PATTERN = re.compile(
-    r"(contact|api[_-]?key|apikey|authorization|token|secret|password|credential)",
+    r"(contact|api[_-]?key|apikey|authorization|token(?!s)|secret|password|credential)",
     re.IGNORECASE,
 )
 
