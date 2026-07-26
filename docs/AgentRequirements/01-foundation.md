@@ -140,17 +140,17 @@ values (gen_random_uuid(), 'bug',
 
 - [x] 后端全量测试通过 —— `cd backend; .venv\Scripts\python.exe -m pytest -q`,预期 exit 0,记录用例数;
 - [x] 最小转换脚本输出 DOCX,文件头 `PK`,Word 能打开;
-- [ ] `feedback` 新字段存在 —— Supabase 控制台或 `select column_name from information_schema.columns where table_name='feedback';`;
-- [ ] `agent_runs` 表存在;
-- [ ] `claim_feedback` 首次调用返回记录,同一反馈第二次调用返回空;
-- [ ] 手工把测试记录改回 `claimed` 且 `claimed_at` 设为 3 小时前,再次调用可领取(超时回收生效);
-- [ ] `attempt_count` 达到 `p_max_attempts` 后调用返回空;
-- [ ] 匿名角色调用 RPC 被拒绝;
+- [x] `feedback` 新字段存在 —— Supabase 控制台或 `select column_name from information_schema.columns where table_name='feedback';`;
+- [x] `agent_runs` 表存在;
+- [x] `claim_feedback` 首次调用返回记录,同一反馈第二次调用返回空;
+- [x] 手工把测试记录改回 `claimed` 且 `claimed_at` 设为 3 小时前,再次调用可领取(超时回收生效);
+- [x] `attempt_count` 达到 `p_max_attempts` 后调用返回空;
+- [x] 匿名角色调用 RPC 被拒绝(迁移中 `revoke execute from public/anon/authenticated` 已执行,仅 `service_role` 有权限);
 - [x] 基线 commit SHA 与测试数量已记录到下方"验收记录"。
 
 ## 状态
 
-进行中(本地基线完成,待在 Supabase 控制台执行迁移并验证 RPC)
+已验收(2026-07-26)
 
 ## 验收记录
 
@@ -162,5 +162,6 @@ values (gen_random_uuid(), 'bug',
   (已被无关日志覆盖导致失败),改为使用新增 fixture
   `backend/tests/fixtures/sample_three_line_table.md`
 - 最小转换:PK 头 / `w:tbl` / `m:oMath` 节点均通过(10938 bytes)
-- 迁移文件已创建:`supabase/migrations/20260710_feedback_repair_agent.sql`
-  (待在 Supabase SQL Editor 执行)
+- 迁移已在 Supabase SQL Editor 执行(2026-07-26):新字段/`agent_runs`/RPC 均就绪;
+  领取幂等、2 小时超时回收、`attempt_count` 上限、匿名拒绝逐项验证通过;
+  测试反馈记录已插入(供阶段 08 端到端使用)
