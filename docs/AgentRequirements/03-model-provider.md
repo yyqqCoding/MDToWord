@@ -81,14 +81,14 @@ MODEL_TEMPERATURE=0                MODEL_MAX_REPAIR_ROUNDS=2
       正常 JSON / 带围栏 / 多余前后文本 / 非法 JSON / 缺字段 / 枚举非法 /
       超时 / 429 / 401 / 500(Mock HTTP,不花真钱);
 - [x] `FakeModelProvider` 可返回固定分类(供集成测试);
-- [ ] 至少一次真实 API 调用成功(手动触发,记录 provider/model/token);
+- [x] 至少一次真实 API 调用成功(手动触发,记录 provider/model/token);
 - [x] 非法 JSON 重试一次后仍失败 → `INVALID_RESPONSE`;
 - [x] 日志中无 API Key —— 契约测试断言日志输出不含 Key 子串;
-- [ ] 换一个 `MODEL_BASE_URL`/`MODEL_NAME`(如 DeepSeek → Qwen)零代码改动可跑通。
+- [x] 换一个 `MODEL_BASE_URL`/`MODEL_NAME`(如 DeepSeek → Qwen)零代码改动可跑通。
 
 ## 状态
 
-进行中(代码与契约测试完成,待真实 API 调用验证)
+已验收(2026-07-26)
 
 ## 验收记录
 
@@ -108,5 +108,8 @@ MODEL_TEMPERATURE=0                MODEL_MAX_REPAIR_ROUNDS=2
   - Key 只进 Authorization Header,契约测试断言异常消息与 stderr 日志均无 Key;
   - 新增 `python -m agent.cli check-model` 冒烟命令(真实调用验证用,
     输出 provider/model/token 用量)
-- 待验证(需真实模型 Key):`check-model` 成功一次并记录 token;
-  换 `MODEL_BASE_URL/MODEL_NAME` 再跑一次证明零代码切换
+- 真实调用验证(2026-07-26):`check-model` 成功,
+  `deepseek-ai/deepseek-v4-flash`(112/63 tokens)→ 仅改 `MODEL_NAME` 切至
+  `deepseek-ai/deepseek-v4-pro`(112/15 tokens),零代码改动;
+  日志含 provider/model/token 用量、无 Key
+  (期间修复:日志过滤器误杀 `*_tokens` 用量计数,改为 `token(?!s)`)
