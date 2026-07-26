@@ -220,4 +220,5 @@ __marimo__/
 /AGENT.md
 
 # Project docs (local only)
-docs/
+docs/*
+!docs/AgentRequirements/
