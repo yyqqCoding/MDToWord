@@ -96,6 +96,32 @@ def _cmd_not_implemented(stage: str):
     return handler
 
 
+def _cmd_check_model(args: argparse.Namespace) -> int:
+    """真实调用一次模型验证配置(阶段 03 验收 / 阶段 10 排查用)。"""
+    from pydantic import BaseModel
+
+    from agent.providers import factory
+
+    class Ping(BaseModel):
+        ok: bool
+        echo: str
+
+    config = AgentConfig.from_env()
+    provider = factory.create(config)
+    result, usage = provider.generate_structured(
+        system_prompt="你是连通性自检工具。",
+        user_payload={"instruction": "返回 ok=true,echo 原样返回下方 text",
+                      "text": "md-to-word-agent"},
+        response_model=Ping,
+    )
+    get_logger("agent.check_model").info("模型连通性验证成功", context={
+        "provider": config.model_provider, "model": config.model_name,
+        "ok": result.ok, "echo": result.echo,
+        "input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens,
+    })
+    return EXIT_OK
+
+
 def _cmd_run(args: argparse.Namespace) -> int:
     config = AgentConfig.from_env(dry_run=args.dry_run).require(
         "supabase_url", "supabase_key")
@@ -139,6 +165,9 @@ def build_parser() -> argparse.ArgumentParser:
     finalize = sub.add_parser("finalize", help="回写状态(阶段 08)")
     finalize.add_argument("--result-file", required=True)
     finalize.set_defaults(handler=_cmd_not_implemented("08"))
+
+    check_model = sub.add_parser("check-model", help="真实调用一次模型验证配置")
+    check_model.set_defaults(handler=_cmd_check_model)
 
     run = sub.add_parser("run", help="本地一键执行(当前仅 fetch)")
     run.add_argument("--feedback-id", type=UUID, required=True)

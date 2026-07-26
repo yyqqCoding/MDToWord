@@ -1,4 +1,5 @@
-"""测试替身:内存版 FeedbackRepository,领取语义与阶段 01 RPC 对齐。"""
+"""测试替身:内存版 FeedbackRepository(领取语义与阶段 01 RPC 对齐)
+与 FakeModelProvider(预制结构化响应,供集成测试与阶段 10 演练)。"""
 
 from __future__ import annotations
 
@@ -6,7 +7,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
+from pydantic import BaseModel
+
 from agent.domain import Feedback
+from agent.providers.base import ModelUsage
 
 CLAIM_STALE_AFTER = timedelta(hours=2)
 CLAIMABLE_STATUSES = {"pending", "approved", "failed"}
@@ -77,3 +81,32 @@ class FakeFeedbackRepository:
                                           "validated_but_unpublished")):
                 return Feedback.model_validate(row)
         return None
+
+
+class FakeModelProvider:
+    """按顺序返回预制响应的 ModelProvider。
+
+    响应可以是 response_model 实例或 dict(dict 会经 Pydantic 校验,
+    与真实 Provider 行为一致)。记录每次调用供断言。
+    """
+
+    def __init__(self, responses: list[BaseModel | dict] | None = None) -> None:
+        self.responses = list(responses or [])
+        self.calls: list[dict[str, Any]] = []
+
+    def generate_structured(self, *, system_prompt: str, user_payload: dict,
+                            response_model: type[BaseModel]):
+        self.calls.append({
+            "system_prompt": system_prompt,
+            "user_payload": user_payload,
+            "response_model": response_model.__name__,
+        })
+        if not self.responses:
+            raise AssertionError("FakeModelProvider 没有更多预制响应")
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        if isinstance(response, dict):
+            response = response_model.model_validate(response)
+        assert isinstance(response, response_model)
+        return response, ModelUsage(input_tokens=100, output_tokens=50)

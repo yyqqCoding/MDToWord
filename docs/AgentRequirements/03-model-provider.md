@@ -77,19 +77,36 @@ MODEL_TEMPERATURE=0                MODEL_MAX_REPAIR_ROUNDS=2
 
 ## 验收清单
 
-- [ ] 契约测试通过 —— `python -m pytest agent/tests/test_providers.py -q`,覆盖:
+- [x] 契约测试通过 —— `python -m pytest agent/tests/test_providers.py -q`,覆盖:
       正常 JSON / 带围栏 / 多余前后文本 / 非法 JSON / 缺字段 / 枚举非法 /
       超时 / 429 / 401 / 500(Mock HTTP,不花真钱);
-- [ ] `FakeModelProvider` 可返回固定分类(供集成测试);
+- [x] `FakeModelProvider` 可返回固定分类(供集成测试);
 - [ ] 至少一次真实 API 调用成功(手动触发,记录 provider/model/token);
-- [ ] 非法 JSON 重试一次后仍失败 → `INVALID_RESPONSE`;
-- [ ] 日志中无 API Key —— 契约测试断言日志输出不含 Key 子串;
+- [x] 非法 JSON 重试一次后仍失败 → `INVALID_RESPONSE`;
+- [x] 日志中无 API Key —— 契约测试断言日志输出不含 Key 子串;
 - [ ] 换一个 `MODEL_BASE_URL`/`MODEL_NAME`(如 DeepSeek → Qwen)零代码改动可跑通。
 
 ## 状态
 
-未开始
+进行中(代码与契约测试完成,待真实 API 调用验证)
 
 ## 验收记录
 
-(完成后填写)
+- 日期:2026-07-26;分支:`feat/feedback-repair-agent`
+- Agent 全部单测 **52 passed**(其中 Provider 契约测试 21 个)
+- 交付物:`providers/base.py`(ModelUsage / ModelErrorCode / ModelError /
+  ModelProvider Protocol)、`openai_compatible_provider.py`、`factory.py`、
+  `tests/test_providers.py`、`fakes.FakeModelProvider`
+- 实现说明:
+  - 结构化策略两种均实现:`prompt_json`(默认,Schema 注入系统提示 +
+    剥围栏/前后杂文 + Pydantic 严格校验 + 失败附错误摘要重试一次)、
+    `native_schema`(response_format json_schema);
+  - 错误标准化:401/403→AUTH_ERROR(不重试)、429→RATE_LIMIT、
+    5xx→PROVIDER_UNAVAILABLE(各重试 3 次)、超时→TIMEOUT、
+    400 含上下文超限标记→CONTEXT_TOO_LARGE(不重试)、
+    空内容→SAFETY_REFUSAL;error_code 形如 `model_rate_limit`;
+  - Key 只进 Authorization Header,契约测试断言异常消息与 stderr 日志均无 Key;
+  - 新增 `python -m agent.cli check-model` 冒烟命令(真实调用验证用,
+    输出 provider/model/token 用量)
+- 待验证(需真实模型 Key):`check-model` 成功一次并记录 token;
+  换 `MODEL_BASE_URL/MODEL_NAME` 再跑一次证明零代码切换
