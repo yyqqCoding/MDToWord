@@ -15,7 +15,7 @@ export function MarkdownPreview({ value }: { value: string }) {
   return <article className="preview" aria-label="Preview" dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
-function renderMarkdownWithMath(value: string): string {
+export function renderMarkdownWithMath(value: string): string {
   const protectedMath: string[] = [];
   const protectedValue = normalizeMarkdown(value)
     .replace(/\\\[([\s\S]+?)\\\]/g, (_match, formula: string) => {
