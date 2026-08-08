@@ -1,0 +1,197 @@
+# 可观测性与评估
+
+## 1. 目标与边界
+
+一次反馈处理必须能回答：执行了哪些节点和工具、调用了哪个模型、使用多少Token和
+成本、每轮为何继续或停止、沙箱执行了什么、最终为何创建或未创建PR。
+
+Langfuse负责Agent和LLM语义观测；数据库保存权威状态与用量汇总；结构化日志负责
+服务故障。Langfuse不可用不能改变业务结果。
+
+## 2. 标识设计
+
+| 标识 | 含义 |
+|---|---|
+| `feedback_id` | Supabase业务记录，不作为用户身份 |
+| `session_id` | 同一反馈的所有Agent尝试，值为反馈ID的稳定哈希 |
+| `agent_run_id` | 一次独立尝试，同时作为LangGraph `thread_id` |
+| `trace_id` | 一次从claim到终态的端到端Trace |
+| `observation_id` | 单个节点、模型或工具调用 |
+| `job_id` | 一次Sandbox Job，对应工具Span |
+| `operation_id` | 外部副作用的幂等键 |
+
+Controller创建 `agent_run_id` 后生成确定性Langfuse Trace ID，并在Controller、
+Sandbox Client、Worker结果和Publisher日志中传播。任务容器没有Telemetry凭证；
+外层Worker返回 `job_id`、时间和结果，Controller记录对应子Span。
+
+## 3. Trace结构
+
+每次运行一个Trace：
+
+```text
+feedback-repair-run                  root/agent
+  claim-feedback                     span
+  gate-feedback                      agent
+    classify-intent                  generation
+  prepare-source                     span
+  reproduce                          agent
+    plan-reproduction                generation
+    search-source/read-source        tool
+    generate-test                    generation
+    run-reproduction                 tool
+  repair                             agent
+    generate-fix                     generation
+    run-target-validation            tool
+  validate-final                     span
+    reproduce-baseline               tool
+    run-target-tests                 tool
+    run-full-tests                   tool
+    validate-docx                    tool
+  publish-pr                         tool
+  finalize                           span
+```
+
+观察名称保持稳定，轮次、模型和动态ID写入metadata，不写进名称。
+
+## 4. LangGraph与Langfuse集成
+
+LangGraph调用统一挂载Langfuse Callback，以捕获标准Graph、LLM和工具事件。当前
+`ModelProvider`、Sandbox Client和GitHub Publisher等自定义边界需要显式创建
+`generation`、`tool`或`span`，不能假设Callback自动捕获。
+
+同一次调用只能由一个入口记录，避免Callback和手工埋点产生重复Span或重复Token。
+Telemetry适配器对领域层只暴露：
+
+```text
+start_run / start_span / start_generation / start_tool
+record_usage / record_score / end_observation / flush
+```
+
+具体Langfuse SDK类型不进入Graph State和领域Schema。
+
+## 5. Generation字段
+
+每次模型调用记录：
+
+```text
+provider, model, provider_request_id
+operation: gate | plan_reproduction | generate_test | generate_fix
+prompt_version, graph_version, policy_version
+round, latency_ms, status, retry_count
+input_tokens, output_tokens, cached_input_tokens?, reasoning_tokens?, total_tokens
+input_cost, output_cost, total_cost
+```
+
+Token优先采用Provider响应的真实usage。Provider适配器将包含缓存或推理Token的计数
+归一化成互不重叠的bucket，避免重复计费。Provider不返回usage时才允许Langfuse
+按已配置模型估算，并在metadata标记 `usage_source=inferred`。
+
+Controller同步累计每次调用，写入 `agent_runs`。预算判定使用Controller累计值，不
+查询Langfuse实时结果。
+
+## 6. Tool字段
+
+每次工具调用记录：
+
+```text
+tool_name, node, round, call_id
+authorized, denial_reason?
+input_summary, output_summary
+duration_ms, status, error_code
+job_id?, exit_code?, timed_out?
+```
+
+`input_summary`只保留路径、选择器、大小和哈希；不记录完整源码、patch或用户原文。
+Sandbox工具补充CPU/内存限制和容器镜像digest，不上传完整stdout/stderr。
+
+## 7. Trace metadata与结果
+
+Root observation至少包含：
+
+```text
+run_id, feedback_hash, category, route
+base_sha, extension_version
+provider, model
+graph_version, policy_version, sandbox_image_digest
+reproduction_rounds, repair_rounds
+changed_files, validated_patch_sha256
+final_status, error_code, pr_url
+```
+
+PR正文包含Trace URL，便于维护者从代码审查跳转到执行证据。Trace不包含完整反馈，
+因此不能替代受控Artifact中的复现输入。
+
+## 8. 数据最小化与脱敏
+
+默认 `TRACE_CONTENT=false`。发送Langfuse前执行统一Masking：
+
+- 永不发送`contact`；
+- 用户Markdown替换为哈希、字节数和分类摘要；
+- 源码和patch替换为路径、增删行数和SHA-256；
+- 模型输入输出只保留结构化结果摘要；
+- stdout/stderr只保留脱敏、截断后的错误摘要；
+- 删除Authorization、Cookie、API Key、邮箱、电话和已知Secret模式；
+- development、staging、production使用不同environment标签。
+
+如需临时调试完整内容，必须由维护者显式启用，限定单次run，并在完成后恢复默认；
+该能力不得由模型或反馈内容触发。
+
+## 9. 结构化日志
+
+Controller和Worker使用JSON日志，每条包含：
+
+```text
+timestamp, level, service, run_id, trace_id,
+node/tool/job_id, status, duration_ms, error_code
+```
+
+禁止日志：完整Markdown、联系方式、完整prompt、完整patch、环境变量和密钥。异常只
+记录类型与脱敏摘要。运行日志与Langfuse通过 `trace_id` 关联。
+
+## 10. 运行指标
+
+MVP从数据库和Langfuse统计：
+
+- Gate分类分布与疑似注入数量；
+- 首轮/两轮复现成功率；
+- `cannot_reproduce`比例；
+- 一轮/两轮修复成功率；
+- Patch Policy拒绝率；
+- PR创建率与人工接受率；
+- 每阶段耗时；
+- 每次运行及每个成功PR的Token和成本；
+- Provider错误、Sandbox超时和GitHub发布失败数量。
+
+不要求MVP部署Prometheus/Grafana。Controller提供基础health/readiness；主机与容器
+监控可在真实运行量证明需要后增加。
+
+## 11. 离线评估
+
+维护10至20条脱敏或构造用例：表格、公式、标题、崩溃、前端、功能建议、无关内容、
+信息不足和Prompt Injection。每条定义期望路由、分类、是否允许工具、Oracle类型和
+可选修改路径。
+
+评估至少报告：
+
+```text
+gate accuracy
+automatable precision
+schema compliance
+injection quarantine recall / false-positive rate
+reproduction success
+patch policy pass rate
+validated repair rate
+average token/cost/latency
+```
+
+更换模型、Prompt、Policy、Graph或沙箱镜像前运行同一评估集，并将版本与结果作为
+发布证据。模型自评不能替代这些确定性结果。
+
+## 12. 故障与保留
+
+- Telemetry采用异步发送；Langfuse失败只记warning，不回滚业务状态；
+- 长期Controller定期flush，进程优雅退出时显式flush；
+- Trace与Artifact默认保留14天，数据库保留脱敏汇总；
+- Langfuse Cloud或自托管通过配置选择，领域代码不分支；
+- 无论Trace是否完整，最终Token、成本、状态、patch hash和PR URL必须写入数据库；
+- 定期抽样对账Provider usage、数据库汇总和Langfuse totals。
