@@ -35,6 +35,22 @@ GitHub 创建 Pull Request，由维护者人工审核和合并。
 `security-and-sandbox.md` 定义；状态转换只在 `architecture.md` 定义；工具请求与
 结果 Schema 只在 `tool-contracts.md` 定义。其他文档通过引用使用，不复制规则。
 
+## 当前实现状态
+
+截至 2026-08-10：
+
+- 阶段 A、B1 和 B2 已完成；
+- 阶段 B3 的真实模型分类、Prompt Injection 隔离、Langfuse Trace、Token 统计和默认
+  脱敏已通过手工验收；
+- 维护者暂不配置模型单价，因此 `agent_runs.estimated_cost` 当前保持 `0`，阶段 B 的
+  数据库成本持久化验收延后；
+- 阶段 C 至 G 尚未开始，当前 CLI 只运行 Feedback Gate，不读取源码、不启动沙箱、
+  不修改代码，也不创建 PR。
+
+可直接执行的配置和命令见 [agent/README.md](../../agent/README.md)。阶段划分、历史检查点
+和验收证据以 [implementation-plan.md](implementation-plan.md) 为准；本文档中的目标
+架构不表示对应组件已经实现。
+
 ## 目标链路
 
 ```text

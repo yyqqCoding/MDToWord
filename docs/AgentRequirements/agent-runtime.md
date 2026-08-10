@@ -54,7 +54,20 @@ START
   -> END
 ```
 
-### 3.1 确定性节点
+### 3.1 当前实现边界
+
+截至阶段 B3，实际 Graph 只实现 Gate 链路：
+
+```text
+start_gate -> classify_gate -> route_feedback -> END
+```
+
+CLI 强制要求 `--dry-run`，Fake Provider 是默认值；只有显式传入
+`--provider configured` 才调用真实 OpenAI 兼容接口。当前链路不创建源码 workspace、
+不调用工具或沙箱、不修改仓库，也不发布 PR。本文后续的复现、修复、验证和发布节点是
+阶段 C 至 F 的目标契约。
+
+### 3.2 确定性节点
 
 以下节点不允许模型决定副作用：
 
@@ -68,7 +81,7 @@ START
 
 它们只接受已验证的领域对象，并由应用服务执行数据库、GitHub、Artifact 和状态操作。
 
-### 3.2 LLM 节点
+### 3.3 LLM 节点
 
 - `classify_gate`
 - `plan_reproduction`
@@ -201,6 +214,11 @@ context_too_large, provider_unavailable, safety_refusal
 
 认证错误不重试；限流和短暂故障指数退避有限重试；非法结构只做一次格式修正。
 
+阶段 B3 已实现 OpenAI 兼容 Chat Completions Provider。Gate 使用
+`response_format=json_schema` 和 `strict=true`，Prompt 版本为 `gate-v2`，并始终传入空
+工具集合。Provider 真实 usage 累计到 `agent_runs`；若响应不含成本，则按本地配置单价
+估算，未配置单价时成本保持 `0`。
+
 ## 9. 预算与停止条件
 
 默认值由 Policy 配置，Runtime 在每个 LLM 和工具节点前检查：
@@ -231,3 +249,7 @@ LangGraph 节点可能因恢复而重新执行。所有副作用使用稳定的
 运行恢复时先从外部系统查询 operation 状态，不能无条件重复副作用。Graph、Prompt、
 Policy 和沙箱镜像版本写入 run，便于解释结果；MVP 不支持跨不兼容 State Schema
 恢复，不兼容时明确失败并新建 run。
+
+生产 Checkpointer 只允许使用私有 `agent_runtime` Schema。初始化必须通过显式的
+`python -m agent.cli checkpoint setup` 完成；服务启动不自动建表，发现同名 checkpoint
+表存在于 `public` 时拒绝启动。

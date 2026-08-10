@@ -74,6 +74,11 @@ B3 的 Gate 模型通过自定义 `ModelProvider` 调用，不属于 LangChain L
 observation 并传播确定性 Trace ID、Session ID 和最终 route。后续接入标准 Graph
 callback 时不得再次记录同一 Provider 调用。
 
+当前 B3 每次真实 Gate 预期包含两个 observation：root `feedback-repair-run` Agent 和
+`classify-intent` Generation。Telemetry 创建、更新或 flush 失败采用 fail-open，只记录
+脱敏 warning；Masking 回调兼容 Langfuse v4 的 `mask(data=...)` 调用方式。默认
+`TRACE_CONTENT=false`，B3 CLI 会拒绝启用完整 Trace 内容。
+
 ## 5. Generation字段
 
 每次模型调用记录：
@@ -88,8 +93,9 @@ input_cost, output_cost, total_cost
 ```
 
 Token优先采用Provider响应的真实usage。Provider适配器将包含缓存或推理Token的计数
-归一化成互不重叠的bucket，避免重复计费。Provider不返回usage时才允许Langfuse
-按已配置模型估算，并在metadata标记 `usage_source=inferred`。
+归一化成互不重叠的bucket，避免重复计费。Provider不返回成本时，Controller 只使用
+显式配置的模型单价估算；未配置单价时数据库成本保持 `0`。Langfuse 可以按自身模型
+价目显示推算成本，但该分析值不回写数据库，也不参与运行预算。
 
 Controller同步累计每次调用，写入 `agent_runs`。预算判定使用Controller累计值，不
 查询Langfuse实时结果。
@@ -191,6 +197,11 @@ average token/cost/latency
 
 更换模型、Prompt、Policy、Graph或沙箱镜像前运行同一评估集，并将版本与结果作为
 发布证据。模型自评不能替代这些确定性结果。
+
+阶段 B3 已完成两条真实对抗复测：`gate-v2` 将“仅测试、不需要修复”路由为
+`rejected_irrelevant`，将索取系统提示词的注入路由为 `quarantined_security`，后者
+`tool_calls=0`。两次 Trace 均包含预期的两个 observation，抽查未发现完整 Markdown、
+描述或 contact。数据库成本因维护者暂不配置单价而保持待验收。
 
 ## 12. 故障与保留
 

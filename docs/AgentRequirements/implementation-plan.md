@@ -244,18 +244,38 @@ TRACE_CONTENT=false
 
 ## 11. 验证命令
 
-实现后至少提供以下稳定入口：
+### 11.1 当前已实现入口（阶段 B3）
 
 ```bash
-python -m pytest agent/tests -q
-cd backend && .venv/bin/python -m pytest -q
-python -m agent.evals.runner --provider fake
-python -m agent.cli run --feedback-id <uuid> --dry-run
-python -m agent.cli run --feedback-id <uuid>
+uv sync --extra dev
+.venv/bin/python -m pytest agent/tests -q
+.venv/bin/python -m agent.cli checkpoint setup
+.venv/bin/python -m agent.cli run --feedback-id <uuid> --dry-run
+.venv/bin/python -m agent.cli run --feedback-id <uuid> --dry-run \
+  --provider configured
 ```
 
-Docker Worker另提供不依赖真实模型和GitHub的集成测试。文档中的命令必须与实际CLI
-保持一致，接口调整时在同一个变更中更新。
+后端回归从仓库根目录执行：
+
+```bash
+cd backend
+.venv/bin/python -m pytest -v
+```
+
+当前 `run` 强制要求 `--dry-run`，并且只执行 Gate。Fake Provider 是默认值；真实模型
+必须显式传入 `--provider configured`。
+
+### 11.2 后续阶段目标入口
+
+以下入口要到对应阶段实现后才能使用，不属于阶段 B3：
+
+```bash
+python -m agent.evals.runner --provider fake  # 阶段 G
+python -m agent.cli run --feedback-id <uuid>  # 阶段 C 至 F 完整链路
+```
+
+Docker Worker 另提供不依赖真实模型和 GitHub 的集成测试。文档中的命令必须与实际
+CLI 保持一致，接口调整时在同一个变更中更新。
 
 ## 12. 进度记录
 
@@ -500,7 +520,7 @@ Gate 核心，使模型只负责严格分类，最终路由完全由本地 Polic
 
 ### 阶段 B3 实施检查点
 
-**状态：Implemented，真实链路部分验收（2026-08-10）**
+**状态：Implemented；功能与安全已验收，数据库成本延后（2026-08-10）**
 
 **Goal**
 
@@ -565,7 +585,7 @@ Cloud，使真实 Gate 调用具备严格结构化输出、有限重试、真实
 | 阶段 | 状态 | 验收日期 | 证据 |
 |---|---|---|---|
 | A 基线、配置与持久化 | Implemented | 2026-08-10 | Agent 30 passed；Backend 42 passed；Supabase migration/RLS/RPC/claim 验收通过 |
-| B LangGraph Gate与Langfuse | 进行中（B1/B2完成，B3功能与安全验收通过） | - | Agent 88 passed；真实分类/注入隔离/Trace/Token/Masking通过；数据库成本待配置 |
+| B LangGraph Gate与Langfuse | 进行中（B1/B2完成；B3功能与安全通过，成本延后） | - | Agent 88 passed；真实分类/注入隔离/Trace/Token/Masking通过；数据库成本待配置 |
 | C 源码工具与Docker Worker | 未开始 | - | - |
 | D 自动复现 | 未开始 | - | - |
 | E 修复与独立验证 | 未开始 | - | - |

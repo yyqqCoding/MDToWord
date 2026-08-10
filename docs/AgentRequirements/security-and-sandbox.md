@@ -207,7 +207,9 @@ Sandbox Worker部署在独立Linux执行环境，通过内部认证接口接收C
 - GitHub App禁止Actions、Administration、Secrets和自动合并权限；
 - 安装令牌短期生成，不保存到Artifact或Trace；
 - Langfuse仅使用项目写入Key，Trace查看由维护者账号控制；
-- 密钥通过部署Secret注入，不写入仓库、Graph State或共享`.env`；
+- 生产和共享环境的密钥通过部署 Secret 注入，不写入仓库、Graph State 或共享配置；
+- 本地手工集成测试可使用被 Git 忽略的私有 `.env`，只填写缺少的配置，不提交、不
+  分享，也不把值粘贴到日志、Issue、PR 或聊天中；
 - 日志和PR发布前执行密钥模式扫描作为兜底。
 
 ## 11. Artifact完整性
