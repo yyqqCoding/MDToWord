@@ -67,6 +67,28 @@ def test_expired_claim_is_reclaimed_with_a_new_token():
     assert reclaimed.attempt_count == 2
 
 
+def test_claim_by_id_only_claims_the_requested_feedback():
+    async def scenario():
+        first = make_feedback()
+        second = make_feedback(created_at=first.created_at)
+        repository = FakeFeedbackRepository([first, second])
+        claimed = await repository.claim_by_id(
+            second.id,
+            now=datetime.now(UTC),
+            lease_seconds=60,
+            max_attempts=2,
+        )
+        return first, claimed, await repository.get(first.id)
+
+    first, claimed, untouched = asyncio.run(scenario())
+
+    assert claimed is not None
+    assert claimed.id != first.id
+    assert claimed.status is FeedbackStatus.CLAIMED
+    assert untouched is not None
+    assert untouched.status is FeedbackStatus.PENDING
+
+
 def test_expired_claim_over_attempt_limit_moves_to_needs_human():
     async def scenario():
         feedback = make_feedback()
@@ -174,6 +196,79 @@ def test_supabase_claim_uses_atomic_rpc_and_parses_feedback():
     assert claimed is not None
     assert claimed.status is FeedbackStatus.CLAIMED
     assert claimed.claim_token is not None
+
+
+def test_supabase_claim_by_id_uses_targeted_atomic_rpc():
+    feedback = make_feedback()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/rest/v1/rpc/claim_agent_feedback"
+        payload = json.loads(request.content)
+        assert payload["p_feedback_id"] == str(feedback.id)
+        claimed = feedback.model_copy(
+            update={
+                "status": FeedbackStatus.CLAIMED,
+                "attempt_count": 1,
+                "claim_token": UUID(payload["p_claim_token"]),
+                "claimed_at": datetime.now(UTC),
+            }
+        )
+        row = claimed.model_dump(mode="json")
+        row.update(
+            {
+                "automatable": None,
+                "agent_approved": False,
+                "expected_behavior": None,
+                "source_version": None,
+                "last_error": None,
+                "resolution_type": None,
+            }
+        )
+        return httpx.Response(200, json=[row])
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            repository = SupabaseFeedbackRepository(
+                "https://example.supabase.co",
+                "agent-secret",
+                client=client,
+            )
+            return await repository.claim_by_id(
+                feedback.id,
+                now=datetime.now(UTC),
+                lease_seconds=300,
+                max_attempts=3,
+            )
+
+    claimed = asyncio.run(scenario())
+
+    assert claimed is not None
+    assert claimed.id == feedback.id
+
+
+def test_supabase_get_ignores_legacy_database_columns():
+    feedback = make_feedback()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        row = feedback.model_dump(mode="json")
+        row["automatable"] = True
+        row["expected_behavior"] = "legacy content must not enter domain model"
+        return httpx.Response(200, json=[row])
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            repository = SupabaseFeedbackRepository(
+                "https://example.supabase.co",
+                "agent-secret",
+                client=client,
+            )
+            return await repository.get(feedback.id)
+
+    stored = asyncio.run(scenario())
+
+    assert stored is not None
+    assert stored.id == feedback.id
+    assert "automatable" not in stored.model_dump()
 
 
 def test_supabase_error_does_not_echo_response_or_credentials():

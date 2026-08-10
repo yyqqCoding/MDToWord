@@ -13,6 +13,7 @@ def test_agent_state_contains_only_recoverable_metadata():
     state = AgentState(
         run_id=uuid4(),
         feedback_id=uuid4(),
+        claim_token=uuid4(),
         trace_id="trace-123",
         status=AgentRunStatus.CREATED,
     )
@@ -29,6 +30,7 @@ def test_agent_state_rejects_large_user_fields():
         AgentState(
             run_id=uuid4(),
             feedback_id=uuid4(),
+            claim_token=uuid4(),
             trace_id="trace-123",
             status=AgentRunStatus.CREATED,
             markdown_content="untrusted",

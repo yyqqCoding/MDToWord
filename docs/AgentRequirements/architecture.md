@@ -151,7 +151,8 @@ pr_url, resolved_at, updated_at
 每次尝试独立记录：
 
 ```text
-id, feedback_id, status, base_sha, extension_version,
+id, feedback_id, claim_token, trace_id, status, route, category, dry_run,
+task_artifact_ref, base_sha, extension_version,
 provider, model, graph_version, prompt_versions, policy_version,
 langfuse_trace_id, classification, reproduction, validation,
 model_calls, tool_calls, input_tokens, output_tokens, estimated_cost,

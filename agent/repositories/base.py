@@ -1,9 +1,11 @@
 from datetime import datetime
+from decimal import Decimal
 from typing import Protocol
 from uuid import UUID
 
-from agent.domain.enums import FeedbackStatus
-from agent.domain.models import FeedbackRecord
+from agent.domain.enums import FeedbackStatus, GateCategory, RiskLevel
+from agent.domain.gate import GateResult
+from agent.domain.models import AgentRunRecord, FeedbackRecord
 
 
 class FeedbackRepository(Protocol):
@@ -19,6 +21,15 @@ class FeedbackRepository(Protocol):
         max_attempts: int,
     ) -> FeedbackRecord | None: ...
 
+    async def claim_by_id(
+        self,
+        feedback_id: UUID,
+        *,
+        now: datetime,
+        lease_seconds: int,
+        max_attempts: int,
+    ) -> FeedbackRecord | None: ...
+
     async def transition(
         self,
         feedback_id: UUID,
@@ -28,6 +39,8 @@ class FeedbackRepository(Protocol):
         now: datetime | None = None,
         error_code: str | None = None,
         error_message: str | None = None,
+        category: GateCategory | None = None,
+        risk: RiskLevel | None = None,
     ) -> FeedbackRecord: ...
 
     async def find_open_by_fingerprint(
@@ -36,3 +49,32 @@ class FeedbackRepository(Protocol):
         *,
         excluding_feedback_id: UUID | None = None,
     ) -> FeedbackRecord | None: ...
+
+
+class AgentRunRepository(Protocol):
+    async def create(self, run: AgentRunRecord) -> AgentRunRecord: ...
+
+    async def get(self, run_id: UUID) -> AgentRunRecord | None: ...
+
+    async def find_resumable(self) -> AgentRunRecord | None: ...
+
+    async def mark_gating(self, run_id: UUID) -> AgentRunRecord: ...
+
+    async def complete_gate(
+        self,
+        run_id: UUID,
+        result: GateResult,
+        *,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        total_tokens: int = 0,
+        estimated_cost: Decimal = Decimal("0"),
+    ) -> AgentRunRecord: ...
+
+    async def fail(
+        self,
+        run_id: UUID,
+        *,
+        error_code: str,
+        error_message: str,
+    ) -> AgentRunRecord: ...

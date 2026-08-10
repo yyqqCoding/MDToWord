@@ -69,6 +69,11 @@ record_usage / record_score / end_observation / flush
 
 具体Langfuse SDK类型不进入Graph State和领域Schema。
 
+B3 的 Gate 模型通过自定义 `ModelProvider` 调用，不属于 LangChain LLM，因此由
+`ObservedModelProvider` 显式创建唯一 Generation；Controller 创建 root Agent
+observation 并传播确定性 Trace ID、Session ID 和最终 route。后续接入标准 Graph
+callback 时不得再次记录同一 Provider 调用。
+
 ## 5. Generation字段
 
 每次模型调用记录：

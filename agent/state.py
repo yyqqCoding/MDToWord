@@ -24,8 +24,11 @@ class AgentState(BaseModel):
     schema_version: Literal[1] = 1
     run_id: UUID
     feedback_id: UUID
+    # claim token 是恢复条件更新所需的租约能力，只存放在私有 checkpoint 中。
+    claim_token: UUID
     trace_id: str = Field(min_length=1, max_length=200)
     status: AgentRunStatus
+    dry_run: bool = True
     route: str | None = None
     category: str | None = None
     risk: RiskLevel = RiskLevel.UNKNOWN

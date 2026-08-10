@@ -1,15 +1,19 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from uuid import UUID, uuid4
 
-from agent.domain.enums import FeedbackStatus
+from agent.domain.enums import AgentRunStatus, FeedbackStatus, GateCategory, RiskLevel
 from agent.domain.errors import (
+    AgentRunNotFoundError,
     ClaimTokenMismatchError,
+    DuplicateAgentRunError,
     DuplicateFeedbackError,
     FeedbackNotFoundError,
     InvalidStatusTransitionError,
 )
-from agent.domain.models import FeedbackRecord
+from agent.domain.gate import GateResult
+from agent.domain.models import AgentRunRecord, FeedbackRecord
 from agent.domain.transitions import ensure_feedback_transition
 
 
@@ -88,18 +92,41 @@ class FakeFeedbackRepository:
             )
             if candidate is None:
                 return None
+            return self._claim_record(candidate, now)
 
-            # 整个选取和写入都在同一把锁内，对应 SQL 的 FOR UPDATE SKIP LOCKED。
-            if candidate.status is FeedbackStatus.PENDING:
-                ensure_feedback_transition(candidate.status, FeedbackStatus.CLAIMED)
-            candidate.status = FeedbackStatus.CLAIMED
-            candidate.attempt_count += 1
-            candidate.claim_token = uuid4()
-            candidate.claimed_at = now
-            candidate.updated_at = now
-            candidate.last_error_code = None
-            candidate.last_error_message = None
-            return candidate.model_copy(deep=True)
+    async def claim_by_id(
+        self,
+        feedback_id: UUID,
+        *,
+        now: datetime,
+        lease_seconds: int,
+        max_attempts: int,
+    ) -> FeedbackRecord | None:
+        if lease_seconds < 1 or max_attempts < 1:
+            raise ValueError("lease_seconds and max_attempts must be positive")
+
+        async with self._lock:
+            record = self._records.get(feedback_id)
+            if record is None:
+                raise FeedbackNotFoundError(f"feedback {feedback_id} does not exist")
+            lease_cutoff = now - timedelta(seconds=lease_seconds)
+            if record.attempt_count >= max_attempts and (
+                record.status is FeedbackStatus.PENDING
+                or (
+                    record.status is FeedbackStatus.CLAIMED
+                    and record.claimed_at is not None
+                    and record.claimed_at <= lease_cutoff
+                )
+            ):
+                record.status = FeedbackStatus.NEEDS_HUMAN
+                record.claim_token = None
+                record.claimed_at = None
+                record.last_error_code = "claim_attempts_exhausted"
+                record.updated_at = now
+                return None
+            if not self._is_claimable(record, lease_cutoff, max_attempts):
+                return None
+            return self._claim_record(record, now)
 
     async def transition(
         self,
@@ -110,6 +137,8 @@ class FakeFeedbackRepository:
         now: datetime | None = None,
         error_code: str | None = None,
         error_message: str | None = None,
+        category: GateCategory | None = None,
+        risk: RiskLevel | None = None,
     ) -> FeedbackRecord:
         async with self._lock:
             record = self._records.get(feedback_id)
@@ -133,6 +162,10 @@ class FakeFeedbackRepository:
             record.updated_at = now or datetime.now(UTC)
             record.last_error_code = error_code
             record.last_error_message = error_message
+            if category is not None:
+                record.category = category.value
+            if risk is not None:
+                record.risk = risk
             return record.model_copy(deep=True)
 
     async def find_open_by_fingerprint(
@@ -155,6 +188,20 @@ class FakeFeedbackRepository:
         return sorted(self._records.values(), key=lambda item: (item.created_at, str(item.id)))
 
     @staticmethod
+    def _claim_record(record: FeedbackRecord, now: datetime) -> FeedbackRecord:
+        # 整个选取和写入都在同一把锁内，对应 SQL 的 FOR UPDATE SKIP LOCKED。
+        if record.status is FeedbackStatus.PENDING:
+            ensure_feedback_transition(record.status, FeedbackStatus.CLAIMED)
+        record.status = FeedbackStatus.CLAIMED
+        record.attempt_count += 1
+        record.claim_token = uuid4()
+        record.claimed_at = now
+        record.updated_at = now
+        record.last_error_code = None
+        record.last_error_message = None
+        return record.model_copy(deep=True)
+
+    @staticmethod
     def _is_claimable(
         record: FeedbackRecord,
         lease_cutoff: datetime,
@@ -169,3 +216,98 @@ class FakeFeedbackRepository:
             and record.claimed_at is not None
             and record.claimed_at <= lease_cutoff
         )
+
+
+class FakeAgentRunRepository:
+    """进程内运行仓库，用于验证恢复顺序和幂等终态写入。"""
+
+    def __init__(self, runs: list[AgentRunRecord] | None = None) -> None:
+        self._records = {item.id: item.model_copy(deep=True) for item in runs or []}
+        self._lock = asyncio.Lock()
+
+    async def create(self, run: AgentRunRecord) -> AgentRunRecord:
+        async with self._lock:
+            if run.id in self._records:
+                raise DuplicateAgentRunError(f"agent run {run.id} already exists")
+            self._records[run.id] = run.model_copy(deep=True)
+            return run.model_copy(deep=True)
+
+    async def get(self, run_id: UUID) -> AgentRunRecord | None:
+        async with self._lock:
+            run = self._records.get(run_id)
+            return run.model_copy(deep=True) if run is not None else None
+
+    async def find_resumable(self) -> AgentRunRecord | None:
+        async with self._lock:
+            resumable = sorted(
+                (
+                    run
+                    for run in self._records.values()
+                    if run.status in {AgentRunStatus.CREATED, AgentRunStatus.GATING}
+                ),
+                key=lambda run: (run.started_at, str(run.id)),
+            )
+            return resumable[0].model_copy(deep=True) if resumable else None
+
+    async def mark_gating(self, run_id: UUID) -> AgentRunRecord:
+        async with self._lock:
+            run = self._require(run_id)
+            if run.status is AgentRunStatus.CREATED:
+                run.status = AgentRunStatus.GATING
+            elif run.status is not AgentRunStatus.GATING:
+                raise InvalidStatusTransitionError(
+                    f"agent run {run_id} cannot enter gating from {run.status.value}"
+                )
+            return run.model_copy(deep=True)
+
+    async def complete_gate(
+        self,
+        run_id: UUID,
+        result: GateResult,
+        *,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        total_tokens: int = 0,
+        estimated_cost: Decimal = Decimal("0"),
+    ) -> AgentRunRecord:
+        async with self._lock:
+            run = self._require(run_id)
+            if run.status is AgentRunStatus.COMPLETED:
+                return run.model_copy(deep=True)
+            if run.status is not AgentRunStatus.GATING:
+                raise InvalidStatusTransitionError(
+                    f"agent run {run_id} cannot complete from {run.status.value}"
+                )
+            run.status = AgentRunStatus.COMPLETED
+            run.route = result.route
+            run.category = result.category
+            run.classification = result
+            run.model_calls = result.model_calls
+            run.tool_calls = result.tool_calls
+            run.input_tokens = input_tokens
+            run.output_tokens = output_tokens
+            run.total_tokens = total_tokens
+            run.estimated_cost = estimated_cost
+            run.finished_at = datetime.now(UTC)
+            return run.model_copy(deep=True)
+
+    async def fail(
+        self,
+        run_id: UUID,
+        *,
+        error_code: str,
+        error_message: str,
+    ) -> AgentRunRecord:
+        async with self._lock:
+            run = self._require(run_id)
+            run.status = AgentRunStatus.FAILED
+            run.error_code = error_code
+            run.error_message = error_message
+            run.finished_at = datetime.now(UTC)
+            return run.model_copy(deep=True)
+
+    def _require(self, run_id: UUID) -> AgentRunRecord:
+        run = self._records.get(run_id)
+        if run is None:
+            raise AgentRunNotFoundError(f"agent run {run_id} does not exist")
+        return run

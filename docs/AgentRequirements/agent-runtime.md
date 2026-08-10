@@ -15,7 +15,7 @@ Graph State 使用版本化的 Pydantic/TypedDict Schema，只保存恢复流程
 
 ```text
 schema_version
-run_id, feedback_id, trace_id
+run_id, feedback_id, trace_id, claim_token, dry_run
 status, route, category, risk
 base_sha, extension_version
 task_artifact_ref, source_snapshot_ref
@@ -29,8 +29,9 @@ validated_patch_sha256, pr_url
 last_error
 ```
 
-State 不保存密钥、联系方式、完整源码、完整 pytest 日志或完整用户 Markdown。
-大对象存 Artifact，由 State 保存路径、哈希和脱敏摘要。
+`claim_token` 只保存到私有 PostgreSQL checkpoint，用于恢复节点的条件更新，不进入
+Trace、日志或模型上下文。State 不保存密钥、联系方式、完整源码、完整 pytest 日志
+或完整用户 Markdown。大对象存 Artifact，由 State 保存路径、哈希和脱敏摘要。
 
 生产使用 PostgreSQL checkpointer；内存 checkpointer 只用于单元测试。每次运行的
 `thread_id` 等于 `agent_run_id`。
@@ -86,8 +87,8 @@ Gate 分三层，顺序不可交换。
 ### 4.1 确定性入口校验
 
 - `feedback_type` 只能是现有枚举；
-- `description` 非空且在长度上限内；
-- Bug 的 `markdown_content` 非空且不超过 50 KB；
+- `description` 非空且不超过现有反馈 API 的 1000 字符上限；
+- Bug 的 `markdown_content` 非空且 UTF-8 编码后不超过 50 KiB；
 - 去除联系方式后构造 task；
 - 计算内容指纹并检查精确重复；
 - 功能反馈可直接判定 `out_of_scope`，无需进入代码修复。

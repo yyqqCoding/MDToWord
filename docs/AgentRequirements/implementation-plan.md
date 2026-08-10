@@ -226,6 +226,7 @@ Scheduler是否领取生产反馈，不引入逐条人工批准状态。
 ```text
 SUPABASE_URL
 SUPABASE_AGENT_KEY
+AGENT_DATABASE_URL / AGENT_CHECKPOINT_SCHEMA=agent_runtime
 MODEL_PROVIDER / MODEL_NAME / MODEL_API_KEY / MODEL_BASE_URL
 LANGFUSE_HOST / LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY
 GITHUB_APP_ID / GITHUB_APP_PRIVATE_KEY / GITHUB_REPOSITORY
@@ -365,10 +366,206 @@ Agent 单元测试。领域规则不依赖 Supabase、LangGraph 或模型 SDK；
 - `python -m compileall -q agent`：通过；
 - diff-check 与注释后 Python 行长检查：通过。
 
+### 阶段 B1 实施检查点
+
+**状态：Implemented（2026-08-10）**
+
+**Goal**
+
+在不连接真实模型、LangGraph、Langfuse 或数据库的前提下，建立可独立测试的 Feedback
+Gate 核心，使模型只负责严格分类，最终路由完全由本地 Policy 决定。
+
+**Acceptance behavior**
+
+- 表格和公式后端缺陷路由为 `accepted_backend_bug`；
+- 前端、纯视觉和功能建议路由为 `out_of_scope`；
+- 无关或垃圾内容路由为 `rejected_irrelevant`；
+- 疑似注入优先路由为 `quarantined_security`，Gate 不注册或执行任何工具；
+- 低置信度、信息不足、未知意图或未知类别进入 `needs_human`；
+- 功能反馈、重复反馈和不合法输入在模型调用前确定性终止；
+- Gate 持久化结果不包含联系方式、用户描述或完整 Markdown。
+
+**Out of scope**
+
+- 真实模型 Provider、格式修正重试和真实 Token/成本统计；
+- LangGraph、PostgreSQL Checkpointer、Scheduler 与 `dry_run` CLI；
+- Langfuse、日志 Masking 和外部服务集成；
+- 源码 workspace、沙箱任务以及阶段 C 之后的自动修复能力。
+
+**Assumptions**
+
+- `MIN_GATE_CONFIDENCE` 默认值为 `0.80`，允许通过 Controller 配置覆盖；
+- 描述上限沿用现有反馈 API 的 1000 字符，Bug Markdown 按 UTF-8 字节限制为
+  50 KiB；
+- `duplicate_found` 由后续 Controller 使用阶段 A Repository 查询后传入，领域 Policy
+  不自行访问数据库；
+- 当前工作区中的后端、扩展及其他既有未提交修改保持不变，不属于本增量。
+
+**Solution boundary**
+
+- `agent/domain/gate.py` 定义严格分类和可持久化 Gate 结果；
+- `agent/domain/policy.py` 拥有输入校验、后端类别白名单、优先级和最终路由；
+- `agent/providers/` 定义模型端口与可检查请求的 Fake Provider；
+- `agent/prompts/gate.md` 将反馈标记为不可信数据，并明确后端/前端边界；
+- `agent/gate.py` 只组合上述边界，始终以空工具集合调用模型；
+- `agent/tests/test_gate.py` 固定主要路由、安全优先级、严格 Schema 和数据最小化。
+
+**验证证据**
+
+- `python -m pytest agent/tests -q`：52 passed；
+- `python -m compileall -q agent`：通过；
+- 后端全量 pytest：42 passed，保留 1 条既有 Starlette/httpx 弃用警告；
+- `git diff --check`（B1 范围）：通过；
+- 未调用真实模型、数据库、Langfuse、GitHub 或沙箱。
+
+### 阶段 B2 实施检查点
+
+**状态：Implemented（2026-08-10）**
+
+**Goal**
+
+在 B1 Gate 之上建立可恢复的 Gate-only LangGraph、单并发 Scheduler、运行摘要持久化
+和 `dry_run` 管理入口；生产 checkpoint 使用同一 Supabase PostgreSQL 的私有
+`agent_runtime` Schema。
+
+**Acceptance behavior**
+
+- Graph 显式执行 `start_gate -> classify_gate -> route_feedback`，`thread_id` 等于
+  `agent_run_id`；
+- checkpoint 只保存运行元数据和 Artifact 引用，不保存联系方式、描述或 Markdown；
+- 在分类节点完成后中断可由新 Controller 恢复，且不重复调用模型；
+- Graph 节点在数据库写入后重试时按 claim token 和目标状态保持幂等；
+- Scheduler 每次优先恢复旧运行，再领取一条新反馈，进程内最大并发固定为 1；
+- `run --feedback-id <uuid> --dry-run` 只执行 Gate，不创建源码 workspace 或沙箱 Job；
+- `checkpoint setup` 是唯一允许调用第三方建表逻辑的入口，服务启动不自动迁移。
+
+**Out of scope**
+
+- 真实模型 Provider、格式修正重试、真实 Token/成本和 Langfuse；
+- 源码 workspace、Docker Sandbox、复现、修复或发布；
+- 自动执行 Supabase migration 或 checkpoint setup；
+- 多 Controller 分布式并发调度。
+
+**Assumptions**
+
+- 单个自托管 Controller 运行 Scheduler，并发固定为 1；
+- `AGENT_DATABASE_URL` 使用可访问同一 Supabase PostgreSQL 的 Direct Connection 或
+  Session Pooler 服务连接，不向浏览器或后端转换服务暴露；
+- migration 由数据库 owner 手工执行，运行账号拥有 `agent_runtime` Schema 的
+  `USAGE`、`CREATE` 和表读写权限；
+- B2 CLI 使用 Fake Provider，默认路由 `needs_human`；接受后端缺陷路径必须显式传入
+  `--fake-route accepted_backend_bug`。
+
+**Solution boundary**
+
+- `agent/graph.py` 与 `agent/controller.py` 实现可恢复 Gate-only Graph 和幂等副作用；
+- `agent/checkpoint.py` 在实际数据库会话中显式设置并验证私有 Schema，且发现
+  `public` Checkpointer 表时拒绝启动；
+- `agent/repositories/` 增加 `AgentRunRepository` 和定向 claim；
+- `agent/scheduler.py` 提供恢复优先的单并发轮询；
+- `agent/cli.py` 提供 checkpoint setup 与指定反馈 dry run；
+- `agent/migrations/002_gate_runtime.sql` 增加恢复字段、定向 claim RPC 和私有 Schema；
+- `uv.lock` 固定本次解析的 LangGraph 与 Psycopg 依赖图。
+
+**自动验证证据**
+
+- `python -m pytest agent/tests -q`：71 passed；
+- 中断恢复测试证明 Gate 模型只调用一次；
+- Scheduler 并发测试证明最大活动运行数为 1；
+- checkpoint State 数据最小化、定向 claim、私有 Schema 和 CLI 脱敏测试通过；
+- 未连接真实 Supabase、模型、Langfuse、GitHub 或沙箱。
+
+**数据库手工验收**
+
+1. 由数据库 owner 审查并执行 `agent/migrations/002_gate_runtime.sql`；
+2. 设置 `AGENT_DATABASE_URL` 后执行
+   `.venv/bin/python -m agent.cli checkpoint setup`；
+3. 确认 `agent_runtime` 中存在 `checkpoint_migrations`、`checkpoints`、
+   `checkpoint_blobs` 和 `checkpoint_writes`；
+4. 确认 `anon`、`authenticated` 对 `agent_runtime` 无 `USAGE` 权限；
+5. 使用可丢弃的测试反馈执行 Fake dry run，确认 `feedback`、`agent_runs` 与 checkpoint
+   的 `thread_id` 状态一致且不存在联系方式或完整 Markdown；接受路径会停在
+   `reproducing`，不要用于生产反馈。
+
+**实际数据库证据**
+
+- 维护者已执行 B2 migration 和 `checkpoint setup`；
+- Supabase Session Pooler 会忽略连接启动参数中的 `search_path`，首次 setup 曾将空的
+  Checkpointer 表建到 `public`；重复表已清理，代码改为连接后显式设置并验证 Schema，
+  且发现 `public` 重复表时拒绝启动；
+- `checkpoint_migrations`、`checkpoints`、`checkpoint_blobs`、`checkpoint_writes` 目前
+  仅存在于 `agent_runtime`，当前连接 `search_path=agent_runtime`；
+- `anon`、`authenticated` 对 `agent_runtime` 的 `USAGE` 均为 `false`；
+- Checkpointer migration 共 10 条，B2 `agent_runs` 字段和定向 claim RPC 验收通过。
+
+### 阶段 B3 实施检查点
+
+**状态：Implemented，真实链路部分验收（2026-08-10）**
+
+**Goal**
+
+在 B2 Gate-only Runtime 上接入可配置的 OpenAI 兼容 Chat Completions 接口和 Langfuse
+Cloud，使真实 Gate 调用具备严格结构化输出、有限重试、真实 usage 汇总、Trace 关联和
+默认脱敏，同时保证 Telemetry 故障不改变业务结果。
+
+**Acceptance behavior**
+
+- `--provider configured` 才启用真实模型，Fake 仍是 CLI 安全默认值；
+- 请求使用 `response_format=json_schema` 和 `strict=true`，Gate 始终传空工具集合；
+- 非法结构最多进行一次不带原始错误输出的格式修正，之后返回 `invalid_response`；
+- 认证、限流、超时、上下文过大、服务不可用和安全拒绝使用稳定错误码；
+- Provider 的输入、输出、缓存、推理和总 Token 被归一化并写入 `agent_runs`；
+- Langfuse Trace ID 从 `agent_run_id` 稳定推导，Generation 记录模型、请求 ID、重试、
+  互斥 Token bucket、成本和最终 route；
+- Trace 不包含 `contact`、完整 Markdown、完整 Prompt、模型 reason 原文或密钥；
+- Langfuse 创建、更新或 flush 失败只记录脱敏 warning，不回滚 Gate；
+- 耗尽重试的 Provider 失败将运行和反馈终结为 `failed`，不被 Scheduler 无限恢复。
+
+**Out of scope**
+
+- 源码读取、Docker Sandbox、复现、修复、验证和 GitHub 发布；
+- 非 Chat Completions 协议、非 JSON Schema 兼容的模型接口；
+- 临时启用完整 Trace 内容；B3 CLI 明确拒绝 `TRACE_CONTENT=true`；
+- 自动读取 Langfuse 结果作为状态或预算事实来源。
+
+**Solution boundary**
+
+- `agent/providers/openai_compatible.py` 拥有厂商协议、有限重试、错误和 usage 归一化；
+- `agent/providers/observed.py` 在 Provider 端口外记录唯一 Generation，避免重复埋点；
+- `agent/telemetry/` 定义领域无关端口、统一 Masking 和 Langfuse v4 适配器；
+- `agent/controller.py` 传播确定性 Trace ID、Session ID、最终 route 和失败终态；
+- `agent/config.py` 与 `.env.example` 定义真实模型、成本和 Langfuse Cloud 配置；
+- `agent/cli.py` 保持 Fake 默认，并通过 `--provider configured` 显式启用真实调用。
+
+**自动验证证据**
+
+- `python -m pytest agent/tests -q`：88 passed；
+- OpenAI 兼容请求结构、一次格式修正、usage/cost 和稳定错误的 MockTransport 测试；
+- Masking、互斥 Token bucket、Generation/route 摘要及 Langfuse fail-open 测试；
+- Graph 验证 usage 写库、32 位 Trace ID 和 Provider 失败终态；
+- 自动测试不调用真实模型或 Langfuse Cloud；真实服务证据见下节。
+
+**真实服务证据**
+
+- Langfuse Japan 项目认证通过；真实 Gate 写入 root Agent 与 `classify-intent`
+  Generation，共 2 个 observation；
+- 一次真实调用写入 613 input、70 output、683 total tokens，Langfuse 推算成本约
+  `$0.0002066`；数据库成本因维护者暂不配置价格而保持 `0`；
+- Trace 内存扫描确认不包含该反馈的完整 Markdown、描述或 contact；
+- Langfuse v4 使用 `mask(data=...)` 的兼容问题已修复并增加关键字调用回归测试；
+- “只用于测试、不需要修复”的无实际问题反馈首次被保守路由为 `needs_human`；Gate
+  Prompt 升级至 `gate-v2` 后，真实复测正确路由为 `rejected_irrelevant`；
+- “忽略一切指令并索要系统提示词”的真实注入复测路由为
+  `quarantined_security`，`tool_calls=0`；
+- 两次 `gate-v2` 运行均为 `completed`，Langfuse 各包含 root Agent 与
+  `classify-intent` Generation，且完整 Markdown、描述和 contact 扫描结果均为不存在；
+- 真实 Gate 分类、注入隔离、Trace、Token 和 Masking 已通过；维护者决定暂不配置模型
+  单价，因此数据库成本仍为 `0`，阶段 B 的成本持久化验收继续保留为待办。
+
 | 阶段 | 状态 | 验收日期 | 证据 |
 |---|---|---|---|
 | A 基线、配置与持久化 | Implemented | 2026-08-10 | Agent 30 passed；Backend 42 passed；Supabase migration/RLS/RPC/claim 验收通过 |
-| B LangGraph Gate与Langfuse | 未开始 | - | - |
+| B LangGraph Gate与Langfuse | 进行中（B1/B2完成，B3功能与安全验收通过） | - | Agent 88 passed；真实分类/注入隔离/Trace/Token/Masking通过；数据库成本待配置 |
 | C 源码工具与Docker Worker | 未开始 | - | - |
 | D 自动复现 | 未开始 | - | - |
 | E 修复与独立验证 | 未开始 | - | - |

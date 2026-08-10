@@ -1,10 +1,19 @@
 from datetime import UTC, datetime
+from decimal import Decimal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from agent.domain.enums import FeedbackStatus, FeedbackType, RiskLevel
+from agent.domain.enums import (
+    AgentRunStatus,
+    FeedbackStatus,
+    FeedbackType,
+    GateCategory,
+    GateRoute,
+    RiskLevel,
+)
 from agent.domain.fingerprints import feedback_fingerprint
+from agent.domain.gate import GateResult
 
 
 def utc_now() -> datetime:
@@ -82,3 +91,50 @@ class TaskArtifact(BaseModel):
             description=feedback.description,
             content_fingerprint=feedback.content_fingerprint,
         )
+
+
+class AgentRunRecord(BaseModel):
+    """数据库中的运行摘要；原始反馈只通过受控 Artifact 引用关联。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: UUID
+    feedback_id: UUID
+    claim_token: UUID = Field(repr=False)
+    trace_id: str = Field(min_length=1, max_length=200)
+    status: AgentRunStatus = AgentRunStatus.CREATED
+    route: GateRoute | None = None
+    category: GateCategory | None = None
+    dry_run: bool = True
+    base_sha: str | None = None
+    extension_version: str = "unknown"
+    provider: str | None = None
+    model: str | None = None
+    graph_version: str
+    prompt_versions: dict[str, str] = Field(default_factory=dict)
+    policy_version: str
+    langfuse_trace_id: str | None = None
+    classification: GateResult | None = None
+    reproduction: dict[str, object] | None = None
+    validation: dict[str, object] | None = None
+    model_calls: int = Field(default=0, ge=0)
+    tool_calls: int = Field(default=0, ge=0)
+    input_tokens: int = Field(default=0, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
+    total_tokens: int = Field(default=0, ge=0)
+    estimated_cost: Decimal = Field(default=Decimal("0"), ge=0)
+    validated_patch_sha256: str | None = None
+    artifact_path: str
+    task_artifact_ref: str
+    pr_url: str | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+    started_at: datetime = Field(default_factory=utc_now)
+    finished_at: datetime | None = None
+
+    @field_validator("started_at", "finished_at")
+    @classmethod
+    def require_run_timezone(cls, value: datetime | None) -> datetime | None:
+        if value is not None and value.tzinfo is None:
+            raise ValueError("timestamps must include a timezone")
+        return value

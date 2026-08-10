@@ -1,0 +1,213 @@
+import asyncio
+from decimal import Decimal
+
+from agent.domain.gate import GateClassification
+from agent.providers.base import ModelMessage, StructuredModelResponse
+from agent.providers.fake import FakeModelProvider
+from agent.providers.observed import ObservedModelProvider
+from agent.telemetry.base import GenerationTrace, RunTrace, exclusive_usage_buckets
+from agent.telemetry.langfuse import LangfuseTelemetry
+from agent.telemetry.masking import mask_sensitive
+
+
+def _classification() -> GateClassification:
+    return GateClassification(
+        intent="bug_report",
+        category="table_parsing",
+        relevance=0.98,
+        sufficient_information=True,
+        injection_suspected=False,
+        requires_extension_change=False,
+        reason="user@example.com said token=secret",
+    )
+
+
+class _RawObservation:
+    def __init__(self) -> None:
+        self.updates: list[dict[str, object]] = []
+
+    def update(self, **kwargs: object) -> None:
+        self.updates.append(kwargs)
+
+
+class _ObservationContext:
+    def __init__(self, raw: _RawObservation) -> None:
+        self.raw = raw
+
+    def __enter__(self):
+        return self.raw
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+
+class _FakeLangfuseClient:
+    def __init__(self) -> None:
+        self.starts: list[dict[str, object]] = []
+        self.observations: list[_RawObservation] = []
+        self.flushed = False
+
+    def start_as_current_observation(self, **kwargs: object):
+        self.starts.append(kwargs)
+        raw = _RawObservation()
+        self.observations.append(raw)
+        return _ObservationContext(raw)
+
+    def flush(self) -> None:
+        self.flushed = True
+
+
+def test_masking_removes_contact_secrets_and_long_content():
+    masked = mask_sensitive(
+        data={
+            "contact": "user@example.com",
+            "header": "Bearer top-secret",
+            "note": "call +86 138 0013 8000 or user@example.com",
+            "markdown": "x" * 500,
+        }
+    )
+
+    assert masked["contact"] == "[REDACTED]"
+    assert "top-secret" not in masked["header"]
+    assert "user@example.com" not in masked["note"]
+    assert "138 0013 8000" not in masked["note"]
+    assert len(masked["markdown"]) == 300
+
+
+def test_usage_buckets_are_mutually_exclusive():
+    response = StructuredModelResponse(
+        output=_classification(),
+        provider="compatible",
+        model="model",
+        provider_request_id="request",
+        input_tokens=100,
+        output_tokens=40,
+        cached_input_tokens=30,
+        reasoning_tokens=10,
+        total_tokens=140,
+    )
+
+    assert exclusive_usage_buckets(response) == {
+        "input": 70,
+        "input_cached_tokens": 30,
+        "output": 30,
+        "output_reasoning_tokens": 10,
+        "total": 140,
+    }
+
+
+def test_langfuse_records_only_summaries_usage_cost_and_route():
+    client = _FakeLangfuseClient()
+    telemetry = LangfuseTelemetry(
+        public_key="public",
+        secret_key="secret",
+        host="https://cloud.langfuse.com",
+        environment="development",
+        client=client,
+    )
+    run = RunTrace(
+        trace_id="a" * 32,
+        run_id="run-1",
+        session_id="session-1",
+        feedback_hash="b" * 64,
+        provider="openai_compatible",
+        model="model",
+        graph_version="graph-v1",
+        policy_version="policy-v1",
+        environment="development",
+    )
+    generation = GenerationTrace(
+        operation="gate",
+        prompt_version="gate-v1",
+        provider="openai_compatible",
+        model="model",
+        input_summary={"bytes": 123, "sha256": "c" * 64},
+    )
+    response = StructuredModelResponse(
+        output=_classification(),
+        provider="openai_compatible",
+        model="model",
+        provider_request_id="request-1",
+        input_tokens=10,
+        output_tokens=5,
+        total_tokens=15,
+        estimated_cost=Decimal("0.001"),
+    )
+
+    with telemetry.start_run(run) as root:
+        with telemetry.start_generation(generation) as observed:
+            observed.succeed(response)
+        root.finish(route="accepted_backend_bug", status="completed")
+    telemetry.flush()
+
+    rendered = repr((client.starts, [item.updates for item in client.observations]))
+    assert "user@example.com" not in rendered
+    assert "token=secret" not in rendered
+    assert "[REDACTED_SUMMARY]" in rendered
+    assert client.starts[0]["trace_context"] == {"trace_id": "a" * 32}
+    assert client.observations[1].updates[0]["usage_details"]["total"] == 15
+    assert client.observations[1].updates[0]["cost_details"]["total"] == 0.001
+    assert client.flushed is True
+
+
+def test_observed_provider_never_sends_message_content_to_telemetry():
+    client = _FakeLangfuseClient()
+    telemetry = LangfuseTelemetry(
+        public_key="public",
+        secret_key="secret",
+        host="https://cloud.langfuse.com",
+        environment="development",
+        client=client,
+    )
+    provider = ObservedModelProvider(
+        FakeModelProvider([_classification()]),
+        telemetry,
+        operation="gate",
+        prompt_version="gate-v1",
+    )
+
+    asyncio.run(
+        provider.generate_structured(
+            (ModelMessage(role="user", content="private markdown user@example.com"),),
+            GateClassification,
+            tools=(),
+            timeout_seconds=5,
+        )
+    )
+
+    rendered = repr(client.starts)
+    assert "private markdown" not in rendered
+    assert "user@example.com" not in rendered
+
+
+def test_langfuse_start_failure_is_fail_open():
+    class BrokenClient:
+        def start_as_current_observation(self, **kwargs: object):
+            del kwargs
+            raise RuntimeError("contains-secret")
+
+        def flush(self) -> None:
+            raise RuntimeError("contains-secret")
+
+    telemetry = LangfuseTelemetry(
+        public_key="public",
+        secret_key="secret",
+        host="https://cloud.langfuse.com",
+        environment="development",
+        client=BrokenClient(),
+    )
+    trace = RunTrace(
+        trace_id="a" * 32,
+        run_id="run",
+        session_id="session",
+        feedback_hash="b" * 64,
+        provider="provider",
+        model="model",
+        graph_version="graph",
+        policy_version="policy",
+        environment="development",
+    )
+
+    with telemetry.start_run(trace) as observation:
+        observation.finish(route="needs_human", status="completed")
+    telemetry.flush()

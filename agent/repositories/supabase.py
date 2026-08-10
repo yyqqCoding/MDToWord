@@ -1,16 +1,24 @@
 from datetime import UTC, datetime
+from decimal import Decimal
 from uuid import UUID, uuid4
 
 import httpx
 
-from agent.domain.enums import FeedbackStatus
+from agent.domain.enums import (
+    AgentRunStatus,
+    FeedbackStatus,
+    GateCategory,
+    RiskLevel,
+)
 from agent.domain.errors import (
+    AgentRunNotFoundError,
     ClaimTokenMismatchError,
     ConcurrentFeedbackUpdateError,
     FeedbackNotFoundError,
     RepositoryError,
 )
-from agent.domain.models import FeedbackRecord
+from agent.domain.gate import GateResult
+from agent.domain.models import AgentRunRecord, FeedbackRecord
 from agent.domain.transitions import ensure_feedback_transition
 
 
@@ -49,7 +57,7 @@ class SupabaseFeedbackRepository:
             params={"id": f"eq.{feedback_id}", "select": "*", "limit": "1"},
         )
         rows = _response_rows(response)
-        return FeedbackRecord.model_validate(rows[0]) if rows else None
+        return _feedback_from_row(rows[0]) if rows else None
 
     async def claim_next(
         self,
@@ -71,7 +79,29 @@ class SupabaseFeedbackRepository:
             },
         )
         rows = _response_rows(response)
-        return FeedbackRecord.model_validate(rows[0]) if rows else None
+        return _feedback_from_row(rows[0]) if rows else None
+
+    async def claim_by_id(
+        self,
+        feedback_id: UUID,
+        *,
+        now: datetime,
+        lease_seconds: int,
+        max_attempts: int,
+    ) -> FeedbackRecord | None:
+        del now  # PostgreSQL is the lease clock authority.
+        response = await self._request(
+            "POST",
+            "/rest/v1/rpc/claim_agent_feedback",
+            json={
+                "p_feedback_id": str(feedback_id),
+                "p_claim_token": str(uuid4()),
+                "p_lease_seconds": lease_seconds,
+                "p_max_attempts": max_attempts,
+            },
+        )
+        rows = _response_rows(response)
+        return _feedback_from_row(rows[0]) if rows else None
 
     async def transition(
         self,
@@ -82,6 +112,8 @@ class SupabaseFeedbackRepository:
         now: datetime | None = None,
         error_code: str | None = None,
         error_message: str | None = None,
+        category: GateCategory | None = None,
+        risk: RiskLevel | None = None,
     ) -> FeedbackRecord:
         current = await self.get(feedback_id)
         if current is None:
@@ -110,6 +142,10 @@ class SupabaseFeedbackRepository:
                     "claimed_at": None,
                 }
             )
+        if category is not None:
+            payload["category"] = category.value
+        if risk is not None:
+            payload["risk"] = risk.value
 
         response = await self._request(
             "PATCH",
@@ -130,7 +166,7 @@ class SupabaseFeedbackRepository:
             raise ConcurrentFeedbackUpdateError(
                 f"feedback {feedback_id} changed during transition"
             )
-        return FeedbackRecord.model_validate(rows[0])
+        return _feedback_from_row(rows[0])
 
     async def find_open_by_fingerprint(
         self,
@@ -149,7 +185,7 @@ class SupabaseFeedbackRepository:
             params["id"] = f"neq.{excluding_feedback_id}"
         response = await self._request("GET", "/rest/v1/feedback", params=params)
         rows = _response_rows(response)
-        return FeedbackRecord.model_validate(rows[0]) if rows else None
+        return _feedback_from_row(rows[0]) if rows else None
 
     async def _request(
         self,
@@ -187,3 +223,199 @@ def _response_rows(response: httpx.Response) -> list[dict[str, object]]:
     if not isinstance(payload, list) or any(not isinstance(row, dict) for row in payload):
         raise RepositoryError("Supabase returned an unexpected response shape")
     return payload
+
+
+def _feedback_from_row(row: dict[str, object]) -> FeedbackRecord:
+    # 线上 feedback 表仍可能保留历史 Agent 列。适配层只投影当前领域字段，领域模型继续
+    # 使用 extra=forbid，避免数据库布局细节泄漏到 Graph State 或模型上下文。
+    known = {
+        name: value
+        for name, value in row.items()
+        if name in FeedbackRecord.model_fields
+    }
+    return FeedbackRecord.model_validate(known)
+
+
+class SupabaseAgentRunRepository:
+    """通过 PostgREST 持久化运行摘要；checkpoint 使用独立私有连接。"""
+
+    def __init__(
+        self,
+        supabase_url: str,
+        agent_key: str,
+        *,
+        client: httpx.AsyncClient | None = None,
+    ) -> None:
+        self._base_url = supabase_url.rstrip("/")
+        self._headers = {
+            "apikey": agent_key,
+            "Authorization": f"Bearer {agent_key}",
+            "Content-Type": "application/json",
+        }
+        self._client = client or httpx.AsyncClient(timeout=30)
+        self._owns_client = client is None
+
+    async def aclose(self) -> None:
+        if self._owns_client:
+            await self._client.aclose()
+
+    async def create(self, run: AgentRunRecord) -> AgentRunRecord:
+        response = await self._request(
+            "POST",
+            "/rest/v1/agent_runs",
+            headers={"Prefer": "return=representation"},
+            json=run.model_dump(mode="json"),
+        )
+        return _run_from_response(response)
+
+    async def get(self, run_id: UUID) -> AgentRunRecord | None:
+        response = await self._request(
+            "GET",
+            "/rest/v1/agent_runs",
+            params={"id": f"eq.{run_id}", "select": "*", "limit": "1"},
+        )
+        rows = _response_rows(response)
+        return AgentRunRecord.model_validate(rows[0]) if rows else None
+
+    async def find_resumable(self) -> AgentRunRecord | None:
+        response = await self._request(
+            "GET",
+            "/rest/v1/agent_runs",
+            params={
+                "status": "in.(created,gating)",
+                "select": "*",
+                "order": "started_at.asc",
+                "limit": "1",
+            },
+        )
+        rows = _response_rows(response)
+        return AgentRunRecord.model_validate(rows[0]) if rows else None
+
+    async def mark_gating(self, run_id: UUID) -> AgentRunRecord:
+        existing = await self.get(run_id)
+        if existing is None:
+            raise AgentRunNotFoundError(f"agent run {run_id} does not exist")
+        if existing.status is AgentRunStatus.GATING:
+            return existing
+        return await self._patch(
+            run_id,
+            current=AgentRunStatus.CREATED,
+            payload={"status": AgentRunStatus.GATING.value},
+        )
+
+    async def complete_gate(
+        self,
+        run_id: UUID,
+        result: GateResult,
+        *,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        total_tokens: int = 0,
+        estimated_cost: Decimal = Decimal("0"),
+    ) -> AgentRunRecord:
+        existing = await self.get(run_id)
+        if existing is None:
+            raise AgentRunNotFoundError(f"agent run {run_id} does not exist")
+        if existing.status is AgentRunStatus.COMPLETED:
+            if existing.route is not result.route:
+                raise RepositoryError("completed agent run has a different route")
+            return existing
+        if existing.status is not AgentRunStatus.GATING:
+            raise RepositoryError(
+                f"agent run {run_id} cannot complete from {existing.status.value}"
+            )
+        return await self._patch(
+            run_id,
+            current=AgentRunStatus.GATING,
+            payload={
+                "status": AgentRunStatus.COMPLETED.value,
+                "route": result.route.value,
+                "category": result.category.value,
+                "classification": result.model_dump(mode="json"),
+                "model_calls": result.model_calls,
+                "tool_calls": result.tool_calls,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": total_tokens,
+                "estimated_cost": str(estimated_cost),
+                "finished_at": datetime.now(UTC).isoformat(),
+            },
+        )
+
+    async def fail(
+        self,
+        run_id: UUID,
+        *,
+        error_code: str,
+        error_message: str,
+    ) -> AgentRunRecord:
+        existing = await self.get(run_id)
+        if existing is None:
+            raise AgentRunNotFoundError(f"agent run {run_id} does not exist")
+        if existing.status is AgentRunStatus.FAILED:
+            return existing
+        return await self._patch(
+            run_id,
+            current=existing.status,
+            payload={
+                "status": AgentRunStatus.FAILED.value,
+                "error_code": error_code,
+                "error_message": error_message,
+                "finished_at": datetime.now(UTC).isoformat(),
+            },
+        )
+
+    async def _patch(
+        self,
+        run_id: UUID,
+        *,
+        current: AgentRunStatus,
+        payload: dict[str, object],
+    ) -> AgentRunRecord:
+        response = await self._request(
+            "PATCH",
+            "/rest/v1/agent_runs",
+            params={
+                "id": f"eq.{run_id}",
+                "status": f"eq.{current.value}",
+                "select": "*",
+            },
+            headers={"Prefer": "return=representation"},
+            json=payload,
+        )
+        rows = _response_rows(response)
+        if not rows:
+            raise RepositoryError(f"agent run {run_id} changed during update")
+        return AgentRunRecord.model_validate(rows[0])
+
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        **kwargs: object,
+    ) -> httpx.Response:
+        extra_headers = kwargs.pop("headers", {})
+        headers = {**self._headers, **dict(extra_headers)}
+        try:
+            response = await self._client.request(
+                method,
+                f"{self._base_url}{path}",
+                headers=headers,
+                **kwargs,
+            )
+        except httpx.HTTPError as exc:
+            raise RepositoryError(
+                f"Supabase request failed: {type(exc).__name__}"
+            ) from exc
+        if response.status_code >= 400:
+            raise RepositoryError(
+                f"Supabase request failed with status {response.status_code}"
+            )
+        return response
+
+
+def _run_from_response(response: httpx.Response) -> AgentRunRecord:
+    rows = _response_rows(response)
+    if not rows:
+        raise RepositoryError("Supabase did not return the agent run")
+    return AgentRunRecord.model_validate(rows[0])
