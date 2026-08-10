@@ -12,6 +12,7 @@
 ## 2. 目标目录
 
 ```text
+pyproject.toml                  # Agent 包、运行时与测试依赖
 agent/
   api.py                       # health、可选管理接口
   scheduler.py                 # Supabase轮询、claim、并发1
@@ -22,6 +23,8 @@ agent/
     enums.py errors.py policy.py fingerprints.py
   repositories/
     base.py supabase.py fake.py
+  migrations/
+    001_agent_foundation.sql
   providers/
     base.py openai_compatible.py fake.py
   prompts/
@@ -40,6 +43,7 @@ agent/
     base.py langfuse.py logging.py
   evals/
     cases/ runner.py
+  cli.py
   tests/
 
 backend/tests/
@@ -57,7 +61,7 @@ backend/tests/
 
 - 记录当前后端测试基线和最小DOCX转换结果；
 - 数据库增加Feedback状态、claim租约和`agent_runs`；
-- 实现`FeedbackRepository`与Fake；
+- 实现`FeedbackRepository`、Supabase适配器与Fake；
 - 实现配置校验、Artifact目录和内容指纹；
 - 实现版本读取：从部署产物路径读取 `extension/dist/manifest.json`，从GitHub读取
   `main` SHA；缺少前者时使用 `unknown`；
@@ -254,9 +258,116 @@ Docker Worker另提供不依赖真实模型和GitHub的集成测试。文档中�
 
 ## 12. 进度记录
 
+### 阶段 A 实施检查点
+
+**状态：Implemented（2026-08-10）**
+
+**Goal**
+
+建立可独立验证的阶段 A 基础：固定后端转换基线，定义 Agent 的配置、领域状态、
+错误、指纹、Artifact、版本读取和反馈持久化边界，为后续 Gate 与 Runtime 提供稳定
+契约。
+
+**Acceptance behavior**
+
+- 自动修复范围只包含后端转换报错，以及转换成功但 DOCX 结构或格式断言失败；
+- 前端预览正确而后端导出错误时，允许只修改后端；
+- 当前修复必须修改扩展才能成立的问题不进入自动修复；
+- 原子 claim 在并发时只允许一个调用成功，过期租约可回收，超过最大尝试次数进入
+  `needs_human`；
+- Task Artifact、Graph State、适配器错误和日志不包含 `contact` 或 Secret；
+- 相同规范化反馈产生稳定指纹；
+- 插件发布产物缺失时版本记录为 `unknown`；
+- 阶段 A 提供固定、离线、可重复的自动化测试入口。
+
+**Out of scope**
+
+- 阶段 B 至 G 的真实模型、LangGraph、Docker Worker、Langfuse 和 GitHub 发布；
+- 修改或部署 `extension/`；
+- 执行线上 Supabase 迁移、提交或推送代码。
+
+**Assumptions**
+
+- `agent/` 原有内容是无兼容要求的历史原型，已删除并按稳定方案重建；
+- `requires_extension_change` 表示当前修复必须修改扩展，命中时路由为
+  `out_of_scope`；`extension_sync_required` 仅是后续审查元数据；
+- 修改后端 `normalizer.py` 时，必须证明它修复的是导出链路或追平已经正确的前端
+  行为；新增共享 Markdown 语义不属于阶段 A。
+
+**Solution boundary**
+
+阶段 A 修改了权威文档、后端固定回归 fixture、Agent Python 包、数据库 migration 和
+Agent 单元测试。领域规则不依赖 Supabase、LangGraph 或模型 SDK；Supabase 与 GitHub
+只位于适配器边界，并使用 Mock Transport 验证，没有调用真实外部服务。
+
+**实际实现**
+
+- `pyproject.toml` 定义 Agent 包及稳定测试入口；
+- `agent/domain/` 定义反馈/运行状态、错误、状态转换、领域对象和内容指纹；
+- `agent/config.py` 校验阶段 A 配置并用 `SecretStr` 隐藏 Agent Key；
+- `agent/repositories/` 提供 Repository Protocol、并发安全 Fake 和 Supabase 原子 claim
+  适配器；
+- `agent/migrations/001_agent_foundation.sql` 以附加方式扩展反馈表、创建或兼容
+  `agent_runs`、约束 RPC 权限并使用 `FOR UPDATE SKIP LOCKED`；
+- `agent/workspace/` 提供原子 Artifact 写入、路径防逃逸、插件版本读取和 GitHub
+  `main` SHA 校验；
+- `backend/tests/fixtures/table_three_line.md` 替代了会变化且被 Git 忽略的
+  `logs/runlog.txt` 测试输入；
+- 历史 `agent/context_builder.py`、`agent/schemas/` 和旧分类 Prompt 已按批准删除。
+
+**验证证据**
+
+- `python -m pytest agent/tests -q`：30 passed；
+- 后端全量 pytest：42 passed，保留 1 条既有 Starlette/httpx 弃用警告；
+- `python -m compileall -q agent`：通过；
+- `git diff --check`（将现有 CRLF 视为合法行尾）：通过；
+- `pyproject.toml` 使用 Python `tomllib` 解析：通过；
+- 维护者已在空 Supabase 数据库手工执行 migration；Schema、RLS、RPC 权限以及
+  claim/rollback 功能验收均通过；未调用真实 GitHub，未构建或修改扩展。
+
+### 阶段 A 注释增量
+
+**状态：Implemented（2026-08-10）**
+
+**Goal**
+
+为阶段 A 中不直观的安全、状态、持久化和恢复逻辑增加中文说明性注释，使后续阶段
+能够在不改变既有行为的前提下维护这些边界。
+
+**Acceptance behavior**
+
+- 注释覆盖原子 claim、租约回收、状态转换、Supabase 条件更新、Artifact 原子写入、
+  指纹规范化、版本读取和 migration 权限；
+- 注释解释设计原因、信任边界或失败语义，不逐行复述代码；
+- 公共接口、数据库行为和测试预期保持不变。
+
+**Out of scope**
+
+- 重构阶段 A 代码；
+- 修改阶段 B 至 G 的实现范围；
+- 安装格式化、Lint 或文档生成依赖。
+
+**Assumptions**
+
+- 注释使用中文，代码标识符和稳定错误码保持英文；
+- 已经直观的枚举、字段声明和测试不添加重复注释。
+
+**Solution boundary**
+
+本增量只修改了阶段 A Python、SQL 和本实施记录，没有改变公共接口、数据库行为或
+测试预期。注释集中在 `agent/config.py`、`agent/state.py`、`agent/domain/`、
+`agent/repositories/`、`agent/workspace/` 和阶段 A migration。
+
+**验证证据**
+
+- `python -m pytest agent/tests -q`：30 passed；
+- 后端全量 pytest：42 passed，保留 1 条既有 Starlette/httpx 弃用警告；
+- `python -m compileall -q agent`：通过；
+- diff-check 与注释后 Python 行长检查：通过。
+
 | 阶段 | 状态 | 验收日期 | 证据 |
 |---|---|---|---|
-| A 基线、配置与持久化 | 待按稳定方案复核 | - | - |
+| A 基线、配置与持久化 | Implemented | 2026-08-10 | Agent 30 passed；Backend 42 passed；Supabase migration/RLS/RPC/claim 验收通过 |
 | B LangGraph Gate与Langfuse | 未开始 | - | - |
 | C 源码工具与Docker Worker | 未开始 | - | - |
 | D 自动复现 | 未开始 | - | - |

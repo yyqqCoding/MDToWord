@@ -124,6 +124,9 @@ extension_sync_required: bool
 `test_feedback_<feedback-id前8位>_<行为>`。不得包含完整 UUID、联系方式或完整问题
 描述。测试必须离线、确定且不读取环境 Secret。
 
+`extension_sync_required` 只是审查元数据；当前修复若必须修改扩展才能成立，应在 Gate
+阶段以 `requires_extension_change=true` 路由为 `out_of_scope`，不得生成测试或补丁。
+
 ## 5. 生成修复契约
 
 `FixGenerationResult`：
@@ -185,7 +188,43 @@ error_code
 stdout/stderr 各自最多保留 4 KB，先清理控制字符和密钥模式。结果内容仍视为不可信
 数据，只能作为下一轮模型的带边界输入。
 
-## 8. 复现判定
+## 8. 最终验证结果
+
+`ValidationResult` 是 Publisher 唯一接受的发布凭据：
+
+```text
+passed: bool
+base_sha: string
+source_snapshot_sha256: string
+test_patch_sha256: string
+fix_patch_sha256: string
+target_test_selector: string
+baseline_reproduction:
+  executed: bool
+  expected_failure_observed: bool
+target_validation:
+  passed: bool
+full_validation:
+  passed: bool
+  tests: int
+  failures: int
+  skipped: int
+  baseline_skipped: int
+docx_validation:
+  passed: bool
+  checks: object
+changed_files: string[]
+validated_patch_ref: string
+validated_patch_sha256: string
+failure_code: string?
+failure_summary: string?
+```
+
+`passed=true` 必须由 Controller 根据所有子结果计算，不能由模型或 Worker 直接提供。
+执行完成后生成的 workspace diff 必须与 test/fix patch 的授权组合一致，否则结果为
+`security_rejected`。
+
+## 9. 复现判定
 
 Validator 解析 JUnit，不用正则猜测 pytest 文本：
 
@@ -196,7 +235,7 @@ Validator 解析 JUnit，不用正则猜测 pytest 文本：
 - 非目标测试先失败是 `baseline_regression`；
 - 模型生成的测试不得通过自定义插件、hook 或配置改变报告行为。
 
-## 9. DOCX Validator
+## 10. DOCX Validator
 
 复用 `convert_markdown_to_docx` 和受信断言库，至少支持：
 

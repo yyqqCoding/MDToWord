@@ -74,7 +74,7 @@ backend/app/normalizer.py
 backend/app/pandoc_runner.py
 backend/tests/**/*.py
 backend/pyproject.toml               # 只读
-AGENT.md                             # 只读规则
+AGENTS.md                            # 只读规则
 README.md                            # 只读项目摘要
 ```
 
@@ -143,7 +143,9 @@ Controller 在执行前按固定顺序检查：
 7. fix patch没有删除、跳过或削弱新增测试；
 8. `git diff --check`；
 9. 在沙箱中编译修改后的Python；
-10. 生成最终diff并重新计算SHA-256。
+10. 每次测试执行后重新生成 workspace diff，确认运行时代码没有在预期 patch 之外
+    修改源码、测试或结果文件；
+11. 生成最终diff并重新计算SHA-256。
 
 越界补丁进入 `security_rejected`，不要求模型解释或重试。
 
@@ -193,6 +195,8 @@ Sandbox Worker部署在独立Linux执行环境，通过内部认证接口接收C
 - 按Job设置墙钟超时，整次运行沙箱总预算默认900秒；
 - stdout/stderr截断、清理控制字符后返回；
 - JUnit与DOCX结果在Worker侧收集，Controller侧再次解析；
+- 测试前后的 workspace diff 必须与已授权 patch 集合一致，运行时文件篡改视为
+  `security_rejected`；
 - 最终验证必须使用与修复循环不同的新容器。
 
 ## 10. 密钥与GitHub

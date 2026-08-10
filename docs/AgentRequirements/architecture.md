@@ -109,13 +109,20 @@ pending -> claimed -> gating
        |- security_rejected
        |- failed
        `- validated -> publishing -> pr_opened
+
+validated | publishing -> stale_base -> pending（只允许一次）
+                                      `- needs_human（重排次数耗尽）
 ```
 
 ### 5.2 Agent Run 状态
 
 ```text
-created -> gating -> preparing_source -> reproducing -> repairing
-  -> validating -> publishing -> completed
+created -> gating
+  |- completed（非修复终态）
+  `- preparing_source -> reproducing -> repairing -> validating
+       -> publishing -> completed
+
+publishing -> stale_base
 
 任意活动状态可转为:
 failed | cancelled | budget_exhausted | security_rejected
@@ -131,7 +138,7 @@ failed | cancelled | budget_exhausted | security_rejected
 
 ```text
 status, category, risk, content_fingerprint,
-attempt_count, claimed_at, claim_token,
+attempt_count, stale_requeue_count, claimed_at, claim_token,
 last_error_code, last_error_message,
 pr_url, resolved_at, updated_at
 ```
@@ -184,11 +191,12 @@ MVP 使用 Controller 管理的本地运行目录：
 
 ```text
 current_main_sha == base_sha -> 创建分支和 PR
-current_main_sha != base_sha -> 结束为 stale_base，重新排队一次
+current_main_sha != base_sha -> 本次 run 结束为 stale_base，feedback 重新排队一次
 ```
 
 不自动 rebase，不维护复杂分支同步协议。最终发布内容以
 `validated_patch_sha256` 对应的 `validated.patch` 为准。
+同一 feedback 第二次遇到 `stale_base` 时进入 `needs_human`，不得无限重排。
 
 ## 8. 故障与恢复
 

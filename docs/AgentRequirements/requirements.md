@@ -81,8 +81,15 @@ MVP 自动处理：
 - 需要依赖、部署、数据库、工作流或安全策略变更的问题
 - 无法在当前 `base_sha` 上复现的问题
 
-如果后端修复可能要求插件以后同步，PR 标记
-`extension_sync_required=true`，但 Agent 仍不得修改 `extension/`。
+`requires_extension_change` 与 `extension_sync_required` 含义不同：
+
+- `requires_extension_change=true` 表示当前缺陷必须修改扩展才能正确解决，路由为
+  `out_of_scope`，不进入自动修复；
+- `extension_sync_required=true` 只是 PR 审查元数据，表示当前后端修复已经独立成立，
+  但维护者以后可能需要关注扩展同步。
+
+用户预览正确而后端导出报错或 DOCX 结构错误时属于后端缺陷，允许只修改后端。
+Agent 始终不得修改 `extension/`。
 
 ## 4. 正确性标准
 
