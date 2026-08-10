@@ -1,0 +1,129 @@
+# Agent Notes
+
+长期协作规则只放稳定约定；业务口径、接口、字段和验收清单以 `docs/` 为准。
+
+## 工作规则
+
+- 开发前先看 `git status --short`、相关 `docs/` 和现有实现。
+- 不在 `master/main` 直接开发；修复使用 `fix/*`，功能使用 `feature/*` 等符合 Git
+  开发规范的分支名。
+- 不回滚他人改动；只改当前需求相关文件。
+- 复用现有封装和代码风格；必要注释用中文说明“做什么/为什么”。
+- 口径不明时先确认，并同步更新对应 `docs/`。
+- 提交前只暂存当前需求文件，确认没有把本地 `.env`、构建产物或他人改动带入提交。
+
+## Project
+
+MD To Word converts AI-generated Markdown into editable Word `.docx`.
+
+- `backend/`: FastAPI + Pandoc conversion service.
+- `extension/`: Chrome/Edge Manifest V3 extension.
+- `agent/`: self-hosted feedback triage and repair runtime.
+- `docs/`: deployment and release notes.
+- `logs/`: real user samples and failure cases.
+
+## Agent Development
+
+- Agent 的目标、范围、架构、接口和验收标准以
+  `docs/AgentRequirements/` 为唯一权威来源；从其 `README.md` 开始阅读。
+- 阶段状态和真实验收证据只更新
+  `docs/AgentRequirements/implementation-plan.md`，不要写入本文件。
+- `agent/` 是当前实现，不是历史代码；删除或重建其中模块前必须先核对现有调用、测试
+  和当前阶段边界。
+- 数据库 migration 和第三方 checkpoint 建表只能由维护者审查后显式执行；测试、应用
+  启动和普通开发命令不得自动修改数据库 Schema。
+- 生产密钥通过部署 Secret 注入。本地集成测试只使用被 Git 忽略的私有 `.env`，配置名
+  以 `.env.example` 为准；不得提交、记录或通过聊天传递任何密钥。
+- Fake Provider 是自动测试默认值。真实 Supabase、模型、Langfuse、GitHub 或沙箱调用
+  只用于明确批准的手工集成验收，并使用可丢弃的测试数据。
+
+Agent 代码或权威设计文档变更后至少运行：
+
+```bash
+.venv/bin/python -m pytest agent/tests -q
+.venv/bin/python -m compileall -q agent
+```
+
+如果变更影响共享依赖、后端契约或转换行为，还要运行后端全量测试。真实服务验收不能
+替代自动测试，自动测试也不能冒充真实服务验收。
+
+## Core Rule
+
+Preview and export must normalize math consistently.
+
+- Frontend preview uses `extension/src/normalizer.ts`.
+- Backend export uses `backend/app/normalizer.py`.
+- When changing math normalization, update both unless the behavior is intentionally backend-only.
+
+## Math Normalization Requirements
+
+Support common AI output, not only strict Markdown.
+
+- Convert bare block math:
+  - `[` newline formula newline `]` -> `$$...$$`
+- Convert AI inline math:
+  - `(z_T)` -> `$z_T$`
+  - Keep normal text such as `(Render)` unchanged.
+- Repair AI subscript mistakes inside math:
+  - `*{LL}` -> `_{LL}`
+  - `*2` -> `_2`
+  - `*i` -> `_i`
+- Preserve visible set braces:
+  - `m\in{0,1}^{L}` -> `m\in\{0,1\}^{L}`
+  - Do not break `\frac{}`, `\mathbb{}`, `\underbrace{}`, etc.
+- Repair single backslash line breaks in math environments:
+  - In `cases`, `aligned`, `matrix`, etc., line-end `\` -> `\\`.
+- Expand tall parentheses for Word:
+  - `f(\underbrace{...}_{x_t},t)` -> `f\left(\underbrace{...}_{x_t},t\right)`.
+
+## Verification
+
+Run focused tests after normalization changes:
+
+```bash
+cd backend
+.venv/bin/python -m pytest tests/test_normalizer.py -v
+```
+
+Run full backend verification before claiming done:
+
+```bash
+cd backend
+.venv/bin/python -m pytest -v
+```
+
+Run extension build after frontend changes:
+
+```bash
+cd extension
+npm run build
+```
+
+For real regressions, reproduce with `logs/runlog.txt` before and after the fix.
+
+## Deployment
+
+Backend deploys to Render from `backend/`.
+
+- Environment: Docker
+- Health path: `/health`
+- Public service URL: `https://mdtoword.onrender.com`
+
+Extension is not deployed to Render. Build and load `extension/dist` in browser extensions.
+
+After backend changes:
+
+```bash
+git push
+```
+
+Wait for Render deployment.
+
+After extension changes:
+
+```bash
+cd extension
+npm run build
+```
+
+Then refresh the unpacked extension in `chrome://extensions` or `edge://extensions`.
