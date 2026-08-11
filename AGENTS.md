@@ -47,6 +47,9 @@ Agent 代码或权威设计文档变更后至少运行：
 如果变更影响共享依赖、后端契约或转换行为，还要运行后端全量测试。真实服务验收不能
 替代自动测试，自动测试也不能冒充真实服务验收。
 
+Sandbox 或 Docker 边界变化时还要运行 `agent/tests/test_docker_integration.py`。缺少
+Docker 时可以在开发过程中跳过，但交付时必须明确报告，不能把 skipped 记为通过。
+
 ## Core Rule
 
 Preview and export must normalize math consistently.
@@ -88,8 +91,11 @@ cd backend
 Run full backend verification before claiming done:
 
 ```bash
-cd backend
-.venv/bin/python -m pytest -v
+# Linux/macOS backend venv
+cd backend && .venv/bin/python -m pytest -v
+
+# Windows backend venv from WSL repository root
+backend/.venv/Scripts/python.exe -m pytest backend/tests -v
 ```
 
 Run extension build after frontend changes:

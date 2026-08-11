@@ -37,15 +37,17 @@ GitHub 创建 Pull Request，由维护者人工审核和合并。
 
 ## 当前实现状态
 
-截至 2026-08-10：
+截至 2026-08-11：
 
 - 阶段 A、B1 和 B2 已完成；
 - 阶段 B3 的真实模型分类、Prompt Injection 隔离、Langfuse Trace、Token 统计和默认
   脱敏已通过手工验收；
 - 维护者暂不配置模型单价，因此 `agent_runs.estimated_cost` 当前保持 `0`，阶段 B 的
   数据库成本持久化验收延后；
-- 阶段 C 至 G 尚未开始，当前 CLI 只运行 Feedback Gate，不读取源码、不启动沙箱、
-  不修改代码，也不创建 PR。
+- 阶段 C 的源码快照、受控工具、补丁 Policy、Sandbox 契约、认证 Client、幂等 Worker
+  和 Docker Runner 已实现；自动测试与真实 Docker 容器隔离验收均已通过；
+- 阶段 D 至 G 尚未开始，当前 Controller CLI 仍只运行 Feedback Gate，不会自动读取
+  源码、启动沙箱、修改代码或创建 PR。
 
 可直接执行的配置和命令见 [agent/README.md](../../agent/README.md)。阶段划分、历史检查点
 和验收证据以 [implementation-plan.md](implementation-plan.md) 为准；本文档中的目标

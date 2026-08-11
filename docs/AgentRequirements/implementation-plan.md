@@ -258,8 +258,11 @@ uv sync --extra dev
 后端回归从仓库根目录执行：
 
 ```bash
-cd backend
-.venv/bin/python -m pytest -v
+# Linux/macOS 后端独立 venv
+cd backend && .venv/bin/python -m pytest -v
+
+# 当前 Windows venv + WSL 工作区
+backend/.venv/Scripts/python.exe -m pytest backend/tests -v
 ```
 
 当前 `run` 强制要求 `--dry-run`，并且只执行 Gate。Fake Provider 是默认值；真实模型
@@ -582,11 +585,70 @@ Cloud，使真实 Gate 调用具备严格结构化输出、有限重试、真实
 - 真实 Gate 分类、注入隔离、Trace、Token 和 Masking 已通过；维护者决定暂不配置模型
   单价，因此数据库成本仍为 `0`，阶段 B 的成本持久化验收继续保留为待办。
 
+### 阶段 C 实施检查点
+
+**状态：Implemented；自动测试与真实 Docker 隔离验收全部通过（2026-08-11）**
+
+**Goal**
+
+建立阶段 D 可复用的源码与执行安全边界：按固定 `base_sha` 获取 GitHub 快照，只允许
+白名单读取和结构化编辑，在补丁进入执行前应用本地 Policy，并通过独立认证 Worker
+使用固定 Docker Job 执行不可信代码。
+
+**Acceptance behavior**
+
+- GitHub archive 按完整 commit SHA 下载、流式限长、计算 SHA-256，并拒绝路径逃逸、
+  符号链接、设备文件、多根目录和解压大小超限；
+- `search_source` 使用字面量搜索，`read_source_file` 只读取白名单 UTF-8 文件；绝对
+  路径、`..`、Windows 路径、敏感路径和符号链接均在读取前拒绝；
+- 模型只能提交 `search_replace` 或受限 `full_file` 编辑，不能提交 Shell、环境变量或
+  任意工具名；Gate 仍没有任何工具权限；
+- 测试编辑只允许固定回归测试与 fixture，修复编辑只允许
+  `normalizer.py`、`pandoc_runner.py`；文件数、行数、大小、二进制和 Git 元数据变更由
+  `patch-policy-v1` 在执行前拒绝；
+- Sandbox Job 使用严格 Schema 和固定资源上限，Worker 先认证再解析，校验 Artifact
+  Hash、过期时间和幂等键；同一 Job 不重复执行，不同请求不能复用 Job ID；
+- Docker Runner 只生成固定 argv，不使用 `sh -c`，启用无网络、只读根、能力清空、
+  `no-new-privileges`、非 root、内存/CPU/PID/超时限制和独立 tmpfs；
+- 任务容器看不到 Worker Git 元数据或业务 Secret；执行后 workspace 偏离授权补丁时
+  返回 `security_rejected`，临时 workspace 在任何终态后销毁。
+
+**Solution boundary**
+
+- `agent/workspace/source_repository.py` 与 `agent/tools/source.py` 负责安全快照和只读工具；
+- `agent/policies/patch_policy.json` 是安全文档的机器可读镜像；
+- `agent/workspace/edits.py` 与 `agent/tools/edits.py` 生成确定性 Git patch Artifact；
+- `agent/tools/authorization.py` 固定每个节点可见的工具集合；
+- `agent/sandbox/contracts.py`、`client.py`、`worker.py` 和 `worker_http.py` 定义传输、认证
+  与跨重启幂等边界；
+- `agent/sandbox/docker_runner.py` 和 `agent/sandbox/Dockerfile` 定义固定执行命令与容器
+  约束；阶段 D 才把这些能力接入复现 Graph。
+
+**验证证据**
+
+- 设置 `SANDBOX_IMAGE_DIGEST` 后执行 `python -m pytest agent/tests -q`：135 passed，
+  无 skipped；
+- `agent/tests/test_docker_integration.py -v -m docker`：1 passed；
+- 源码/补丁 C1 聚焦测试：31 passed；Sandbox C2 聚焦测试：12 passed；
+- 后端全量 pytest：42 passed，保留 1 条既有 Starlette/httpx 弃用警告；
+- `python -m compileall -q agent`、`uv lock --check` 和阶段 C diff-check：通过；
+- 真实容器已验证无外网、无业务 Secret、非 root、只读根文件系统、能力清空、
+  `no-new-privileges`、2 GiB/2 CPU/256 PID 限制、幂等执行、超时终止与 workspace 销毁；
+- 最终镜像环境未包含构建使用的代理变量，临时代理桥已在验收后删除。
+
+**真实 Docker 验收**
+
+1. 在 Docker Desktop 中启用当前 WSL 发行版的 Integration；
+2. 从仓库根目录构建 `agent/sandbox/Dockerfile`；
+3. 读取本地镜像的不可变 `sha256` ID 到 `SANDBOX_IMAGE_DIGEST`；
+4. 运行 `agent/tests/test_docker_integration.py`；
+5. 只有测试实际执行为 passed，才能把阶段 C 更新为完成。
+
 | 阶段 | 状态 | 验收日期 | 证据 |
 |---|---|---|---|
 | A 基线、配置与持久化 | Implemented | 2026-08-10 | Agent 30 passed；Backend 42 passed；Supabase migration/RLS/RPC/claim 验收通过 |
 | B LangGraph Gate与Langfuse | 进行中（B1/B2完成；B3功能与安全通过，成本延后） | - | Agent 88 passed；真实分类/注入隔离/Trace/Token/Masking通过；数据库成本待配置 |
-| C 源码工具与Docker Worker | 未开始 | - | - |
+| C 源码工具与Docker Worker | Implemented | 2026-08-11 | Agent 135 passed；Docker 集成 1 passed；Backend 42 passed |
 | D 自动复现 | 未开始 | - | - |
 | E 修复与独立验证 | 未开始 | - | - |
 | F GitHub PR | 未开始 | - | - |

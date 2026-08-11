@@ -63,6 +63,7 @@ def test_masking_removes_contact_secrets_and_long_content():
             "contact": "user@example.com",
             "header": "Bearer top-secret",
             "note": "call +86 138 0013 8000 or user@example.com",
+            "output": "MODEL_API_KEY=do-not-leak",
             "markdown": "x" * 500,
         }
     )
@@ -71,6 +72,7 @@ def test_masking_removes_contact_secrets_and_long_content():
     assert "top-secret" not in masked["header"]
     assert "user@example.com" not in masked["note"]
     assert "138 0013 8000" not in masked["note"]
+    assert "do-not-leak" not in masked["output"]
     assert len(masked["markdown"]) == 300
 
 

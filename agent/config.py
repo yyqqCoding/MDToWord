@@ -16,6 +16,7 @@ class AgentConfig(BaseModel):
     supabase_url: str = Field(min_length=1)
     supabase_agent_key: SecretStr
     artifact_root: Path
+    source_workspace_root: Path
     extension_manifest_path: Path
     claim_lease_seconds: int = Field(default=300, ge=1)
     max_claim_attempts: int = Field(default=3, ge=1)
@@ -41,6 +42,13 @@ class AgentConfig(BaseModel):
         pattern=r"^[a-z0-9_-]{1,40}$",
     )
     trace_content: bool = False
+    # 阶段 C 配置保持可选，当前 Gate-only CLI 不会因此强制要求 GitHub/Sandbox。
+    github_repository: str | None = Field(
+        default=None,
+        pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+    )
+    sandbox_worker_url: str | None = None
+    sandbox_worker_credential: SecretStr | None = None
 
     @field_validator("supabase_url")
     @classmethod
@@ -56,7 +64,7 @@ class AgentConfig(BaseModel):
             raise ValueError("AGENT_ENVIRONMENT cannot start with langfuse")
         return value
 
-    @field_validator("model_base_url", "langfuse_host")
+    @field_validator("model_base_url", "langfuse_host", "sandbox_worker_url")
     @classmethod
     def require_http_external_url(cls, value: str | None) -> str | None:
         if value is not None and not value.startswith(("https://", "http://")):
@@ -91,10 +99,18 @@ class AgentConfig(BaseModel):
                 str(root / "extension" / "dist" / "manifest.json"),
             )
         )
+        source_workspace_root = _rooted_path(
+            root,
+            values.get(
+                "SOURCE_WORKSPACE_ROOT",
+                str(root / "var" / "source-snapshots"),
+            ),
+        )
         return cls(
             supabase_url=values["SUPABASE_URL"].strip().rstrip("/"),
             supabase_agent_key=SecretStr(values["SUPABASE_AGENT_KEY"]),
             artifact_root=artifact_root,
+            source_workspace_root=source_workspace_root,
             extension_manifest_path=manifest_path,
             claim_lease_seconds=_int_value(values, "CLAIM_LEASE_SECONDS", 300),
             max_claim_attempts=_int_value(values, "MAX_CLAIM_ATTEMPTS", 3),
@@ -148,6 +164,12 @@ class AgentConfig(BaseModel):
                 "development",
             ).strip(),
             trace_content=_bool_value(values, "TRACE_CONTENT", False),
+            github_repository=_optional_text(values, "GITHUB_REPOSITORY"),
+            sandbox_worker_url=_optional_text(values, "SANDBOX_WORKER_URL"),
+            sandbox_worker_credential=_optional_secret(
+                values,
+                "SANDBOX_WORKER_CREDENTIAL",
+            ),
         )
 
     def require_database_url(self) -> str:
@@ -158,7 +180,7 @@ class AgentConfig(BaseModel):
     def require_model_settings(self) -> tuple[str, str, str]:
         if self.model_provider != "openai_compatible":
             raise ConfigurationError(
-                "MODEL_PROVIDER must be openai_compatible for Stage B3"
+                "MODEL_PROVIDER must be openai_compatible for the configured Gate"
             )
         missing = [
             name
@@ -185,7 +207,7 @@ class AgentConfig(BaseModel):
     def require_langfuse_settings(self) -> tuple[str, str, str]:
         if self.trace_content:
             raise ConfigurationError(
-                "TRACE_CONTENT=true is not supported by the Stage B3 CLI"
+                "TRACE_CONTENT=true is not supported by the Gate CLI"
             )
         missing = [
             name
@@ -205,6 +227,31 @@ class AgentConfig(BaseModel):
             self.langfuse_host,
             self.langfuse_public_key.get_secret_value(),
             self.langfuse_secret_key.get_secret_value(),
+        )
+
+    def require_stage_c_controller_settings(self) -> tuple[str, str, str]:
+        """在阶段 D 接入源码与沙箱节点时一次性收紧阶段 C 必需配置。"""
+
+        missing = [
+            name
+            for name, value in (
+                ("GITHUB_REPOSITORY", self.github_repository),
+                ("SANDBOX_WORKER_URL", self.sandbox_worker_url),
+                ("SANDBOX_WORKER_CREDENTIAL", self.sandbox_worker_credential),
+            )
+            if value is None
+        ]
+        if missing:
+            raise ConfigurationError(
+                "missing required configuration: " + ", ".join(missing)
+            )
+        assert self.github_repository is not None
+        assert self.sandbox_worker_url is not None
+        assert self.sandbox_worker_credential is not None
+        return (
+            self.github_repository,
+            self.sandbox_worker_url,
+            self.sandbox_worker_credential.get_secret_value(),
         )
 
 

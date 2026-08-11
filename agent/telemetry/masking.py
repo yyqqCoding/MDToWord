@@ -11,6 +11,12 @@ _SECRET_KEYS = re.compile(
 _EMAIL = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
 _PHONE = re.compile(r"(?<!\d)(?:\+?\d[\d\s().-]{7,}\d)(?!\d)")
 _BEARER = re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE)
+_SECRET_ASSIGNMENT = re.compile(
+    r"\b([A-Za-z0-9_-]*(?:authorization|cookie|api[_-]?key|secret|token|"
+    r"password|contact)[A-Za-z0-9_-]*)"
+    r"\s*[:=]\s*[^\s,;]+",
+    re.IGNORECASE,
+)
 _MAX_TEXT = 300
 
 
@@ -26,11 +32,18 @@ def mask_sensitive(data: Any) -> Any:
     if isinstance(data, Sequence) and not isinstance(data, (str, bytes, bytearray)):
         return [mask_sensitive(item) for item in data]
     if isinstance(data, str):
-        text = _BEARER.sub("Bearer [REDACTED]", data)
-        text = _EMAIL.sub("[REDACTED_EMAIL]", text)
-        text = _PHONE.sub("[REDACTED_PHONE]", text)
-        return text[:_MAX_TEXT]
+        return mask_text(data)
     return data
+
+
+def mask_text(data: str, *, max_length: int = _MAX_TEXT) -> str:
+    """按调用边界需要的长度清理文本；日志与 Sandbox 复用同一脱敏规则。"""
+
+    text = _BEARER.sub("Bearer [REDACTED]", data)
+    text = _SECRET_ASSIGNMENT.sub(r"\1=[REDACTED]", text)
+    text = _EMAIL.sub("[REDACTED_EMAIL]", text)
+    text = _PHONE.sub("[REDACTED_PHONE]", text)
+    return text[:max_length]
 
 
 def content_summary(content: str) -> dict[str, object]:

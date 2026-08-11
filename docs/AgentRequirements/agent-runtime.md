@@ -64,8 +64,9 @@ start_gate -> classify_gate -> route_feedback -> END
 
 CLI 强制要求 `--dry-run`，Fake Provider 是默认值；只有显式传入
 `--provider configured` 才调用真实 OpenAI 兼容接口。当前链路不创建源码 workspace、
-不调用工具或沙箱、不修改仓库，也不发布 PR。本文后续的复现、修复、验证和发布节点是
-阶段 C 至 F 的目标契约。
+不调用工具或沙箱、不修改仓库，也不发布 PR。阶段 C 已提供受控工具和 Sandbox 边界，
+但要到阶段 D 才接入 Graph；本文后续的复现、修复、验证和发布节点仍是阶段 D 至 F
+的目标契约。
 
 ### 3.2 确定性节点
 

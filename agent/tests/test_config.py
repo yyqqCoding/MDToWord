@@ -27,6 +27,7 @@ def test_config_builds_paths_from_project_root(tmp_path: Path):
     )
 
     assert config.artifact_root == tmp_path / "var" / "agent-artifacts"
+    assert config.source_workspace_root == tmp_path / "var" / "source-snapshots"
     assert config.extension_manifest_path == tmp_path / "extension" / "dist" / "manifest.json"
     assert config.supabase_agent_key.get_secret_value() == "secret"
 
@@ -158,3 +159,33 @@ def test_real_provider_and_langfuse_secrets_are_never_in_repr(tmp_path: Path):
     rendered = repr(config)
     assert "model-secret" not in rendered
     assert "langfuse-secret" not in rendered
+
+
+def test_stage_c_settings_are_optional_until_requested_and_secret(tmp_path: Path):
+    config = AgentConfig.from_env(
+        {
+            "SUPABASE_URL": "https://example.supabase.co",
+            "SUPABASE_AGENT_KEY": "supabase-secret",
+        },
+        project_root=tmp_path,
+    )
+    with pytest.raises(ConfigurationError) as exc_info:
+        config.require_stage_c_controller_settings()
+    assert "GITHUB_REPOSITORY" in str(exc_info.value)
+
+    configured = AgentConfig.from_env(
+        {
+            "SUPABASE_URL": "https://example.supabase.co",
+            "SUPABASE_AGENT_KEY": "supabase-secret",
+            "GITHUB_REPOSITORY": "example/md-to-word",
+            "SANDBOX_WORKER_URL": "http://sandbox.internal:8090",
+            "SANDBOX_WORKER_CREDENTIAL": "worker-secret",
+        },
+        project_root=tmp_path,
+    )
+
+    assert configured.require_stage_c_controller_settings()[:2] == (
+        "example/md-to-word",
+        "http://sandbox.internal:8090",
+    )
+    assert "worker-secret" not in repr(configured)

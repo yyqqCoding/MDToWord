@@ -172,6 +172,11 @@ python -m pytest -q --junitxml=/result/full-junit.xml
 
 `target_test_selector` 必须匹配 `^[a-z0-9_]{1,80}$` 后再进入 argv；不得经 `sh -c`。
 
+Controller 与 Worker 的内部 HTTP 请求使用 JSON 封装上述 Job，并携带 Base64 编码的
+`source_archive`、`test_patch` 和 `fix_patch`。这些传输字段不是模型工具参数。Worker
+必须先认证，再校验 Job Schema、过期时间、Artifact 是否存在、大小和 SHA-256；同一
+`job_id` 对应不同请求指纹时返回冲突，不能覆盖已有结果。
+
 ## 7. Sandbox Result
 
 ```text
@@ -187,6 +192,10 @@ error_code
 
 stdout/stderr 各自最多保留 4 KB，先清理控制字符和密钥模式。结果内容仍视为不可信
 数据，只能作为下一轮模型的带边界输入。
+
+Worker 对已完成 `job_id` 持久化结构化结果；相同请求重试直接返回原结果，不重复启动
+容器。运行时 workspace diff 与授权补丁不一致时返回 `security_rejected`，不能把该次
+执行结果交给后续验证器。
 
 ## 8. 最终验证结果
 

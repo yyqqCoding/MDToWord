@@ -19,6 +19,7 @@ dev = [
 
 [project.scripts]
 mdtoword-agent = "agent.cli:main"
+mdtoword-sandbox-worker = "agent.sandbox.worker_http:main"
 
 [build-system]
 requires = ["setuptools>=75"]
@@ -28,7 +29,10 @@ build-backend = "setuptools.build_meta"
 include = ["agent*"]
 
 [tool.setuptools.package-data]
-agent = ["migrations/*.sql", "prompts/*.md"]
+agent = ["migrations/*.sql", "policies/*.json", "prompts/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["agent/tests"]
+markers = [
+  "docker: requires a locally built, digest-pinned sandbox image",
+]

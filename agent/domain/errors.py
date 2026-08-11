@@ -36,6 +36,42 @@ class SourceRevisionError(AgentError):
     error_code = "source_revision_error"
 
 
+class SourceSnapshotError(AgentError):
+    error_code = "source_snapshot_error"
+
+
+class SourceAccessError(AgentError):
+    error_code = "source_access_denied"
+
+
+class InvalidEditError(AgentError):
+    error_code = "invalid_edit"
+
+
+class PatchPolicyError(AgentError):
+    error_code = "patch_policy_rejected"
+
+
+class SandboxAuthenticationError(AgentError):
+    error_code = "sandbox_auth_error"
+
+
+class SandboxJobConflictError(AgentError):
+    error_code = "sandbox_job_conflict"
+
+
+class SandboxExecutionError(AgentError):
+    error_code = "sandbox_execution_error"
+
+
+class SandboxUnavailableError(AgentError):
+    error_code = "sandbox_unavailable"
+
+
+class ToolAuthorizationError(AgentError):
+    error_code = "tool_not_authorized"
+
+
 class InvalidArtifactPathError(AgentError):
     error_code = "invalid_artifact_path"
 

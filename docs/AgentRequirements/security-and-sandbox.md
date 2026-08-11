@@ -167,6 +167,10 @@ Controller 在执行前按固定顺序检查：
 Sandbox Worker部署在独立Linux执行环境，通过内部认证接口接收Controller Job。
 接口不暴露公网，不接受命令字符串。每个Job使用新容器和新workspace，结束后销毁。
 
+阶段 C 的 Worker 使用独立启动入口，只读取 `SANDBOX_*` 配置；不得把 Supabase、模型、
+Langfuse 或 GitHub 凭据注入 Worker 进程。Controller 与 Worker 共享的内部认证凭据只
+用于 `/v1/jobs`，不进入任务容器。
+
 ### 9.2 容器约束
 
 ```text

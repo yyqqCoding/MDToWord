@@ -1,0 +1,42 @@
+{
+  "version": "patch-policy-v1",
+  "read": {
+    "exact": [
+      "backend/app/normalizer.py",
+      "backend/app/pandoc_runner.py",
+      "backend/pyproject.toml",
+      "AGENTS.md",
+      "README.md"
+    ],
+    "patterns": [
+      "backend/tests/*.py",
+      "backend/tests/**/*.py"
+    ]
+  },
+  "write": {
+    "test_exact": [
+      "backend/tests/test_feedback_regressions.py"
+    ],
+    "test_prefixes": [
+      "backend/tests/fixtures/feedback/"
+    ],
+    "fix_exact": [
+      "backend/app/normalizer.py",
+      "backend/app/pandoc_runner.py"
+    ],
+    "full_file_exact": [
+      "backend/tests/test_feedback_regressions.py"
+    ],
+    "full_file_prefixes": [
+      "backend/tests/fixtures/feedback/"
+    ]
+  },
+  "limits": {
+    "max_file_bytes": 81920,
+    "max_tool_output_bytes": 20480,
+    "max_changed_files": 5,
+    "max_added_lines": 300,
+    "max_deleted_lines": 150,
+    "max_patch_bytes": 200000
+  }
+}

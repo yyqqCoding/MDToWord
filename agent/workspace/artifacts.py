@@ -75,6 +75,30 @@ class ArtifactStore:
         self._atomic_write(path, content)
         return self.ref_for(run_id, "gate.json")
 
+    def write_patch_ref(
+        self,
+        run_id: UUID | str,
+        filename: str,
+        content: bytes,
+    ) -> str:
+        """只保存已登记、大小受限的测试或修复 patch。"""
+
+        if filename not in {"test.patch", "fix.patch"}:
+            raise InvalidArtifactPathError("patch artifact filename is not registered")
+        if not content or len(content) > 200_000:
+            raise InvalidArtifactPathError("patch artifact size is invalid")
+        path = self.path_for(run_id, filename)
+        self._atomic_write(path, content)
+        return self.ref_for(run_id, filename)
+
+    def read_patch(self, reference: str) -> bytes:
+        """通过不暴露主机路径的 Artifact 引用读取 patch。"""
+
+        match = _ARTIFACT_REF.fullmatch(reference)
+        if match is None or match.group("filename") not in {"test.patch", "fix.patch"}:
+            raise InvalidArtifactPathError("patch artifact reference is invalid")
+        return self._read_reference(reference)
+
     def read_task(self, reference: str) -> TaskArtifact:
         return TaskArtifact.model_validate_json(self._read_reference(reference))
 

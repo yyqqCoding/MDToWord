@@ -1,11 +1,11 @@
 # MD To Word Agent
 
-当前实现到阶段 B3：具备严格 Feedback Gate、本地确定性路由、可恢复的 Gate-only
-LangGraph、PostgreSQL Checkpointer、单并发 Scheduler、Fake Provider、OpenAI 兼容
-Provider 和故障开放的 Langfuse Cloud Trace。
+当前实现到阶段 C：除阶段 B 的 Feedback Gate、可恢复 Runtime、真实 Provider 和
+Langfuse 外，已经具备固定 SHA 源码快照、受控读取/结构化编辑、Patch Policy、认证且
+幂等的 Sandbox Worker，以及固定命令的 Docker Runner。
 
-当前 CLI **只执行 Gate**。它不会读取源码、启动 Docker、修改代码或创建 PR；这些能力
-从阶段 C 开始实现。详细边界和验收记录见
+当前 Controller CLI **仍只执行 Gate**。阶段 C 组件会从阶段 D 开始接入复现 Graph；
+目前不会自动读取源码、启动 Docker、修改代码或创建 PR。详细边界和验收记录见
 [implementation-plan.md](../docs/AgentRequirements/implementation-plan.md)。
 
 ## 1. 安装与自动测试
@@ -20,8 +20,11 @@ uv sync --extra dev
 完整后端回归：
 
 ```bash
-cd backend
-.venv/bin/python -m pytest -v
+# Linux/macOS 后端独立 venv
+cd backend && .venv/bin/python -m pytest -v
+
+# 当前 Windows venv + WSL 工作区（从仓库根目录）
+backend/.venv/Scripts/python.exe -m pytest backend/tests -v
 ```
 
 ## 2. 数据库初始化
@@ -51,7 +54,7 @@ migration；数据库 owner 应在审查和备份后手工执行。
 
 默认 Provider 是 Fake，默认路由为 `needs_human`。其他路由仅用于确定性测试。请使用
 可丢弃的 `pending` 反馈；`accepted_backend_bug` 会按阶段设计将反馈停在
-`reproducing`，等待尚未实现的阶段 C：
+`reproducing`，等待阶段 D 将已实现的阶段 C 组件接入复现 Graph：
 
 ```bash
 .venv/bin/python -m agent.cli run --feedback-id <uuid> --dry-run
@@ -89,9 +92,54 @@ Markdown、联系方式、Prompt 或密钥。Langfuse 导出失败不改变 Gate
 
 ## 5. 当前验收结果
 
-- Agent 自动测试：88 passed；后端自动测试：42 passed；
+- Agent 自动测试：135 passed（包含真实 Docker 隔离测试）；后端自动测试：42 passed；
 - `gate-v2` 真实复测将“仅测试、不需要修复”路由为 `rejected_irrelevant`；
 - Prompt Injection 真实复测路由为 `quarantined_security`，`tool_calls=0`；
 - Langfuse 每次真实 Gate 包含 root Agent 和 `classify-intent` Generation，且抽查未发现
   完整 Markdown、描述或 contact；
+- 阶段 C 真实 Docker 隔离测试：1 passed；
 - 维护者暂不填写模型单价，因此数据库成本验收仍为延后项。
+
+## 6. 阶段 C Docker 验收
+
+阶段 C 当前验收结果为 `135 passed`，其中真实 Docker 隔离测试为 `1 passed`，没有
+跳过项。复测时先在 Docker Desktop 的 Settings → Resources → WSL Integration 中启用
+当前发行版，然后在仓库根目录执行：
+
+```bash
+docker build -f agent/sandbox/Dockerfile \
+  -t mdtoword-sandbox:stage-c .
+
+export SANDBOX_IMAGE_DIGEST="$(
+  docker image inspect --format '{{.Id}}' mdtoword-sandbox:stage-c
+)"
+
+.venv/bin/python -m pytest \
+  agent/tests/test_docker_integration.py -v -m docker
+```
+
+构建前可先用 `docker pull python:3.11-slim` 验证 Docker Engine 的网络。若出现
+`proxyconnect tcp` 或 Docker Engine 连接主机 `127.0.0.1` 被拒绝，说明问题位于 Docker
+Desktop/WSL 到主机代理的边界，不是项目代码或 `SANDBOX_*` 配置。此时应使用仅对
+Docker 生效且能从 Docker VM 访问的代理配置，或使用临时本地转发；不要为了构建修改
+其他 CMD 依赖的用户级代理，也不要把本机 IP、代理凭据写入 Dockerfile、`.env.example`
+或提交记录。构建完成后可检查镜像未固化代理变量：
+
+```bash
+docker image inspect mdtoword-sandbox:stage-c \
+  --format '{{json .Config.Env}}'
+```
+
+结果必须是 `1 passed`，不能是 skipped。该测试真实验证容器无外网、无业务 Secret、
+非 root、只读根文件系统、能力清空、`no-new-privileges`、内存/CPU/PID/超时限制、同一
+Job 只执行一次，并确认临时 workspace 已销毁。
+
+Worker 的独立启动入口为：
+
+```bash
+.venv/bin/python -m agent.sandbox.worker_http
+```
+
+启动前只向 Worker 注入 `.env.example` 中的 Worker-only `SANDBOX_*` 配置，不要加载
+Supabase、模型、Langfuse 或 GitHub Secret。开发环境默认绑定 `127.0.0.1:8090`；部署时
+只能暴露到 Controller 可访问的内部网络。
