@@ -52,6 +52,12 @@ class PatchPolicyError(AgentError):
     error_code = "patch_policy_rejected"
 
 
+class ExternalDependencyError(PatchPolicyError):
+    """修复需要当前固定运行环境之外的依赖，应交由人工评估部署变更。"""
+
+    error_code = "external_dependency_required"
+
+
 class SandboxAuthenticationError(AgentError):
     error_code = "sandbox_auth_error"
 
@@ -116,3 +122,7 @@ class DuplicateAgentRunError(AgentError):
 
 class CheckpointConfigurationError(AgentError):
     error_code = "checkpoint_configuration_error"
+
+
+class BudgetExceededError(AgentError):
+    error_code = "budget_exhausted"

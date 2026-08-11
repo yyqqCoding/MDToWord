@@ -77,6 +77,7 @@ async def execute_feedback_gate(
         )
     result = apply_gate_policy(
         response.output,
+        task=task,
         min_confidence=min_confidence,
         model_calls=response.model_calls,
     )

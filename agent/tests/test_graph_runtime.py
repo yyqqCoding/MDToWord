@@ -1,7 +1,8 @@
 import asyncio
 from decimal import Decimal
 from pathlib import Path
-from uuid import uuid4
+from types import SimpleNamespace
+from uuid import UUID, uuid4
 
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
@@ -16,11 +17,12 @@ from agent.domain.enums import (
     GateRoute,
 )
 from agent.domain.gate import GateClassification
-from agent.domain.errors import ModelAuthError, SourceAccessError
-from agent.domain.models import FeedbackRecord
+from agent.domain.errors import ModelAuthError, ModelTimeoutError, SourceAccessError
+from agent.domain.models import AgentRunRecord, FeedbackRecord
 from agent.providers.base import StructuredModelResponse
 from agent.providers.fake import FakeModelProvider
 from agent.repositories.fake import FakeAgentRunRepository, FakeFeedbackRepository
+from agent.state import AgentState, UsageTotals
 from agent.workspace.artifacts import ArtifactStore
 
 
@@ -273,3 +275,72 @@ def test_non_retryable_failure_terminalizes_run_and_feedback(
     assert feedback.last_error_code == error_code
     assert failed_run.status is AgentRunStatus.FAILED
     assert failed_run.error_message == type(failure).__name__
+
+
+def test_failure_finalization_persists_newer_checkpoint_usage(tmp_path: Path):
+    async def scenario():
+        feedback = make_feedback()
+        claim_token = UUID("11111111-1111-4111-8111-111111111111")
+        feedback.status = FeedbackStatus.REPAIRING
+        feedback.claim_token = claim_token
+        feedback_repository = FakeFeedbackRepository([feedback])
+        run_id = uuid4()
+        run = AgentRunRecord(
+            id=run_id,
+            feedback_id=feedback.id,
+            claim_token=claim_token,
+            trace_id="a" * 32,
+            status=AgentRunStatus.REPAIRING,
+            graph_version="test",
+            policy_version="test",
+            artifact_path=f"run://{run_id}",
+            task_artifact_ref=f"run://{run_id}/task.redacted.json",
+            model_calls=3,
+            tool_calls=8,
+            total_tokens=100,
+        )
+        run_repository = FakeAgentRunRepository([run])
+        controller = GateController(
+            feedback_repository=feedback_repository,
+            run_repository=run_repository,
+            provider=FakeModelProvider([]),
+            artifact_store=ArtifactStore(tmp_path),
+            checkpointer=InMemorySaver(),
+        )
+        checkpoint_state = AgentState(
+            run_id=run_id,
+            feedback_id=feedback.id,
+            claim_token=claim_token,
+            trace_id=run.trace_id,
+            status=AgentRunStatus.REPAIRING,
+            model_calls=4,
+            tool_calls=11,
+            usage=UsageTotals(
+                input_tokens=120,
+                output_tokens=30,
+                total_tokens=150,
+                estimated_cost=Decimal("0.012"),
+            ),
+        )
+
+        class CheckpointGraph:
+            async def aget_state(self, config):
+                del config
+                return SimpleNamespace(values=checkpoint_state.model_dump())
+
+        controller.graph = CheckpointGraph()
+        await controller._finalize_run_failure(run_id, ModelTimeoutError("timeout"))
+        return await run_repository.get(run_id), await feedback_repository.get(feedback.id)
+
+    failed_run, failed_feedback = asyncio.run(scenario())
+
+    assert failed_run is not None and failed_run.status is AgentRunStatus.FAILED
+    assert failed_run.model_calls == 4
+    assert failed_run.tool_calls == 11
+    assert failed_run.input_tokens == 120
+    assert failed_run.output_tokens == 30
+    assert failed_run.total_tokens == 150
+    assert failed_run.estimated_cost == Decimal("0.012")
+    assert failed_feedback is not None
+    assert failed_feedback.status is FeedbackStatus.FAILED
+    assert failed_feedback.last_error_code == "timeout"

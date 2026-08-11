@@ -20,11 +20,11 @@ Edge 插件
 GitHub 负责源码、分支、PR 和人工协作，不负责调度、执行、沙箱或 Agent 密钥。
 Agent Controller 是常驻自托管服务；Sandbox Worker 是执行不可信代码的隔离边界。
 
-截至阶段 D，已实现 Supabase 领取、Gate 与最多两轮自动复现 LangGraph、模型 Provider、
-运行持久化、Langfuse Trace、Source Workspace、受控测试编辑和独立 Docker Sandbox
-Worker。CLI 默认仍只执行 Gate；只有维护者显式使用 `--reproduce --provider configured`
-时，已接受的后端缺陷才会进入复现子图。修复、独立验证和 GitHub Publisher 由阶段 E、
-F 接入；当前流程不会生成修复或创建 PR。
+截至阶段 E，已实现 Supabase 领取、Gate、最多两轮自动复现与修复、独立验证、模型
+Provider、运行持久化、Langfuse Trace、Source Workspace、受控结构化编辑和独立 Docker
+Sandbox Worker。CLI 默认仍只执行 Gate；维护者显式使用 `--reproduce` 执行到复现，使用
+`--repair` 执行完整 D+E。阶段 E 只生成验证 Artifact；GitHub Publisher 由阶段 F 接入，
+当前流程不会创建 PR。
 
 ## 2. 部署单元
 
@@ -162,7 +162,7 @@ pr_url, resolved_at, updated_at
 id, feedback_id, claim_token, trace_id, status, route, category, dry_run,
 task_artifact_ref, base_sha, extension_version,
 provider, model, graph_version, prompt_versions, policy_version,
-langfuse_trace_id, classification, reproduction, validation,
+langfuse_trace_id, classification, reproduction, repair, validation,
 model_calls, tool_calls, input_tokens, output_tokens, estimated_cost,
 validated_patch_sha256, artifact_path, pr_url,
 error_code, error_message, started_at, finished_at
@@ -184,6 +184,7 @@ MVP 使用 Controller 管理的本地运行目录：
   test.patch
   fix.patch
   validated.patch
+  repair-result.json
   reproduction-junit.xml
   validation-junit.xml
   validation.json

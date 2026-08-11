@@ -2,7 +2,12 @@ from pathlib import Path
 
 import pytest
 
-from agent.domain.errors import InvalidEditError, PatchPolicyError, SourceAccessError
+from agent.domain.errors import (
+    ExternalDependencyError,
+    InvalidEditError,
+    PatchPolicyError,
+    SourceAccessError,
+)
 from agent.workspace.edits import Edit, EditMode, EditPhase, PatchBuilder
 from agent.workspace.patch_policy import PatchPolicy
 
@@ -76,6 +81,7 @@ def test_fix_edit_can_only_change_registered_backend_source(tmp_path: Path):
         (EditPhase.FIX, "extension/manifest.json"),
         (EditPhase.FIX, ".github/workflows/deploy.yml"),
         (EditPhase.FIX, "backend/pyproject.toml"),
+        (EditPhase.FIX, "backend/tests/test_feedback_regressions.py"),
         (EditPhase.TEST, "backend/tests/conftest.py"),
         (EditPhase.FIX, "agent/config.py"),
     ),
@@ -136,6 +142,54 @@ def test_full_file_is_not_allowed_for_fix_source(tmp_path: Path):
         )
 
 
+def test_fix_cannot_add_broad_exception_fallback(tmp_path: Path):
+    with pytest.raises(PatchPolicyError):
+        PatchBuilder(PatchPolicy.load_default()).build(
+            _snapshot(tmp_path),
+            (
+                Edit(
+                    path="backend/app/normalizer.py",
+                    mode=EditMode.SEARCH_REPLACE,
+                    search="    return text\n",
+                    replace=(
+                        "    try:\n"
+                        "        return text\n"
+                        "    except Exception:\n"
+                        "        return ''\n"
+                    ),
+                ),
+            ),
+            EditPhase.FIX,
+        )
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    (
+        "    return text if shutil.which('pandoc-mermaid') else text\n",
+        "    return '--filter' + text\n",
+        "    return '--lua-filter' + text\n",
+    ),
+)
+def test_fix_requiring_external_pandoc_dependency_is_routed_to_human(
+    tmp_path: Path,
+    replacement: str,
+):
+    with pytest.raises(ExternalDependencyError):
+        PatchBuilder(PatchPolicy.load_default()).build(
+            _snapshot(tmp_path),
+            (
+                Edit(
+                    path="backend/app/normalizer.py",
+                    mode=EditMode.SEARCH_REPLACE,
+                    search="    return text\n",
+                    replace=replacement,
+                ),
+            ),
+            EditPhase.FIX,
+        )
+
+
 def test_test_edit_cannot_delete_or_weaken_existing_regressions(tmp_path: Path):
     with pytest.raises(PatchPolicyError):
         PatchBuilder(PatchPolicy.load_default()).build(
@@ -175,6 +229,7 @@ def test_edit_schema_rejects_command_and_environment_fields():
         "pytest_plugins = ['external_plugin']\n",
         "import zipfile\n",
         "import xml.etree.ElementTree\n",
+        "import pytest\npytest.skip('weaken regression')\n",
     ),
 )
 def test_test_edit_rejects_new_network_shell_secret_and_pytest_hook_capabilities(

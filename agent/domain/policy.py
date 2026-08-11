@@ -1,3 +1,4 @@
+from agent.domain.content import contains_mermaid_diagram
 from agent.domain.enums import (
     FeedbackType,
     GateCategory,
@@ -54,6 +55,7 @@ def deterministic_gate_result(
 def apply_gate_policy(
     classification: GateClassification,
     *,
+    task: TaskArtifact,
     min_confidence: float = MIN_GATE_CONFIDENCE,
     model_calls: int = 1,
 ) -> GateResult:
@@ -96,7 +98,12 @@ def apply_gate_policy(
             "confidence_below_threshold",
             model_calls=model_calls,
         )
-    if not classification.sufficient_information:
+    mermaid_docx_evidence = (
+        classification.intent is GateIntent.BUG_REPORT
+        and classification.category is GateCategory.DOCX_STRUCTURE
+        and contains_mermaid_diagram(task.markdown_content)
+    )
+    if not classification.sufficient_information and not mermaid_docx_evidence:
         return _classified_terminal(
             GateRoute.NEEDS_HUMAN,
             classification,

@@ -48,3 +48,14 @@ def test_stage_d_migration_indexes_all_resumable_reproduction_states():
     assert "preparing_source" in sql
     assert "reproducing" in sql
     assert "agent_runs_resumable_idx" in sql
+
+
+def test_stage_e_migration_adds_repair_summary_and_resumable_states():
+    sql = (
+        Path(__file__).parents[1] / "migrations" / "004_repair_runtime.sql"
+    ).read_text(encoding="utf-8").lower()
+
+    assert "add column if not exists repair jsonb" in sql
+    assert "repairing" in sql
+    assert "validating" in sql
+    assert "agent_runs_resumable_idx" in sql

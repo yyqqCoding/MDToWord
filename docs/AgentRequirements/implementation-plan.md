@@ -124,6 +124,7 @@ backend/tests/
 ### 交付
 
 - `plan_reproduction`与`generate_test`节点；
+- Mermaid 首轮 `invalid_test_edit` 的受信 drawing 测试模板，仅在第二轮启用；
 - 测试结构化编辑与固定测试文件策略；
 - JUnit解析、目标失败分类和错误摘要；
 - 最多两轮的复现子图；
@@ -706,13 +707,98 @@ Cloud，使真实 Gate 调用具备严格结构化输出、有限重试、真实
   `repairing`，复现 disposition 为 `reproduced`。本次真实运行记录 5 次模型调用、14 次
   工具调用、68,094 tokens，完成 Supabase、Langfuse、GitHub、模型与 Sandbox 端到端验收。
 
+### 阶段 E 实施检查点
+
+**状态：Implemented（2026-08-11）**
+
+**已实现**
+
+- `generate_fix_edit -> run_target_validation -> classify_target` 修复子图最多执行两轮；
+  每轮都读取同一固定快照并把 test/fix patch 发送到新的 Sandbox Job，不继承上一轮
+  workspace；
+- `FixGenerationResult` 使用严格 Schema，模型无工具权限；修复只允许结构化修改
+  `backend/app/normalizer.py` 或 `backend/app/pandoc_runner.py`，测试、fixture、依赖、配置、
+  extension、Agent 和部署文件均在执行前拒绝；
+- 修复源码若新增 `shutil.which` 外部程序探测或 Pandoc `--filter/--lua-filter`，本地 Policy
+  判定为依赖/部署变更并转 `needs_human`；该口径区别于危险能力的
+  `security_rejected`，且不会启动目标 Sandbox 或继续第二轮模型请求；
+- test/fix patch 在原始快照上重新应用并显式检查文件互斥；组合后的确定性 diff 写入
+  `validated.patch`，其内容 SHA-256 写入 `ValidationResult`；
+- 目标修复通过后，`validate_final` 使用三个确定性 Job 和三个全新容器，依次重新证明
+  仅 test patch 时基线目标失败、test+fix 时目标通过、后端全量 pytest 与同一受信 DOCX
+  Oracle 通过；workspace diff 必须与授权 test patch 或组合 patch 的 Hash 一致；
+- 全量验证要求无 failure/error，目标测试实际收集并通过，且 skipped 不超过配置的固定
+  基线；`passed` 完全由 Controller 计算，模型和 Worker 都不能直接提供；
+- 默认运行预算为 8 次模型、30 次工具、200,000 tokens 和 900 秒 Sandbox。每个后续
+  模型/沙箱节点执行前检查预算；耗尽后反馈进入 `failed`、run 进入
+  `budget_exhausted`，不再产生外部调用；
+- `004_repair_runtime.sql` 新增 repair 摘要并把 `repairing/validating` 纳入恢复索引；
+  `--repair --provider configured` 可从新反馈执行完整 D+E，也可把阶段 D 已到 END 的
+  `repairing` checkpoint 从 `finish_reproduction` 继续，不重新领取反馈或重跑 Gate；
+- 当前阶段只产出已验证 Artifact，不创建分支、提交或 PR；发布仍属于阶段 F。
+- 模型、结构化响应或源码访问失败终结 run 时，Controller 会合并数据库摘要与最新
+  checkpoint 的单调用量，避免修复节点已完成但尚未到数据库汇总节点时丢失计量。
+
+**自动验收证据**
+
+- Agent 全量测试：217 passed，无 skipped；覆盖首轮成功、第二轮成功、两轮失败、旧
+  checkpoint 续跑、fix 触碰测试拒绝、目标通过但全量回归、skipped 增加、DOCX Oracle
+  失败、组合 patch Hash、预算停止、外部依赖转人工及失败 checkpoint 用量落库；
+- 真实 Docker 集成：4 passed；Mermaid 受信模板在固定镜像中只收集唯一目标并得到
+  `AssertionError/reproduced`；阶段 E 另用三个独立容器得到基线 AssertionError、修复后
+  目标通过和全量通过，修复后 workspace diff 与 `validated.patch` Hash 一致；
+- 后端全量测试：固定 Sandbox 镜像只读挂载当前工作区后 44 passed，保留 1 条既有
+  Starlette/httpx 弃用警告；
+- 真实 run `27d1b938-...` 从阶段 D checkpoint 进入阶段 E。第一轮模型生成了调用
+  `pandoc-mermaid` 的修复，目标 Sandbox 正确失败；第二轮模型请求在 300 秒后以
+  `timeout` 终结。该 run 的数据库摘要仍停留在阶段 D 的 5 次模型、14 次工具和 68,094
+  tokens，证明当时存在失败前 checkpoint 用量未汇总的问题；上述两项缺口现已由本地
+  Policy 与失败终结逻辑修正。历史失败 run 不重新打开；当时待新 feedback/run 复验的
+  `external_dependency_required -> needs_human` 终态，现已由下述最终真实 run 覆盖；
+- 新 run `8d86f6cb-...` 在第二轮生成了正确的 Mermaid drawing Oracle，Sandbox 得到明确
+  `AssertionError: expected at least 1 drawing(s), got 0`，但 pytest JUnit 未写 `type`
+  属性。旧逻辑扫描完整 traceback 时把变量名 `FIXTURES` 误命中为 fixture 基础设施错误，
+  因而历史 run 终结为 `cannot_reproduce/invalid_test_infrastructure`。解析器现从 JUnit
+  `message` 开头推断异常类型，基础设施判定只检查类型、不扫描测试源码 traceback；该
+  回归由真实报告形态测试覆盖，后续 Stage E 路由已由下述最终真实 run 验证。
+- 真实 run `aae54eec-...` 的模型分类为 `bug_report/docx_structure`、相关度 `0.95` 且无
+  注入/前端依赖，但把完整 Mermaid 源码与明确 Word 导出故障误判为信息不足，Gate 因此
+  终结为 `needs_human`。`repair-policy-v2` 增加窄范围确定性校正：仅在上述后端分类与
+  Mermaid 内容证据同时成立时忽略单一 `sufficient_information=false`；其他安全与范围
+  路由不变。该历史 run 不重新打开，后续 Stage E 路由已由下述最终真实 run 验证。
+- `repair-policy-v2` 的真实 run `4aee5378-...` 已通过 Gate 并生成合规 Mermaid drawing
+  复现计划，证明上述校正真实生效；第一轮结构化测试编辑未通过本地文本/Python 校验，
+  有界第二轮生成又在 Provider 格式修正后仍不符合严格 Schema，run 以
+  `invalid_response` 终结（3 次已完成模型调用、7 次工具、24,015 tokens）。该路径没有
+  启动 Sandbox，属于当前模型测试生成稳定性，终态 run 不恢复或重复领取；
+- `agent-graph-v4/repair-policy-v3` 针对上述稳定性问题增加受信回退：仅当完整 Mermaid
+  drawing 计划的第一轮模型编辑为 `invalid_test_edit` 时，第二轮确定性生成固定测试文件
+  与 Markdown fixture，不再发起模型调用。模板保留基线已有回归、只调用登记的
+  `assert_minimum_drawing_count`，并继续经过路径/AST/规模 Policy 和全新 Sandbox；领域与
+  Graph 回归证明模型只调用一次且目标失败进入 `repairing/reproduced`；
+- 真实 run `bab5a685-...` 在第一轮生成合法 drawing 测试，Sandbox 只收集唯一目标并以
+  `AssertionError/reproduced` 进入 Stage E；首次 `generate_fix` 请求在 300 秒后超时，
+  run 正确终结为 `failed/timeout`，并从 checkpoint 汇总 4 次模型、8 次工具和 53,862
+  tokens，证明失败用量修正确实生效。由于当前固定镜像无 Mermaid 渲染器，该场景的
+  正确修复必然要求依赖/部署评估；`agent-graph-v5/repair-policy-v4` 因此在复现确认后的
+  repair scope 节点直接输出 `external_dependency_required/needs_human`，不读取修复源码、
+  不调用 `generate_fix`。非 Mermaid 修复循环保持不变；
+- 最终真实 feedback `c9c53e99-...` / run `3a41124d-...` 使用
+  `agent-graph-v5/repair-policy-v4` 完成全链路：Gate 接受后第一轮 Sandbox 产生
+  `AssertionError/reproduced`，repair scope 随即写入
+  `needs_human/external_dependency_required`，run 以 `completed` 终结。数据库中的
+  feedback、run、reproduction、repair disposition 与错误码一致；记录 4 次模型、7 次
+  工具、18,404 input、17,812 output、36,216 total tokens，Artifact 包含
+  `result.json/test.patch/repair-result.json`，且没有 validation 或 `validated.patch`，符合
+  依赖/部署问题不得伪造已验证补丁的边界。真实阶段 E 终态验收完成。
+
 | 阶段 | 状态 | 验收日期 | 证据 |
 |---|---|---|---|
 | A 基线、配置与持久化 | Implemented | 2026-08-10 | Agent 30 passed；Backend 42 passed；Supabase migration/RLS/RPC/claim 验收通过 |
 | B LangGraph Gate与Langfuse | 进行中（B1/B2完成；B3功能与安全通过，成本延后） | - | Agent 88 passed；真实分类/注入隔离/Trace/Token/Masking通过；数据库成本待配置 |
 | C 源码工具与Docker Worker | Implemented | 2026-08-11 | Agent 135 passed；Docker 集成 1 passed；Backend 42 passed |
 | D 自动复现 | Implemented | 2026-08-11 | Agent 178 passed；Docker 2 passed；Backend 44 passed；真实 Mermaid 反馈在固定 SHA 上产生目标断言失败并进入 `repairing/reproduced` |
-| E 修复与独立验证 | 未开始 | - | - |
+| E 修复与独立验证 | Implemented | 2026-08-11 | Agent 217 passed；Docker 4 passed；Backend 44 passed；真实 run 完成 `reproduced -> needs_human/external_dependency_required`，无伪造 validation |
 | F GitHub PR | 未开始 | - | - |
 | G 评估与投产 | 未开始 | - | - |
 

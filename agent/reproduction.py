@@ -6,14 +6,17 @@ from decimal import Decimal
 from importlib.resources import files
 
 from agent.domain.errors import InvalidModelResponseError
+from agent.domain.content import contains_mermaid_diagram
 from agent.domain.models import TaskArtifact
 from agent.domain.reproduction import (
+    ExpectedFailureKind,
     ReproductionPlan,
     ReproductionReport,
     TestGenerationResult,
 )
 from agent.providers.base import ModelMessage, ModelProvider, StructuredModelResponse
 from agent.tools.source import SourceFileResult
+from agent.workspace.edits import Edit, EditMode
 
 
 REPRODUCTION_PLAN_PROMPT_VERSION = "reproduction-plan-v3"
@@ -29,6 +32,80 @@ class ReproductionModelExecution:
     total_tokens: int = 0
     estimated_cost: Decimal = Decimal("0")
     model_calls: int = 1
+
+
+def build_mermaid_test_fallback(
+    task: TaskArtifact,
+    *,
+    plan: ReproductionPlan,
+    previous_report: ReproductionReport | None,
+    existing_test_source: str,
+) -> TestGenerationResult | None:
+    """首轮文本编辑无效时，用固定受信模板生成 Mermaid drawing 回归测试。"""
+
+    if (
+        previous_report is None
+        or previous_report.failure_code != "invalid_test_edit"
+        or not contains_mermaid_diagram(task.markdown_content)
+        or plan.expected_failure_kind is not ExpectedFailureKind.ASSERTION
+        or plan.oracle.trusted_assertion_name() != "assert_minimum_drawing_count"
+    ):
+        return None
+
+    fixture_name = f"{plan.target_test_selector}.md"
+    fixture_path = f"backend/tests/fixtures/feedback/{fixture_name}"
+    # 回退模板只拼接一个独立测试，保留固定快照中已有的真实回归用例。
+    test_function = (
+        f"def {plan.target_test_selector}(tmp_path):\n"
+        "    from pathlib import Path\n\n"
+        "    from app.pandoc_runner import convert_markdown_to_docx\n"
+        "    from docx_assertions import assert_minimum_drawing_count\n\n"
+        f'    fixture = Path(__file__).parent / "fixtures" / "feedback" / "{fixture_name}"\n'
+        '    markdown = fixture.read_text(encoding="utf-8")\n'
+        "    docx_bytes = convert_markdown_to_docx(markdown, tmp_path)\n"
+        "    assert_minimum_drawing_count(docx_bytes, 1)\n"
+    )
+    test_source = existing_test_source
+    if test_source and not test_source.endswith("\n"):
+        test_source += "\n"
+    if test_source:
+        test_source += "\n\n"
+    test_source += test_function
+
+    allowed_fix_paths = {
+        "backend/app/normalizer.py",
+        "backend/app/pandoc_runner.py",
+    }
+    # 后续修复仍以模型原计划的只读范围为上限，模板不能自行扩大源码权限。
+    fix_paths = tuple(
+        dict.fromkeys(
+            request.path
+            for request in plan.files_to_read
+            if request.path in allowed_fix_paths
+        )
+    )
+    generated = TestGenerationResult(
+        edits=(
+            Edit(
+                path="backend/tests/test_feedback_regressions.py",
+                mode=EditMode.FULL_FILE,
+                content=test_source,
+            ),
+            Edit(
+                path=fixture_path,
+                mode=EditMode.FULL_FILE,
+                content=task.markdown_content.rstrip("\n") + "\n",
+            ),
+        ),
+        target_test_selector=plan.target_test_selector,
+        oracle=plan.oracle,
+        expected_failure_kind=plan.expected_failure_kind,
+        reason="trusted Mermaid drawing regression fallback after invalid model edit",
+        files_needed_for_fix=fix_paths,
+        extension_sync_required=False,
+    )
+    generated.validate_against(task.feedback_id, plan)
+    return generated
 
 
 async def plan_reproduction(

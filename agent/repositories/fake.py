@@ -3,7 +3,13 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID, uuid4
 
-from agent.domain.enums import AgentRunStatus, FeedbackStatus, GateCategory, RiskLevel
+from agent.domain.enums import (
+    AgentRunStatus,
+    FeedbackStatus,
+    GateCategory,
+    GateRoute,
+    RiskLevel,
+)
 from agent.domain.errors import (
     AgentRunNotFoundError,
     ClaimTokenMismatchError,
@@ -15,6 +21,7 @@ from agent.domain.errors import (
 from agent.domain.gate import GateResult
 from agent.domain.models import AgentRunRecord, FeedbackRecord
 from agent.domain.reproduction import ReproductionReport
+from agent.domain.repair import RepairDisposition, RepairReport, ValidationResult
 from agent.domain.transitions import ensure_agent_run_transition
 from agent.domain.transitions import ensure_feedback_transition
 
@@ -251,6 +258,8 @@ class FakeAgentRunRepository:
                         AgentRunStatus.GATING,
                         AgentRunStatus.PREPARING_SOURCE,
                         AgentRunStatus.REPRODUCING,
+                        AgentRunStatus.REPAIRING,
+                        AgentRunStatus.VALIDATING,
                     }
                 ),
                 key=lambda run: (run.started_at, str(run.id)),
@@ -383,18 +392,171 @@ class FakeAgentRunRepository:
                 run.finished_at = datetime.now(UTC)
             return run.model_copy(deep=True)
 
+    async def mark_validating(
+        self,
+        run_id: UUID,
+        report: RepairReport,
+        *,
+        model_calls: int,
+        tool_calls: int,
+        input_tokens: int,
+        output_tokens: int,
+        total_tokens: int,
+        estimated_cost: Decimal,
+    ) -> AgentRunRecord:
+        async with self._lock:
+            run = self._require(run_id)
+            if run.status is AgentRunStatus.VALIDATING:
+                return run.model_copy(deep=True)
+            ensure_agent_run_transition(run.status, AgentRunStatus.VALIDATING)
+            run.status = AgentRunStatus.VALIDATING
+            run.repair = report.model_dump(mode="json")
+            _set_usage(
+                run,
+                model_calls=model_calls,
+                tool_calls=tool_calls,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                total_tokens=total_tokens,
+                estimated_cost=estimated_cost,
+            )
+            return run.model_copy(deep=True)
+
+    async def complete_repair_failure(
+        self,
+        run_id: UUID,
+        report: RepairReport,
+        *,
+        model_calls: int,
+        tool_calls: int,
+        input_tokens: int,
+        output_tokens: int,
+        total_tokens: int,
+        estimated_cost: Decimal,
+        security_rejected: bool = False,
+    ) -> AgentRunRecord:
+        async with self._lock:
+            run = self._require(run_id)
+            target = (
+                AgentRunStatus.SECURITY_REJECTED
+                if security_rejected
+                else AgentRunStatus.COMPLETED
+            )
+            if run.status is target:
+                return run.model_copy(deep=True)
+            ensure_agent_run_transition(run.status, target)
+            run.status = target
+            if report.disposition is RepairDisposition.NEEDS_HUMAN:
+                run.route = GateRoute.NEEDS_HUMAN
+            run.repair = report.model_dump(mode="json")
+            run.error_code = report.failure_code
+            run.error_message = report.failure_summary
+            _set_usage(
+                run,
+                model_calls=model_calls,
+                tool_calls=tool_calls,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                total_tokens=total_tokens,
+                estimated_cost=estimated_cost,
+            )
+            run.finished_at = datetime.now(UTC)
+            return run.model_copy(deep=True)
+
+    async def complete_validation(
+        self,
+        run_id: UUID,
+        result: ValidationResult,
+        *,
+        model_calls: int,
+        tool_calls: int,
+        input_tokens: int,
+        output_tokens: int,
+        total_tokens: int,
+        estimated_cost: Decimal,
+    ) -> AgentRunRecord:
+        async with self._lock:
+            run = self._require(run_id)
+            if run.status is AgentRunStatus.COMPLETED:
+                return run.model_copy(deep=True)
+            ensure_agent_run_transition(run.status, AgentRunStatus.COMPLETED)
+            run.status = AgentRunStatus.COMPLETED
+            run.validation = result.model_dump(mode="json")
+            run.validated_patch_sha256 = (
+                result.validated_patch_sha256 if result.passed else None
+            )
+            run.error_code = result.failure_code
+            run.error_message = result.failure_summary
+            _set_usage(
+                run,
+                model_calls=model_calls,
+                tool_calls=tool_calls,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                total_tokens=total_tokens,
+                estimated_cost=estimated_cost,
+            )
+            run.finished_at = datetime.now(UTC)
+            return run.model_copy(deep=True)
+
+    async def exhaust_budget(
+        self,
+        run_id: UUID,
+        *,
+        model_calls: int,
+        tool_calls: int,
+        input_tokens: int,
+        output_tokens: int,
+        total_tokens: int,
+        estimated_cost: Decimal,
+    ) -> AgentRunRecord:
+        async with self._lock:
+            run = self._require(run_id)
+            if run.status is AgentRunStatus.BUDGET_EXHAUSTED:
+                return run.model_copy(deep=True)
+            ensure_agent_run_transition(run.status, AgentRunStatus.BUDGET_EXHAUSTED)
+            run.status = AgentRunStatus.BUDGET_EXHAUSTED
+            run.error_code = "budget_exhausted"
+            run.error_message = "run budget was exhausted"
+            _set_usage(
+                run,
+                model_calls=model_calls,
+                tool_calls=tool_calls,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                total_tokens=total_tokens,
+                estimated_cost=estimated_cost,
+            )
+            run.finished_at = datetime.now(UTC)
+            return run.model_copy(deep=True)
+
     async def fail(
         self,
         run_id: UUID,
         *,
         error_code: str,
         error_message: str,
+        model_calls: int,
+        tool_calls: int,
+        input_tokens: int,
+        output_tokens: int,
+        total_tokens: int,
+        estimated_cost: Decimal,
     ) -> AgentRunRecord:
         async with self._lock:
             run = self._require(run_id)
             run.status = AgentRunStatus.FAILED
             run.error_code = error_code
             run.error_message = error_message
+            _set_usage(
+                run,
+                model_calls=model_calls,
+                tool_calls=tool_calls,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                total_tokens=total_tokens,
+                estimated_cost=estimated_cost,
+            )
             run.finished_at = datetime.now(UTC)
             return run.model_copy(deep=True)
 
@@ -403,3 +565,21 @@ class FakeAgentRunRepository:
         if run is None:
             raise AgentRunNotFoundError(f"agent run {run_id} does not exist")
         return run
+
+
+def _set_usage(
+    run: AgentRunRecord,
+    *,
+    model_calls: int,
+    tool_calls: int,
+    input_tokens: int,
+    output_tokens: int,
+    total_tokens: int,
+    estimated_cost: Decimal,
+) -> None:
+    run.model_calls = model_calls
+    run.tool_calls = tool_calls
+    run.input_tokens = input_tokens
+    run.output_tokens = output_tokens
+    run.total_tokens = total_tokens
+    run.estimated_cost = estimated_cost

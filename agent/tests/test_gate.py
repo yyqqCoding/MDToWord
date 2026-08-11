@@ -166,6 +166,25 @@ def test_uncertain_or_incomplete_feedback_needs_human(classified):
     assert result.route is GateRoute.NEEDS_HUMAN
 
 
+def test_explicit_mermaid_docx_failure_overrides_only_insufficient_flag():
+    task = make_task(
+        markdown="graph TD\nA([开始]) --> B([结束])",
+        description="导出 Word 后只显示 Mermaid 源码，未生成流程图",
+    )
+    classified = classification(
+        category=GateCategory.DOCX_STRUCTURE,
+        relevance=0.95,
+        sufficient_information=False,
+    )
+
+    result = asyncio.run(
+        run_feedback_gate(task, FakeModelProvider([classified]))
+    )
+
+    assert result.route is GateRoute.ACCEPTED_BACKEND_BUG
+    assert result.policy_reason == "backend_bug_accepted"
+
+
 @pytest.mark.parametrize(
     ("task", "duplicate_found", "expected_route"),
     [

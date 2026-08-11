@@ -1,10 +1,16 @@
 """使用 XML 结构解析 pytest JUnit，禁止依赖 stdout 正则判断结果。"""
 
+import re
 from pathlib import Path
 from xml.etree import ElementTree
 
 from agent.sandbox.contracts import JUnitSummary, TargetTestOutcome
 from agent.telemetry.masking import mask_text
+
+
+_FAILURE_TYPE_PATTERN = re.compile(
+    r"^(?P<type>[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception))\b"
+)
 
 
 def parse_junit_summary(path: Path, target_selector: str | None) -> JUnitSummary:
@@ -40,15 +46,15 @@ def parse_junit_summary(path: Path, target_selector: str | None) -> JUnitSummary
         target_collected = True
         if error is not None:
             target_outcome = TargetTestOutcome.ERROR
-            target_failure_type = error.attrib.get("type")
+            target_failure_type = _failure_type(error)
             target_message = _bounded_failure_text(error)
         elif failure is not None:
             target_outcome = TargetTestOutcome.FAILED
-            target_failure_type = failure.attrib.get("type")
+            target_failure_type = _failure_type(failure)
             target_message = _bounded_failure_text(failure)
         elif skip is not None:
             target_outcome = TargetTestOutcome.SKIPPED
-            target_failure_type = skip.attrib.get("type")
+            target_failure_type = _failure_type(skip)
             target_message = _bounded_failure_text(skip)
         elif target_outcome is TargetTestOutcome.NOT_COLLECTED:
             target_outcome = TargetTestOutcome.PASSED
@@ -63,6 +69,17 @@ def parse_junit_summary(path: Path, target_selector: str | None) -> JUnitSummary
         target_failure_type=target_failure_type,
         target_message=target_message,
     )
+
+
+def _failure_type(element: ElementTree.Element) -> str | None:
+    """兼容 pytest 未写 type、只在 JUnit message 开头写异常类名的报告。"""
+
+    explicit = element.attrib.get("type", "").strip()
+    if explicit:
+        return explicit[:200]
+    message = element.attrib.get("message", "").strip()
+    match = _FAILURE_TYPE_PATTERN.match(message)
+    return match.group("type")[:200] if match else None
 
 
 def _bounded_failure_text(element: ElementTree.Element) -> str:

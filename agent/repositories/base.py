@@ -7,6 +7,7 @@ from agent.domain.enums import FeedbackStatus, GateCategory, RiskLevel
 from agent.domain.gate import GateResult
 from agent.domain.models import AgentRunRecord, FeedbackRecord
 from agent.domain.reproduction import ReproductionReport
+from agent.domain.repair import RepairReport, ValidationResult
 
 
 class FeedbackRepository(Protocol):
@@ -105,10 +106,68 @@ class AgentRunRepository(Protocol):
         security_rejected: bool = False,
     ) -> AgentRunRecord: ...
 
+    async def mark_validating(
+        self,
+        run_id: UUID,
+        report: RepairReport,
+        *,
+        model_calls: int,
+        tool_calls: int,
+        input_tokens: int,
+        output_tokens: int,
+        total_tokens: int,
+        estimated_cost: Decimal,
+    ) -> AgentRunRecord: ...
+
+    async def complete_repair_failure(
+        self,
+        run_id: UUID,
+        report: RepairReport,
+        *,
+        model_calls: int,
+        tool_calls: int,
+        input_tokens: int,
+        output_tokens: int,
+        total_tokens: int,
+        estimated_cost: Decimal,
+        security_rejected: bool = False,
+    ) -> AgentRunRecord: ...
+
+    async def complete_validation(
+        self,
+        run_id: UUID,
+        result: ValidationResult,
+        *,
+        model_calls: int,
+        tool_calls: int,
+        input_tokens: int,
+        output_tokens: int,
+        total_tokens: int,
+        estimated_cost: Decimal,
+    ) -> AgentRunRecord: ...
+
+    async def exhaust_budget(
+        self,
+        run_id: UUID,
+        *,
+        model_calls: int,
+        tool_calls: int,
+        input_tokens: int,
+        output_tokens: int,
+        total_tokens: int,
+        estimated_cost: Decimal,
+    ) -> AgentRunRecord: ...
+
     async def fail(
         self,
         run_id: UUID,
         *,
         error_code: str,
         error_message: str,
+        model_calls: int,
+        tool_calls: int,
+        input_tokens: int,
+        output_tokens: int,
+        total_tokens: int,
+        estimated_cost: Decimal,
     ) -> AgentRunRecord: ...

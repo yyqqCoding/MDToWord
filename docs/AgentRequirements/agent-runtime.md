@@ -56,17 +56,18 @@ START
 
 ### 3.1 当前实现边界
 
-截至阶段 B3，实际 Graph 只实现 Gate 链路：
+截至阶段 E，实际 Graph 已实现 Gate、复现、修复和独立验证：
 
 ```text
-start_gate -> classify_gate -> route_feedback -> END
+start_gate -> classify_gate -> route_feedback
+  -> prepare_source -> reproduce_subgraph
+  -> repair_subgraph -> validate_final -> finalize -> END
 ```
 
-CLI 强制要求 `--dry-run`，Fake Provider 是默认值；只有显式传入
-`--provider configured` 才调用真实 OpenAI 兼容接口。当前链路不创建源码 workspace、
-不调用工具或沙箱、不修改仓库，也不发布 PR。阶段 C 已提供受控工具和 Sandbox 边界，
-但要到阶段 D 才接入 Graph；本文后续的复现、修复、验证和发布节点仍是阶段 D 至 F
-的目标契约。
+CLI 仍强制要求 `--dry-run`，Fake Provider 默认只执行 Gate；`--reproduce --provider
+configured` 执行到阶段 D，`--repair --provider configured` 执行完整 D+E。阶段 E 只在
+临时 workspace 和沙箱中生成/验证 Artifact，不修改共享源码仓库，也不创建 PR；发布
+节点仍属于阶段 F。
 
 ### 3.2 确定性节点
 
@@ -134,8 +135,10 @@ injection_suspected == false
 requires_extension_change == false
 ```
 
-模型给出的“允许自动化”结论没有授权效力。本地规则只会降级，不会把模型拒绝的
-内容升级为自动修复。
+模型给出的“允许自动化”结论没有授权效力。安全、相关性、前端和未知类别只允许本地
+规则降级；唯一的充分性校正是：模型已判定高相关 `bug_report/docx_structure`、无注入
+和前端依赖，同时 Markdown 含完整 Mermaid 图时，本地确定性证据可把单一
+`sufficient_information=false` 校正为继续复现。
 
 ## 5. 复现子图
 
@@ -144,6 +147,7 @@ plan_reproduction
   -> inspect_source/read-only tools
   -> generate_test_edit
   -> policy_check_test_edit
+       `- Mermaid invalid edit -> trusted drawing template（仅第二轮）
   -> run_reproduction_in_sandbox
        |- target_failure -> reproduction_confirmed
        |- test_passed -> revise_test_edit (最多 2 轮)
@@ -160,11 +164,19 @@ plan_reproduction
 
 两轮仍无法复现时进入 `cannot_reproduce`，不生成修复。
 
+Mermaid 第一轮模型编辑无法形成合法 Python/文本补丁时，第二轮由 Controller 生成固定
+测试与 `.md` fixture，使用计划已登记的 `assert_minimum_drawing_count`。该模板不读取
+网络、环境变量或任意 XPath，仍经过相同 Patch Policy 和全新 Sandbox；其他类别及
+Sandbox 中发生的无效测试不会触发此回退。
+
 ## 6. 修复子图
 
 ```text
-generate_fix_edit
+repair_scope_policy
+  |- reproduced Mermaid drawing -> needs_human（external dependency）
+  `- generate_fix_edit
   -> policy_check_fix_edit
+       `- external dependency / deployment change -> needs_human -> END
   -> run_target_validation_in_sandbox
        |- passed -> final_validation
        |- failed -> summarize_failure -> fresh workspace -> revise_fix_edit
@@ -174,8 +186,14 @@ generate_fix_edit
 最多两轮。每轮模型上下文只包含：脱敏反馈摘要、复现计划、目标失败摘要、当前允许
 源码、测试补丁摘要、上一轮修复摘要和剩余预算；不累积完整历史。
 
+当前固定 Sandbox/部署镜像不包含 Mermaid 渲染器。Mermaid drawing Oracle 已确认复现
+时，修复范围 Policy 直接输出 `external_dependency_required -> needs_human`，不读取修复
+源码也不调用修复模型；其他后端类别仍进入最多两轮的修复生成。
+
 模型不能修改测试补丁。每轮使用从 `base_sha` 新建的工作区，不在上一轮修改上继续
-叠加。失败摘要最多 4 KB，并将工具输出继续标记为不可信数据。
+叠加。修复若新增外部可执行程序、Pandoc filter 或需要部署变更，由本地 Policy 直接
+转为 `needs_human`，不启动 Sandbox、也不消耗第二轮模型请求。失败摘要最多 4 KB，并将
+工具输出继续标记为不可信数据。
 
 ## 7. 最终验证与发布
 

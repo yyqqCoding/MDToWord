@@ -21,6 +21,7 @@ from agent.sandbox.contracts import (
     SandboxJob,
     SandboxResult,
     SandboxStatus,
+    TargetTestOutcome,
 )
 from agent.telemetry.masking import mask_text
 from agent.validators.junit import parse_junit_summary
@@ -116,10 +117,21 @@ class DockerRunner:
             junit_path = _junit_path(job, result_root)
             if junit_path is not None and junit_path.is_file():
                 try:
-                    common["junit_summary"] = parse_junit_summary(
+                    junit_summary = parse_junit_summary(
                         junit_path,
                         job.target_test_selector,
                     )
+                    common["junit_summary"] = junit_summary
+                    if job.job_type is JobType.VALIDATE_FULL:
+                        # 全量 Job 中同一受信目标测试再次执行 DOCX Oracle；只返回固定
+                        # 布尔摘要，不让模型或测试进程提供任意检查名称/代码。
+                        common["docx_summary"] = {
+                            "passed": (
+                                junit_summary.target_collected
+                                and junit_summary.target_outcome
+                                is TargetTestOutcome.PASSED
+                            )
+                        }
                 except ValueError:
                     # XML 无效由 Controller 分类为 invalid_test，不能退回解析 stdout。
                     common["junit_summary"] = None

@@ -80,7 +80,9 @@ Generation。阶段 D 复现运行还会显式记录 `plan-reproduction`、`read
 Telemetry 创建、更新或 flush 失败采用 fail-open，只记录脱敏 warning；Masking 回调兼容
 Langfuse v4 的 `mask(data=...)` 调用方式。默认 `TRACE_CONTENT=false`，CLI 会拒绝启用
 完整 Trace 内容。生成测试源码、复现假设、反馈原文和 JUnit failure message 不进入
-Langfuse，只保留 Schema、路径、大小、Hash、计数和分类摘要。
+Langfuse，只保留 Schema、路径、大小、Hash、计数和分类摘要。阶段 E 继续显式记录
+`generate-fix`、`submit-fix-edits`、目标验证以及最终三个独立 Sandbox Job，也不上传
+修复源码、patch 或完整失败输出。
 
 ## 5. Generation字段
 

@@ -16,6 +16,7 @@ from agent.gate import GATE_PROMPT_VERSION
 from agent.graph import (
     GRAPH_VERSION,
     POLICY_VERSION,
+    RepairDependencies,
     ReproductionDependencies,
     build_gate_graph,
 )
@@ -25,6 +26,7 @@ from agent.reproduction import (
     REPRODUCTION_PLAN_PROMPT_VERSION,
     TEST_GENERATION_PROMPT_VERSION,
 )
+from agent.repair import FIX_GENERATION_PROMPT_VERSION
 from agent.repositories.base import AgentRunRepository, FeedbackRepository
 from agent.state import AgentState
 from agent.telemetry.base import NoopTelemetry, RunTrace, Telemetry
@@ -56,6 +58,7 @@ class GateController:
         telemetry: Telemetry | None = None,
         environment: str = "development",
         reproduction: ReproductionDependencies | None = None,
+        repair: RepairDependencies | None = None,
     ) -> None:
         self._feedback_repository = feedback_repository
         self._run_repository = run_repository
@@ -85,6 +88,19 @@ class GateController:
                 telemetry=self._telemetry,
             )
         self._reproduction_enabled = observed_reproduction is not None
+        observed_repair = None
+        if repair is not None:
+            observed_repair = replace(
+                repair,
+                fix_provider=ObservedModelProvider(
+                    repair.fix_provider,
+                    self._telemetry,
+                    operation="generate_fix",
+                    prompt_version=FIX_GENERATION_PROMPT_VERSION,
+                ),
+                telemetry=self._telemetry,
+            )
+        self._repair_enabled = observed_repair is not None
         self.graph = build_gate_graph(
             feedback_repository=feedback_repository,
             run_repository=run_repository,
@@ -98,6 +114,7 @@ class GateController:
             checkpointer=checkpointer,
             min_confidence=min_confidence,
             reproduction=observed_reproduction,
+            repair=observed_repair,
             interrupt_after=interrupt_after,
         )
 
@@ -128,6 +145,11 @@ class GateController:
                     {
                         "plan_reproduction": REPRODUCTION_PLAN_PROMPT_VERSION,
                         "generate_test": TEST_GENERATION_PROMPT_VERSION,
+                        **(
+                            {"generate_fix": FIX_GENERATION_PROMPT_VERSION}
+                            if self._repair_enabled
+                            else {}
+                        ),
                     }
                     if self._reproduction_enabled
                     else {}
@@ -161,10 +183,12 @@ class GateController:
             raise ValueError(f"agent run {run_id} does not exist")
         if run.status in {
             AgentRunStatus.COMPLETED,
-            AgentRunStatus.REPAIRING,
             AgentRunStatus.SECURITY_REJECTED,
             AgentRunStatus.FAILED,
+            AgentRunStatus.BUDGET_EXHAUSTED,
         }:
+            return _outcome_from_run(run)
+        if run.status is AgentRunStatus.REPAIRING and not self._repair_enabled:
             return _outcome_from_run(run)
 
         feedback = await self._feedback_repository.get(run.feedback_id)
@@ -172,6 +196,18 @@ class GateController:
         config = _thread_config(run_id)
         snapshot = await self.graph.aget_state(config)
         if snapshot.values:
+            if (
+                self._repair_enabled
+                and run.status is AgentRunStatus.REPAIRING
+                and not snapshot.next
+            ):
+                # 阶段 D 的旧 Graph 已在 finish_reproduction 后到达 END；升级到阶段 E
+                # 时从该确定性节点追加新 checkpoint，使同一 run 继续而不重跑 Gate。
+                await self.graph.aupdate_state(
+                    config,
+                    {},
+                    as_node="finish_reproduction",
+                )
             return await self._invoke_resumed(
                 None,
                 run,
@@ -273,6 +309,32 @@ class GateController:
         run = await self._run_repository.get(run_id)
         if run is None:
             return
+        usage = {
+            "model_calls": run.model_calls,
+            "tool_calls": run.tool_calls,
+            "input_tokens": run.input_tokens,
+            "output_tokens": run.output_tokens,
+            "total_tokens": run.total_tokens,
+            "estimated_cost": run.estimated_cost,
+        }
+        # Graph 节点可能已写入 checkpoint、但尚未走到数据库汇总节点；失败终结时
+        # 取两者单调最大值，避免丢失已完成的模型、工具与 Sandbox 计量。
+        snapshot = await self.graph.aget_state(_thread_config(run_id))
+        if snapshot.values:
+            checkpoint_state = AgentState.model_validate(snapshot.values)
+            if checkpoint_state.run_id == run_id:
+                checkpoint_usage = {
+                    "model_calls": checkpoint_state.model_calls,
+                    "tool_calls": checkpoint_state.tool_calls,
+                    "input_tokens": checkpoint_state.usage.input_tokens,
+                    "output_tokens": checkpoint_state.usage.output_tokens,
+                    "total_tokens": checkpoint_state.usage.total_tokens,
+                    "estimated_cost": checkpoint_state.usage.estimated_cost,
+                }
+                usage = {
+                    key: max(usage[key], checkpoint_usage[key])
+                    for key in usage
+                }
         feedback = await self._feedback_repository.get(run.feedback_id)
         error_message = type(error).__name__
         if (
@@ -283,6 +345,8 @@ class GateController:
                 FeedbackStatus.CLAIMED,
                 FeedbackStatus.GATING,
                 FeedbackStatus.REPRODUCING,
+                FeedbackStatus.REPAIRING,
+                FeedbackStatus.VALIDATING,
             }
         ):
             await self._feedback_repository.transition(
@@ -296,6 +360,7 @@ class GateController:
             run_id,
             error_code=error.error_code,
             error_message=error_message,
+            **usage,
         )
 
 

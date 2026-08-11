@@ -116,6 +116,7 @@ class AgentRunRecord(BaseModel):
     langfuse_trace_id: str | None = None
     classification: GateResult | None = None
     reproduction: dict[str, object] | None = None
+    repair: dict[str, object] | None = None
     validation: dict[str, object] | None = None
     model_calls: int = Field(default=0, ge=0)
     tool_calls: int = Field(default=0, ge=0)

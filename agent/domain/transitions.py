@@ -32,6 +32,7 @@ _FEEDBACK_TRANSITIONS: Mapping[FeedbackStatus, frozenset[FeedbackStatus]] = {
     FeedbackStatus.REPAIRING: frozenset(
         {
             FeedbackStatus.VALIDATING,
+            FeedbackStatus.NEEDS_HUMAN,
             FeedbackStatus.SECURITY_REJECTED,
             FeedbackStatus.FAILED,
         }

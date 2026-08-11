@@ -2,14 +2,14 @@
 
 from enum import StrEnum
 from pathlib import PurePosixPath
-import re
 from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from agent.sandbox.contracts import SandboxResult, SandboxStatus, TargetTestOutcome
+from agent.domain.content import contains_mermaid_diagram
 from agent.domain.models import TaskArtifact
+from agent.sandbox.contracts import SandboxResult, SandboxStatus, TargetTestOutcome
 from agent.workspace.edits import Edit
 
 
@@ -170,7 +170,7 @@ class ReproductionPlan(BaseModel):
     def validate_task_oracle(self, task: TaskArtifact) -> None:
         """Mermaid 复现必须证明 DOCX 中出现图形，不能用通用 ZIP 完整性代替。"""
 
-        if not _contains_mermaid_diagram(task.markdown_content):
+        if not contains_mermaid_diagram(task.markdown_content):
             return
         if (
             self.oracle.kind is not OracleKind.DOCX_XPATH
@@ -256,15 +256,10 @@ class ReproductionAttemptArtifact(BaseModel):
 
     round: int = Field(ge=1, le=2)
     test_patch_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    files_needed_for_fix: tuple[str, ...] = ()
+    extension_sync_required: bool = False
     sandbox_result: SandboxResult
     report: ReproductionReport | None = None
-
-
-def _contains_mermaid_diagram(markdown: str) -> bool:
-    return re.search(
-        r"(?im)^\s*(?:graph|flowchart)\s+(?:tb|td|bt|rl|lr)\b",
-        markdown,
-    ) is not None
 
 
 _INFRASTRUCTURE_FAILURE_MARKERS = (
@@ -315,12 +310,14 @@ def classify_reproduction_result(
         code = "target_skipped"
         summary = "target test was skipped"
     else:
+        failure_type = (junit.target_failure_type or "").lower()
         failure_text = " ".join(
             item
             for item in (junit.target_failure_type, junit.target_message)
             if item
         ).lower()
-        if any(marker in failure_text for marker in _INFRASTRUCTURE_FAILURE_MARKERS):
+        # traceback 含测试源码，普通变量名（如 FIXTURES）不能作为基础设施错误证据。
+        if any(marker in failure_type for marker in _INFRASTRUCTURE_FAILURE_MARKERS):
             code = "invalid_test_infrastructure"
             summary = "target test failed because its test infrastructure is invalid"
         elif expected_failure_kind is ExpectedFailureKind.ASSERTION:

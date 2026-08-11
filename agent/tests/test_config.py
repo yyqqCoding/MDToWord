@@ -95,6 +95,27 @@ def test_reproduction_model_timeout_is_bounded_and_configurable(tmp_path: Path):
         )
 
 
+def test_stage_e_budgets_are_bounded_and_configurable(tmp_path: Path):
+    config = AgentConfig.from_env(
+        {
+            "SUPABASE_URL": "https://example.supabase.co",
+            "SUPABASE_AGENT_KEY": "secret",
+            "MAX_MODEL_CALLS_PER_RUN": "10",
+            "MAX_TOOL_CALLS_PER_RUN": "40",
+            "MAX_TOTAL_TOKENS_PER_RUN": "250000",
+            "MAX_SANDBOX_SECONDS_PER_RUN": "1200",
+            "BACKEND_BASELINE_SKIPPED": "1",
+        },
+        project_root=tmp_path,
+    )
+
+    assert config.max_model_calls_per_run == 10
+    assert config.max_tool_calls_per_run == 40
+    assert config.max_total_tokens_per_run == 250_000
+    assert config.max_sandbox_seconds_per_run == 1200
+    assert config.backend_baseline_skipped == 1
+
+
 def test_checkpoint_database_url_is_optional_until_runtime_needs_it(tmp_path: Path):
     config = AgentConfig.from_env(
         {

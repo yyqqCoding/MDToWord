@@ -14,7 +14,7 @@ from agent.controller import GateController, GateRunOutcome
 from agent.domain.enums import GateCategory, GateIntent, GateRoute
 from agent.domain.errors import AgentError, ConfigurationError
 from agent.domain.gate import GateClassification
-from agent.graph import ReproductionDependencies
+from agent.graph import RepairDependencies, ReproductionDependencies
 from agent.providers.fake import FakeModelProvider
 from agent.providers.openai_compatible import OpenAICompatibleProvider
 from agent.repositories.supabase import (
@@ -61,6 +61,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="continue accepted backend feedback through the Stage D reproduction graph",
     )
     run_parser.add_argument(
+        "--repair",
+        action="store_true",
+        help="continue a reproduced backend defect through Stage E repair and validation",
+    )
+    run_parser.add_argument(
         "--provider",
         choices=("fake", "configured"),
         default="fake",
@@ -85,11 +90,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 2
         if (
             args.command == "run"
-            and (args.reproduce or args.resume_run_id is not None)
-            and (args.provider != "configured" or not args.reproduce)
+            and (args.reproduce or args.repair or args.resume_run_id is not None)
+            and (
+                args.provider != "configured"
+                or (not args.reproduce and not args.repair)
+            )
         ):
             raise CliUsageError(
-                "reproduction and resume require --reproduce --provider configured"
+                "reproduction and resume require --reproduce or --repair with "
+                "--provider configured"
             )
         return asyncio.run(_execute(args))
     except (ConfigurationError, CliUsageError) as exc:
@@ -123,6 +132,7 @@ async def _execute(args: argparse.Namespace) -> int:
         config,
         provider_mode=args.provider,
         reproduce=args.reproduce,
+        repair=args.repair,
         resume_run_id=args.resume_run_id,
     )
     _print_json(
@@ -133,7 +143,9 @@ async def _execute(args: argparse.Namespace) -> int:
             "completed": result.completed,
             "dry_run": True,
             "provider": args.provider,
-            "stage": "reproduction" if args.reproduce else "gate",
+            "stage": (
+                "repair" if args.repair else ("reproduction" if args.reproduce else "gate")
+            ),
         }
     )
     return 0
@@ -146,12 +158,14 @@ async def _run_dry_gate(
     *,
     provider_mode: str = "fake",
     reproduce: bool = False,
+    repair: bool = False,
     resume_run_id: UUID | None = None,
 ) -> GateRunOutcome:
     # 所有外部依赖配置在领取反馈前完成校验，避免配置错误留下无主租约。
     database_url = config.require_database_url()
+    reproduce = reproduce or repair
     if reproduce and provider_mode != "configured":
-        raise CliUsageError("--reproduce requires --provider configured")
+        raise CliUsageError("--reproduce/--repair requires --provider configured")
     async with httpx.AsyncClient(timeout=30) as client:
         telemetry = NoopTelemetry()
         if provider_mode == "configured":
@@ -178,6 +192,7 @@ async def _run_dry_gate(
 
         artifacts = ArtifactStore(config.artifact_root)
         reproduction = None
+        repair_dependencies = None
         github_client: httpx.AsyncClient | None = None
         if reproduce:
             repository, github_read_token, worker_url, worker_credential = (
@@ -208,6 +223,17 @@ async def _run_dry_gate(
                 telemetry=telemetry,
                 model_timeout_seconds=config.reproduction_model_timeout_seconds,
             )
+            if repair:
+                repair_dependencies = RepairDependencies(
+                    fix_provider=provider,
+                    telemetry=telemetry,
+                    model_timeout_seconds=config.reproduction_model_timeout_seconds,
+                    max_model_calls=config.max_model_calls_per_run,
+                    max_tool_calls=config.max_tool_calls_per_run,
+                    max_total_tokens=config.max_total_tokens_per_run,
+                    max_sandbox_seconds=config.max_sandbox_seconds_per_run,
+                    baseline_skipped=config.backend_baseline_skipped,
+                )
 
         feedback_repository = SupabaseFeedbackRepository(
             config.supabase_url,
@@ -237,6 +263,7 @@ async def _run_dry_gate(
                     telemetry=telemetry,
                     environment=config.agent_environment,
                     reproduction=reproduction,
+                    repair=repair_dependencies,
                 )
                 if resume_run_id is not None:
                     return await controller.resume(resume_run_id)

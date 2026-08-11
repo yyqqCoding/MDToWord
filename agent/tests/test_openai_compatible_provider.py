@@ -15,6 +15,7 @@ from agent.domain.reproduction import (
     ReproductionPlan,
     TestGenerationResult as GeneratedTestResult,
 )
+from agent.domain.repair import FixGenerationResult
 from agent.providers.base import ModelMessage
 from agent.providers.openai_compatible import (
     OpenAICompatibleProvider,
@@ -106,7 +107,7 @@ def test_provider_sends_strict_json_schema_and_normalizes_usage():
     assert result.estimated_cost == Decimal("0.00018")
 
 
-def test_stage_d_schemas_require_every_nested_property_in_strict_mode():
+def test_stage_d_and_e_schemas_require_every_nested_property_in_strict_mode():
     def assert_strict_objects(node: object) -> None:
         if isinstance(node, dict):
             properties = node.get("properties")
@@ -119,7 +120,11 @@ def test_stage_d_schemas_require_every_nested_property_in_strict_mode():
             for value in node:
                 assert_strict_objects(value)
 
-    for response_schema in (ReproductionPlan, GeneratedTestResult):
+    for response_schema in (
+        ReproductionPlan,
+        GeneratedTestResult,
+        FixGenerationResult,
+    ):
         schema = _strict_response_schema(response_schema)
         assert_strict_objects(schema)
 

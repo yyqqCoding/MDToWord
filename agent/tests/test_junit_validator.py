@@ -40,6 +40,24 @@ def test_parse_junit_marks_absent_selector_not_collected(tmp_path: Path) -> None
     assert summary.target_outcome is TargetTestOutcome.NOT_COLLECTED
 
 
+def test_parse_junit_infers_assertion_type_when_pytest_omits_type(tmp_path: Path) -> None:
+    report = tmp_path / "junit.xml"
+    report.write_text(
+        """<?xml version="1.0" encoding="utf-8"?>
+<testsuites><testsuite tests="1" failures="1" errors="0" skipped="0">
+  <testcase classname="tests.test_feedback_regressions" name="test_feedback_a257a846_mermaid">
+    <failure message="AssertionError: expected at least 1 drawing(s), got 0">FIXTURES / feedback / sample.md</failure>
+  </testcase>
+</testsuite></testsuites>
+""",
+        encoding="utf-8",
+    )
+
+    summary = parse_junit_summary(report, "test_feedback_a257a846_mermaid")
+
+    assert summary.target_failure_type == "AssertionError"
+
+
 def test_parse_junit_rejects_malformed_xml(tmp_path: Path) -> None:
     report = tmp_path / "junit.xml"
     report.write_text("<testsuite>", encoding="utf-8")

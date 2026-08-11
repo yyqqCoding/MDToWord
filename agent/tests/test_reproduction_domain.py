@@ -13,12 +13,13 @@ from agent.domain.reproduction import (
     OracleSpec,
     ReproductionDisposition,
     ReproductionPlan,
+    ReproductionReport,
     SourceReadRequest,
     TestGenerationResult as GeneratedTestResult,
     classify_reproduction_result,
 )
 from agent.providers.fake import FakeModelProvider
-from agent.reproduction import plan_reproduction
+from agent.reproduction import build_mermaid_test_fallback, plan_reproduction
 from agent.sandbox.contracts import (
     JUnitSummary,
     SandboxResult,
@@ -176,6 +177,55 @@ def test_generated_fix_hints_only_reference_backend_fix_allowlist() -> None:
         )
 
 
+def test_mermaid_invalid_edit_gets_deterministic_trusted_test_fallback() -> None:
+    task = TaskArtifact(
+        feedback_id=FEEDBACK_ID,
+        feedback_type=FeedbackType.BUG,
+        markdown_content="graph TD\nA([开始]) --> B([结束])",
+        description="Word only contains Mermaid source",
+        content_fingerprint="a" * 64,
+    )
+    plan = ReproductionPlan(
+        hypothesis="Mermaid source is not rendered as a drawing",
+        oracle=OracleSpec(
+            kind=OracleKind.DOCX_XPATH,
+            parameters={"validator": "minimum_drawing_count", "minimum": 1},
+        ),
+        target_test_selector="test_feedback_a257a846_mermaid_drawing",
+        expected_failure_kind=ExpectedFailureKind.ASSERTION,
+        files_to_read=(
+            SourceReadRequest(path="backend/app/pandoc_runner.py"),
+            SourceReadRequest(path="backend/app/normalizer.py"),
+        ),
+    )
+    previous = ReproductionReport(
+        disposition=ReproductionDisposition.INVALID_TEST,
+        round=1,
+        target_test_selector=plan.target_test_selector,
+        expected_failure_kind=plan.expected_failure_kind,
+        failure_code="invalid_test_edit",
+        failure_summary="generated test edit is invalid",
+    )
+
+    generated = build_mermaid_test_fallback(
+        task,
+        plan=plan,
+        previous_report=previous,
+        existing_test_source="# existing regression\n",
+    )
+
+    assert generated is not None
+    assert generated.files_needed_for_fix == (
+        "backend/app/pandoc_runner.py",
+        "backend/app/normalizer.py",
+    )
+    test_edit, fixture_edit = generated.edits
+    assert test_edit.content is not None
+    assert test_edit.content.startswith("# existing regression\n")
+    assert "assert_minimum_drawing_count(docx_bytes, 1)" in test_edit.content
+    assert fixture_edit.content == task.markdown_content + "\n"
+
+
 def test_target_assertion_failure_is_reproduced() -> None:
     report = classify_reproduction_result(
         _result(
@@ -188,6 +238,31 @@ def test_target_assertion_failure_is_reproduced() -> None:
                 target_outcome=TargetTestOutcome.FAILED,
                 target_failure_type="AssertionError",
                 target_message="expected three rows",
+            )
+        ),
+        expected_failure_kind=ExpectedFailureKind.ASSERTION,
+        round_number=1,
+        target_test_selector=SELECTOR,
+    )
+
+    assert report.disposition is ReproductionDisposition.REPRODUCED
+
+
+def test_assertion_traceback_with_fixtures_name_is_not_infrastructure_failure() -> None:
+    report = classify_reproduction_result(
+        _result(
+            JUnitSummary(
+                tests=1,
+                failures=1,
+                errors=0,
+                skipped=0,
+                target_collected=True,
+                target_outcome=TargetTestOutcome.FAILED,
+                target_failure_type="AssertionError",
+                target_message=(
+                    "AssertionError: expected at least 1 drawing(s), got 0 "
+                    "FIXTURES / feedback / sample.md"
+                ),
             )
         ),
         expected_failure_kind=ExpectedFailureKind.ASSERTION,

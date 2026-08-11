@@ -12,6 +12,7 @@ from agent.domain.reproduction import (
     ReproductionAttemptArtifact,
     ReproductionPlan,
 )
+from agent.domain.repair import RepairAttemptArtifact, ValidationResult
 
 
 _SAFE_SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -27,6 +28,7 @@ _KNOWN_ARTIFACTS = frozenset(
         "test.patch",
         "fix.patch",
         "validated.patch",
+        "repair-result.json",
         "reproduction-junit.xml",
         "validation-junit.xml",
         "validation.json",
@@ -87,7 +89,7 @@ class ArtifactStore:
     ) -> str:
         """只保存已登记、大小受限的测试或修复 patch。"""
 
-        if filename not in {"test.patch", "fix.patch"}:
+        if filename not in {"test.patch", "fix.patch", "validated.patch"}:
             raise InvalidArtifactPathError("patch artifact filename is not registered")
         if not content or len(content) > 200_000:
             raise InvalidArtifactPathError("patch artifact size is invalid")
@@ -99,7 +101,11 @@ class ArtifactStore:
         """通过不暴露主机路径的 Artifact 引用读取 patch。"""
 
         match = _ARTIFACT_REF.fullmatch(reference)
-        if match is None or match.group("filename") not in {"test.patch", "fix.patch"}:
+        if match is None or match.group("filename") not in {
+            "test.patch",
+            "fix.patch",
+            "validated.patch",
+        }:
             raise InvalidArtifactPathError("patch artifact reference is invalid")
         return self._read_reference(reference)
 
@@ -133,6 +139,28 @@ class ArtifactStore:
         return ReproductionAttemptArtifact.model_validate_json(
             self._read_reference(reference)
         )
+
+    def write_repair_result_ref(
+        self,
+        run_id: UUID | str,
+        result: RepairAttemptArtifact,
+    ) -> str:
+        return self._write_model_ref(run_id, "repair-result.json", result)
+
+    def read_repair_result(self, reference: str) -> RepairAttemptArtifact:
+        return RepairAttemptArtifact.model_validate_json(
+            self._read_reference(reference)
+        )
+
+    def write_validation_ref(
+        self,
+        run_id: UUID | str,
+        result: ValidationResult,
+    ) -> str:
+        return self._write_model_ref(run_id, "validation.json", result)
+
+    def read_validation(self, reference: str) -> ValidationResult:
+        return ValidationResult.model_validate_json(self._read_reference(reference))
 
     def ref_for(self, run_id: UUID | str, filename: str) -> str:
         # 先通过 path_for 完成同一套白名单校验，再生成不暴露主机路径的稳定引用。

@@ -12,7 +12,12 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from agent.domain.errors import InvalidEditError, PatchPolicyError, SourceAccessError
+from agent.domain.errors import (
+    ExternalDependencyError,
+    InvalidEditError,
+    PatchPolicyError,
+    SourceAccessError,
+)
 from agent.workspace.patch_policy import PatchPolicy
 from agent.workspace.paths import resolve_snapshot_path
 
@@ -280,6 +285,8 @@ _BLOCKED_CALLS = frozenset(
         "os.getenv",
         "os.popen",
         "os.system",
+        "pytest.skip",
+        "pytest.xfail",
     }
 )
 _BLOCKED_CALL_PREFIXES = (
@@ -300,10 +307,35 @@ def _validate_python_policy(baseline: Path, worktree: Path, paths: list[str]) ->
         baseline_path = baseline / relative
         original = baseline_path.read_text(encoding="utf-8") if baseline_path.exists() else ""
         modified = (worktree / relative).read_text(encoding="utf-8")
+        original_dependencies = _python_external_dependency_findings(original)
+        modified_dependencies = _python_external_dependency_findings(modified)
+        if modified_dependencies - original_dependencies:
+            raise ExternalDependencyError(
+                "edit requires an external executable or Pandoc filter"
+            )
         original_findings = _python_security_findings(original)
         modified_findings = _python_security_findings(modified)
         if modified_findings - original_findings:
             raise PatchPolicyError("edit introduces a forbidden Python capability")
+
+
+def _python_external_dependency_findings(source: str) -> Counter[str]:
+    """识别需要调整固定 Sandbox/部署镜像的外部可执行程序能力。"""
+
+    if not source:
+        return Counter()
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as exc:
+        raise InvalidEditError("edited Python must parse successfully") from exc
+    findings: Counter[str] = Counter()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and _qualified_name(node.func) == "shutil.which":
+            findings["call:shutil.which"] += 1
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if node.value in {"--filter", "--lua-filter"}:
+                findings[f"pandoc-option:{node.value}"] += 1
+    return findings
 
 
 def _python_security_findings(source: str) -> Counter[str]:
@@ -334,6 +366,10 @@ def _python_security_findings(source: str) -> Counter[str]:
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             if node.name.startswith("pytest_"):
                 findings[f"hook:{node.name}"] += 1
+        elif isinstance(node, ast.ExceptHandler):
+            exception_name = _qualified_name(node.type) if node.type is not None else "bare"
+            if exception_name in {"bare", "BaseException", "Exception"}:
+                findings[f"broad-except:{exception_name}"] += 1
         elif isinstance(node, (ast.Assign, ast.AnnAssign)):
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
             if any(isinstance(target, ast.Name) and target.id == "pytest_plugins" for target in targets):

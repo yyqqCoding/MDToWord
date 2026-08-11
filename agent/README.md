@@ -1,10 +1,11 @@
 # MD To Word Agent
 
-当前实现到阶段 D 自动复现：Gate 接受后可按固定 SHA 读取源码、规划并生成受限回归
-测试，在认证 Docker Worker 中最多执行两轮，并用 JUnit 和受信 DOCX 断言生成复现报告。
+当前已实现阶段 E 修复与独立验证：Gate 接受后可按固定 SHA 复现缺陷，最多生成两轮
+受限后端修复，并在全新 Docker 沙箱中重新证明基线失败、修复后目标/全量/DOCX 验证
+通过，最终生成带 SHA-256 的 `validated.patch`。
 
-Controller CLI 默认仍只执行 Gate。只有显式添加 `--reproduce --provider configured`
-才会启动阶段 D；当前不会生成修复、修改源码或创建 PR。详细边界和验收记录见
+Controller CLI 默认仍只执行 Gate。`--reproduce` 只执行阶段 D，`--repair` 执行阶段
+D+E；两者都必须显式使用真实 Provider。当前不会创建分支、提交、PR 或自动合并。详细边界和验收记录见
 [implementation-plan.md](../docs/AgentRequirements/implementation-plan.md)。
 
 ## 1. 安装与自动测试
@@ -29,10 +30,11 @@ backend/.venv/Scripts/python.exe -m pytest backend/tests -v
 ## 2. 数据库初始化
 
 SQL migration 为 [001_agent_foundation.sql](migrations/001_agent_foundation.sql)、
-[002_gate_runtime.sql](migrations/002_gate_runtime.sql) 和
-[003_reproduction_runtime.sql](migrations/003_reproduction_runtime.sql)。测试和应用启动
-都不会自动执行 migration；数据库 owner 应在审查和备份后手工执行。已有阶段 B
-数据库只需追加执行 `003_reproduction_runtime.sql`，它只重建 Agent 可恢复状态索引。
+[002_gate_runtime.sql](migrations/002_gate_runtime.sql)、
+[003_reproduction_runtime.sql](migrations/003_reproduction_runtime.sql) 和
+[004_repair_runtime.sql](migrations/004_repair_runtime.sql)。测试和应用启动都不会自动执行
+migration；数据库 owner 应在审查和备份后手工执行。阶段 D 数据库只需追加执行
+`004_repair_runtime.sql`，它新增修复摘要列并重建 Agent 可恢复状态索引。
 
 `AGENT_DATABASE_URL` 必须是 PostgreSQL Direct Connection 或 Session Pooler DSN，
 不是 `SUPABASE_URL`。它只属于 Agent Controller，不得提供给扩展或后端转换服务。
@@ -77,6 +79,8 @@ SQL migration 为 [001_agent_foundation.sql](migrations/001_agent_foundation.sql
   `agent_runs.estimated_cost` 才会大于 `0`。Langfuse 自行推算的展示成本不会回写数据库。
 - 阶段 D 的长源码请求默认允许 180 秒，可用
   `REPRODUCTION_MODEL_TIMEOUT_SECONDS` 在 30～300 秒内调整；Gate 使用独立的短请求超时。
+- 阶段 E 默认限制 8 次模型、30 次工具、200,000 tokens 和 900 秒 Sandbox；配置名见
+  `.env.example`。`BACKEND_BASELINE_SKIPPED` 必须填写当前固定后端基线值，当前为 `0`。
 
 加载 `.env` 后，对可丢弃的 `pending` 反馈运行真实 Gate：
 
@@ -143,11 +147,47 @@ set +a
 若目标失败确认，feedback 与 agent run 停在 `repairing`，保留复现报告供阶段 E 继续；
 两轮仍通过或无效则 feedback 为 `cannot_reproduce`、run 为 `completed`；Sandbox Policy
 拒绝则二者进入安全终态。`--reproduce` 禁止 Fake Provider，防止人为的固定断言被当作
-真实缺陷证据。
+真实缺陷证据。Mermaid 第一轮模型编辑为 `invalid_test_edit` 时，第二轮使用 Controller
+固定的 drawing 测试模板，不再请求模型；模板仍必须通过 Patch Policy 和真实 Sandbox。
 
-## 6. 当前验收结果
+## 6. 阶段 E 修复与独立验证
+
+先由数据库 owner 审查并执行 `agent/migrations/004_repair_runtime.sql`，Worker 继续使用
+同一固定 digest 镜像。对新的 `pending` 后端缺陷执行完整 D+E：
+
+```bash
+.venv/bin/python -m agent.cli run \
+  --feedback-id <uuid> \
+  --dry-run \
+  --provider configured \
+  --repair
+```
+
+阶段 D 已确认复现并停在 `repairing` 的旧 run，可直接从原 checkpoint 继续，不重新
+领取 feedback，也不重跑 Gate：
+
+```bash
+.venv/bin/python -m agent.cli run \
+  --resume-run-id <run-uuid> \
+  --dry-run \
+  --provider configured \
+  --repair
+```
+
+成功时 feedback 为 `validated`、run 为 `completed`，Artifact 包含 `fix.patch`、
+`validated.patch` 和 `validation.json`；当前阶段不会发布这些文件。目标修复两轮仍失败
+或最终全量/DOCX 验证失败时不会产生可发布凭据；预算耗尽进入 `budget_exhausted`，之后
+不再调用模型或沙箱。若生成的修复需要新增外部可执行程序、Pandoc filter 或部署变更，
+本地 Policy 会在 Sandbox 前把 feedback/run 路由为 `needs_human`，不会继续第二轮生成。
+已确认复现的 Mermaid drawing 缺陷更早在修复范围 Policy 中确定为需要渲染器与部署
+评估，直接输出 `external_dependency_required`，不调用 `generate_fix`。
+
+## 7. 当前验收结果
 
 - 阶段 D Agent 178 passed（含真实 Docker 两项测试，无 skipped）；后端 44 passed；
+- 阶段 E 当前实现验收为 Agent 217 passed，其中真实 Docker 4 passed；后端固定镜像
+  44 passed；真实 Provider/Supabase/Langfuse/GitHub/Sandbox 运行已得到修正后的
+  `needs_human/external_dependency_required` 终态；
 - `gate-v2` 真实复测将“仅测试、不需要修复”路由为 `rejected_irrelevant`；
 - Prompt Injection 真实复测路由为 `quarantined_security`，`tool_calls=0`；
 - Langfuse 每次真实 Gate 包含 root Agent 和 `classify-intent` Generation，且抽查未发现
@@ -163,12 +203,37 @@ set +a
   `27d1b938-...` 在固定 SHA 上于第二轮生成有效回归测试，新镜像 Sandbox 收集到唯一
   目标测试的预期断言失败，数据库终态为 `repairing/reproduced`。本次真实运行共 5 次
   模型调用、14 次工具调用和 68,094 tokens，阶段 D 端到端验收完成；
+- 后续真实 run `8d86f6cb-...` 的 JUnit `failure` 未提供 `type` 属性，但 `message` 以
+  `AssertionError` 开头；旧分类器因 traceback 中变量名 `FIXTURES` 含有 `fixture` 而误判
+  `invalid_test_infrastructure`。当前解析器会从结构化 JUnit message 推断异常类型，并且
+  只依据异常类型判断基础设施错误；该 run 保留历史 `cannot_reproduce` 终态，不重新打开；
+- 真实 run `aae54eec-...` 已被模型分类为高相关 `bug_report/docx_structure`，但模型把
+  完整 Mermaid 源码和明确 Word 导出描述误判为信息不足，因而在 Gate 进入
+  `needs_human`。`repair-policy-v2` 仅对该完整组合使用确定性 Mermaid 证据修正
+  `sufficient_information=false`；注入、低相关、前端和未知类别优先级保持不变；
+- `repair-policy-v2` 的真实 run `4aee5378-...` 已验证上述 Gate 校正生效，并生成正确的
+  Mermaid drawing 复现计划；第一轮测试编辑为 `invalid_test_edit`，一次有界修订最终因
+  模型严格 Schema 响应不合规而以 `invalid_response` 终结。该失败发生在模型测试生成，
+  尚未调用 Sandbox，历史 feedback/run 不重新领取或打开；
+- `agent-graph-v4/repair-policy-v3` 为上述 Mermaid `invalid_test_edit` 增加仅第二轮启用的
+  受信 drawing 模板；普通反馈仍由模型修订，模板输出仍通过原有 Patch Policy、JUnit 与
+  Docker Sandbox，且不会增加模型调用；
+- 真实 run `bab5a685-...` 已在第一轮 Sandbox 得到
+  `AssertionError/reproduced`，随后首次 `generate_fix` 在 300 秒后超时；失败终结正确
+  持久化 4 次模型、8 次工具和 53,862 tokens。`agent-graph-v5/repair-policy-v4` 将已复现
+  Mermaid drawing 固定为依赖/部署人工评估，在读取修复源码和调用修复模型之前直接转
+  `needs_human/external_dependency_required`；
+- 最终真实 run `3a41124d-...` 使用 `agent-graph-v5/repair-policy-v4`，第一轮复现为
+  `AssertionError/reproduced`，随后未调用修复模型即完成
+  `needs_human/external_dependency_required`。数据库记录 4 次模型、7 次工具、36,216
+  tokens，并同时保存 `result.json`、`test.patch` 与 `repair-result.json`；阶段 E 真实
+  服务终态验收完成；
 - 阶段 D 模型单次请求超时默认 180 秒（可在 30～300 秒内配置）；模型传输错误仍最多
   重试两次，退避为 1 秒和 4 秒；`/models` 返回 200 只代表网关
   在线，不能替代真实 Chat Completions 验收；
 - 维护者暂不填写模型单价，因此数据库成本验收仍为延后项。
 
-## 7. Docker 验收
+## 8. Docker 验收
 
 复测时先在 Docker Desktop 的 Settings → Resources → WSL Integration 中启用
 当前发行版，然后在仓库根目录执行：
@@ -197,8 +262,10 @@ docker image inspect mdtoword-sandbox:stage-d \
   --format '{{json .Config.Env}}'
 ```
 
-结果必须是 `2 passed`，不能是 skipped。测试同时验证已知表格缺陷产生可信目标失败，
-以及容器无外网、无业务 Secret、
+结果必须是 `4 passed`，不能是 skipped。测试同时验证已知表格缺陷产生可信目标失败、
+Mermaid 受信回退模板在真实 pytest/JUnit 中产生 drawing 断言失败，
+以及阶段 E 在三个独立容器中重新证明基线失败、修复后目标/全量/DOCX 通过和最终补丁
+哈希一致；同时验证容器无外网、无业务 Secret、
 非 root、只读根文件系统、能力清空、`no-new-privileges`、内存/CPU/PID/超时限制、同一
 Job 只执行一次，并确认临时 workspace 已销毁。
 

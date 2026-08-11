@@ -39,6 +39,11 @@ class AgentConfig(BaseModel):
         ge=30.0,
         le=300.0,
     )
+    max_model_calls_per_run: int = Field(default=8, ge=1, le=100)
+    max_tool_calls_per_run: int = Field(default=30, ge=1, le=1000)
+    max_total_tokens_per_run: int = Field(default=200_000, ge=1)
+    max_sandbox_seconds_per_run: int = Field(default=900, ge=1, le=3600)
+    backend_baseline_skipped: int = Field(default=0, ge=0)
     langfuse_host: str = "https://cloud.langfuse.com"
     langfuse_public_key: SecretStr | None = None
     langfuse_secret_key: SecretStr | None = None
@@ -163,6 +168,31 @@ class AgentConfig(BaseModel):
                 values,
                 "REPRODUCTION_MODEL_TIMEOUT_SECONDS",
                 180.0,
+            ),
+            max_model_calls_per_run=_int_value(
+                values,
+                "MAX_MODEL_CALLS_PER_RUN",
+                8,
+            ),
+            max_tool_calls_per_run=_int_value(
+                values,
+                "MAX_TOOL_CALLS_PER_RUN",
+                30,
+            ),
+            max_total_tokens_per_run=_int_value(
+                values,
+                "MAX_TOTAL_TOKENS_PER_RUN",
+                200_000,
+            ),
+            max_sandbox_seconds_per_run=_int_value(
+                values,
+                "MAX_SANDBOX_SECONDS_PER_RUN",
+                900,
+            ),
+            backend_baseline_skipped=_int_value(
+                values,
+                "BACKEND_BASELINE_SKIPPED",
+                0,
             ),
             langfuse_host=values.get(
                 "LANGFUSE_HOST",

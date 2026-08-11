@@ -2,30 +2,53 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from uuid import NAMESPACE_URL, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 
-from agent.domain.enums import AgentRunStatus, FeedbackStatus, GateRoute
+from agent.domain.enums import AgentRunStatus, FeedbackStatus, GateRoute, RiskLevel
 from agent.domain.errors import (
     ClaimTokenMismatchError,
     FeedbackNotFoundError,
     InvalidEditError,
+    ExternalDependencyError,
     PatchPolicyError,
     SourceAccessError,
 )
+from agent.domain.repair import (
+    RepairAttemptArtifact,
+    RepairDisposition,
+    RepairReport,
+    build_validation_result,
+    classify_target_validation,
+    requires_mermaid_external_dependency,
+)
 from agent.gate import execute_feedback_gate
 from agent.providers.base import ModelProvider
-from agent.reproduction import generate_reproduction_test, plan_reproduction
+from agent.reproduction import (
+    ReproductionModelExecution,
+    build_mermaid_test_fallback,
+    generate_reproduction_test,
+    plan_reproduction,
+)
+from agent.repair import generate_fix
 from agent.repositories.base import AgentRunRepository, FeedbackRepository
 from agent.sandbox.client import SandboxClient
-from agent.sandbox.contracts import JobType, SandboxArtifacts, SandboxJob
+from agent.sandbox.contracts import (
+    JobType,
+    SandboxArtifacts,
+    SandboxJob,
+    SandboxResult,
+    SandboxStatus,
+)
 from agent.state import AgentState
 from agent.telemetry.base import NoopTelemetry, Telemetry, ToolTrace
 from agent.tools.edits import StructuredEditTools
 from agent.tools.source import SourceReader
 from agent.workspace.artifacts import ArtifactStore
+from agent.workspace.paths import resolve_snapshot_path
+from agent.workspace.validation import compose_validated_patch, normalize_authorized_patch
 from agent.workspace.preparation import SourceWorkspace
 from agent.domain.reproduction import (
     ReproductionAttemptArtifact,
@@ -35,8 +58,8 @@ from agent.domain.reproduction import (
 )
 
 
-GRAPH_VERSION = "agent-graph-v2"
-POLICY_VERSION = "reproduction-policy-v2"
+GRAPH_VERSION = "agent-graph-v5"
+POLICY_VERSION = "repair-policy-v4"
 
 _ROUTE_TO_FEEDBACK_STATUS = {
     GateRoute.ACCEPTED_BACKEND_BUG: FeedbackStatus.REPRODUCING,
@@ -60,6 +83,18 @@ class ReproductionDependencies:
     model_timeout_seconds: float = 180.0
 
 
+@dataclass(frozen=True)
+class RepairDependencies:
+    fix_provider: ModelProvider
+    telemetry: Telemetry = field(default_factory=NoopTelemetry)
+    model_timeout_seconds: float = 180.0
+    max_model_calls: int = 8
+    max_tool_calls: int = 30
+    max_total_tokens: int = 200_000
+    max_sandbox_seconds: int = 900
+    baseline_skipped: int = 0
+
+
 def build_gate_graph(
     *,
     feedback_repository: FeedbackRepository,
@@ -69,9 +104,13 @@ def build_gate_graph(
     checkpointer: BaseCheckpointSaver,
     min_confidence: float,
     reproduction: ReproductionDependencies | None = None,
+    repair: RepairDependencies | None = None,
     interrupt_after: Sequence[str] | None = None,
 ):
-    """构建 Gate Graph；配置阶段 D 依赖时仅让已接受后端缺陷进入复现子图。"""
+    """构建 Gate Graph；阶段 E 依赖只在阶段 D 确认复现后启用修复。"""
+
+    if repair is not None and reproduction is None:
+        raise ValueError("repair graph requires reproduction dependencies")
 
     async def start_gate(state: AgentState) -> dict[str, object]:
         feedback = await feedback_repository.get(state.feedback_id)
@@ -254,55 +293,85 @@ def build_gate_graph(
             task = artifact_store.read_task(state.task_artifact_ref)
             plan = artifact_store.read_reproduction_plan(state.reproduction_plan_ref)
             snapshot = reproduction.source_workspace.resolve(state.source_snapshot_ref)
-            reader = SourceReader(snapshot.root)
-            source_items = []
-            for request in plan.files_to_read:
-                with reproduction.telemetry.start_tool(
-                    ToolTrace(
-                        operation="read-source-file",
-                        round=state.reproduction_round + 1,
-                        input_summary={
-                            "path": request.path,
-                            "start_line": request.start_line,
-                            "end_line": request.end_line,
-                        },
-                    )
-                ) as observation:
-                    try:
-                        source_item = reader.read_source_file(
-                            request.path,
-                            start_line=request.start_line,
-                            end_line=request.end_line,
-                        )
-                    except Exception as exc:
-                        observation.fail(
-                            error_code=getattr(exc, "error_code", "source_read_failed"),
-                            error_type=type(exc).__name__,
-                        )
-                        raise
-                    observation.succeed(
-                        {
-                            "path": source_item.path,
-                            "start_line": source_item.start_line,
-                            "end_line": source_item.end_line,
-                            "content_bytes": len(source_item.content.encode("utf-8")),
-                        }
-                    )
-                    source_items.append(source_item)
-            source_files = tuple(source_items)
             previous_report = None
             if state.reproduction_result_ref is not None:
                 previous_report = artifact_store.read_reproduction_result(
                     state.reproduction_result_ref
                 ).report
-            execution = await generate_reproduction_test(
+            regression_path = resolve_snapshot_path(
+                snapshot.root,
+                "backend/tests/test_feedback_regressions.py",
+                must_exist=False,
+            )
+            existing_test_source = (
+                regression_path.read_text(encoding="utf-8")
+                if regression_path.is_file()
+                else ""
+            )
+            fallback = build_mermaid_test_fallback(
                 task,
                 plan=plan,
-                source_files=source_files,
                 previous_report=previous_report,
-                provider=reproduction.test_provider,
-                timeout_seconds=reproduction.model_timeout_seconds,
+                existing_test_source=existing_test_source,
             )
+            source_files = ()
+            if fallback is not None:
+                # 第二轮模板由 Controller 确定性生成，不产生模型调用或不可信源码输出。
+                execution = ReproductionModelExecution(
+                    output=fallback,
+                    model_calls=0,
+                )
+            else:
+                reader = SourceReader(snapshot.root)
+                source_items = []
+                for request in plan.files_to_read:
+                    with reproduction.telemetry.start_tool(
+                        ToolTrace(
+                            operation="read-source-file",
+                            round=state.reproduction_round + 1,
+                            input_summary={
+                                "path": request.path,
+                                "start_line": request.start_line,
+                                "end_line": request.end_line,
+                            },
+                        )
+                    ) as observation:
+                        try:
+                            source_item = reader.read_source_file(
+                                request.path,
+                                start_line=request.start_line,
+                                end_line=request.end_line,
+                            )
+                        except Exception as exc:
+                            observation.fail(
+                                error_code=getattr(
+                                    exc,
+                                    "error_code",
+                                    "source_read_failed",
+                                ),
+                                error_type=type(exc).__name__,
+                            )
+                            raise
+                        observation.succeed(
+                            {
+                                "path": source_item.path,
+                                "start_line": source_item.start_line,
+                                "end_line": source_item.end_line,
+                                "content_bytes": len(
+                                    source_item.content.encode("utf-8")
+                                ),
+                            }
+                        )
+                        source_items.append(source_item)
+                source_files = tuple(source_items)
+                execution = await generate_reproduction_test(
+                    task,
+                    plan=plan,
+                    source_files=source_files,
+                    previous_report=previous_report,
+                    provider=reproduction.test_provider,
+                    timeout_seconds=reproduction.model_timeout_seconds,
+                )
             generated = execution.output
             submitted = None
             edit_error: Exception | None = None
@@ -375,6 +444,7 @@ def build_gate_graph(
             assert submitted is not None
             return {
                 "test_patch_ref": submitted.artifact_ref,
+                "fix_source_paths": generated.files_needed_for_fix,
                 "reproduction_round": next_round,
                 "model_calls": state.model_calls + execution.model_calls,
                 "tool_calls": state.tool_calls + len(source_files) + 1,
@@ -461,6 +531,8 @@ def build_gate_graph(
             attempt = ReproductionAttemptArtifact(
                 round=state.reproduction_round,
                 test_patch_sha256=job.test_patch_sha256,
+                files_needed_for_fix=state.fix_source_paths,
+                extension_sync_required=False,
                 sandbox_result=result,
             )
             result_ref = artifact_store.write_reproduction_result_ref(
@@ -566,6 +638,648 @@ def build_gate_graph(
                 )
             }
 
+        def route_after_reproduction_finish(state: AgentState) -> str:
+            if repair is not None and state.status is AgentRunStatus.REPAIRING:
+                return "repair"
+            return "end"
+
+        async def generate_fix_edit(state: AgentState) -> dict[str, object]:
+            assert repair is not None
+            if (
+                state.task_artifact_ref is None
+                or state.reproduction_plan_ref is None
+                or state.reproduction_result_ref is None
+                or state.source_snapshot_ref is None
+                or state.test_patch_ref is None
+            ):
+                raise ValueError("repair state is missing reproduction context")
+            task = artifact_store.read_task(state.task_artifact_ref)
+            plan = artifact_store.read_reproduction_plan(state.reproduction_plan_ref)
+            reproduction_attempt = artifact_store.read_reproduction_result(
+                state.reproduction_result_ref
+            )
+            if reproduction_attempt.report is None:
+                raise ValueError("repair requires a classified reproduction")
+            if (
+                reproduction_attempt.report.disposition
+                is ReproductionDisposition.REPRODUCED
+                and requires_mermaid_external_dependency(task, plan)
+            ):
+                # Mermaid drawing 需要当前固定镜像之外的渲染器；该部署决策不交给模型。
+                next_round = state.repair_round + 1
+                report = RepairReport(
+                    disposition=RepairDisposition.NEEDS_HUMAN,
+                    round=next_round,
+                    failure_code="external_dependency_required",
+                    failure_summary=(
+                        "Mermaid drawing repair requires a renderer dependency "
+                        "and deployment review"
+                    ),
+                )
+                summary = "Mermaid rendering requires a deployment dependency"
+                attempt = _synthetic_repair_attempt(
+                    state,
+                    round_number=next_round,
+                    report=report,
+                    summary=summary,
+                    risk=RiskLevel.MEDIUM,
+                )
+                return {
+                    "repair_round": next_round,
+                    "fix_summary": summary,
+                    "risk": RiskLevel.MEDIUM,
+                    "repair_result_ref": artifact_store.write_repair_result_ref(
+                        state.run_id,
+                        attempt,
+                    ),
+                    "last_error_code": report.failure_code,
+                }
+            if not _budget_allows(state, repair, model_calls=1):
+                return {"last_error_code": "budget_exhausted"}
+            snapshot = reproduction.source_workspace.resolve(state.source_snapshot_ref)
+            reader = SourceReader(snapshot.root)
+            requested_paths = state.fix_source_paths or tuple(
+                item.path
+                for item in plan.files_to_read
+                if item.path.startswith("backend/app/")
+            )
+            if not requested_paths:
+                requested_paths = ("backend/app/normalizer.py",)
+            if not _budget_allows(
+                state,
+                repair,
+                model_calls=1,
+                tool_calls=len(requested_paths) + 1,
+            ):
+                return {"last_error_code": "budget_exhausted"}
+
+            ranges = {item.path: item for item in plan.files_to_read}
+            source_files = []
+            for path in requested_paths:
+                request = ranges.get(path)
+                start_line = request.start_line if request else 1
+                end_line = request.end_line if request else 1000
+                with repair.telemetry.start_tool(
+                    ToolTrace(
+                        operation="read-fix-source-file",
+                        round=state.repair_round + 1,
+                        input_summary={
+                            "path": path,
+                            "start_line": start_line,
+                            "end_line": end_line,
+                        },
+                    )
+                ) as observation:
+                    try:
+                        source = reader.read_source_file(
+                            path,
+                            start_line=start_line,
+                            end_line=end_line,
+                        )
+                    except Exception as exc:
+                        observation.fail(
+                            error_code=getattr(exc, "error_code", "source_read_failed"),
+                            error_type=type(exc).__name__,
+                        )
+                        raise
+                    observation.succeed(
+                        {
+                            "path": source.path,
+                            "start_line": source.start_line,
+                            "end_line": source.end_line,
+                            "content_bytes": len(source.content.encode("utf-8")),
+                        }
+                    )
+                    source_files.append(source)
+
+            previous_attempt = (
+                artifact_store.read_repair_result(state.repair_result_ref)
+                if state.repair_result_ref is not None
+                else None
+            )
+            test_patch = artifact_store.read_patch(state.test_patch_ref)
+            execution = await generate_fix(
+                task,
+                plan=plan,
+                reproduction_report=reproduction_attempt.report,
+                source_files=tuple(source_files),
+                test_patch_summary={
+                    "sha256": _sha256_bytes(test_patch),
+                    "changed_files": ["backend/tests/test_feedback_regressions.py"],
+                },
+                previous_report=previous_attempt.report if previous_attempt else None,
+                previous_fix_summary=(
+                    previous_attempt.fix_summary if previous_attempt else None
+                ),
+                provider=repair.fix_provider,
+                timeout_seconds=repair.model_timeout_seconds,
+            )
+            next_model_calls = state.model_calls + execution.model_calls
+            next_usage = _add_usage(state, execution)
+            next_round = state.repair_round + 1
+            if (
+                next_model_calls > repair.max_model_calls
+                or int(next_usage["total_tokens"]) > repair.max_total_tokens
+            ):
+                return {
+                    "repair_round": next_round,
+                    "model_calls": next_model_calls,
+                    "tool_calls": state.tool_calls + len(source_files),
+                    "usage": next_usage,
+                    "last_error_code": "budget_exhausted",
+                }
+
+            generated = execution.output
+            submitted = None
+            edit_error: Exception | None = None
+            with repair.telemetry.start_tool(
+                ToolTrace(
+                    operation="submit-fix-edits",
+                    round=next_round,
+                    input_summary={"edit_count": len(generated.edits)},
+                )
+            ) as observation:
+                try:
+                    submitted = reproduction.edit_tools.submit_fix_edits(
+                        state.run_id,
+                        snapshot.root,
+                        generated.edits,
+                    )
+                    compose_validated_patch(
+                        snapshot.root,
+                        test_patch,
+                        artifact_store.read_patch(submitted.artifact_ref),
+                    )
+                except Exception as exc:
+                    observation.fail(
+                        error_code=getattr(exc, "error_code", "fix_edit_rejected"),
+                        error_type=type(exc).__name__,
+                    )
+                    edit_error = exc
+                else:
+                    observation.succeed(
+                        {
+                            "patch_sha256": submitted.sha256,
+                            "changed_files": list(submitted.changed_files),
+                            "added_lines": submitted.added_lines,
+                        }
+                    )
+            common = {
+                "repair_round": next_round,
+                "model_calls": next_model_calls,
+                "tool_calls": state.tool_calls + len(source_files) + 1,
+                "usage": next_usage,
+                "fix_summary": generated.summary,
+                "risk": generated.risk_level,
+            }
+            if edit_error is not None:
+                needs_human = isinstance(edit_error, ExternalDependencyError)
+                security = isinstance(edit_error, PatchPolicyError) and not needs_human
+                report = RepairReport(
+                    disposition=(
+                        RepairDisposition.NEEDS_HUMAN
+                        if needs_human
+                        else (
+                            RepairDisposition.SECURITY_REJECTED
+                            if security
+                            else RepairDisposition.INVALID_RESULT
+                        )
+                    ),
+                    round=next_round,
+                    failure_code=(
+                        "external_dependency_required"
+                        if needs_human
+                        else (
+                            "fix_edit_security_rejected"
+                            if security
+                            else "invalid_fix_edit"
+                        )
+                    ),
+                    failure_summary=(
+                        "generated fix requires an external dependency or deployment change"
+                        if needs_human
+                        else "generated fix edit was rejected by local policy"
+                    ),
+                )
+                attempt = _synthetic_repair_attempt(
+                    state,
+                    round_number=next_round,
+                    report=report,
+                    summary=generated.summary,
+                    risk=generated.risk_level,
+                )
+                return {
+                    **common,
+                    "fix_patch_ref": None,
+                    "repair_result_ref": artifact_store.write_repair_result_ref(
+                        state.run_id,
+                        attempt,
+                    ),
+                    "last_error_code": report.failure_code,
+                }
+            assert submitted is not None
+            return {
+                **common,
+                "fix_patch_ref": submitted.artifact_ref,
+                "repair_result_ref": None,
+                "last_error_code": None,
+            }
+
+        def route_after_fix_edit(state: AgentState) -> str:
+            if state.last_error_code == "budget_exhausted":
+                return "budget"
+            if state.last_error_code == "external_dependency_required":
+                return "finish"
+            if state.last_error_code == "fix_edit_security_rejected":
+                return "finish"
+            if state.last_error_code == "invalid_fix_edit":
+                return "revise" if state.repair_round < 2 else "finish"
+            return "sandbox"
+
+        async def run_target_validation(state: AgentState) -> dict[str, object]:
+            assert repair is not None
+            if not _budget_allows(state, repair, tool_calls=1):
+                return {"last_error_code": "budget_exhausted"}
+            if (
+                state.base_sha is None
+                or state.source_snapshot_ref is None
+                or state.test_patch_ref is None
+                or state.fix_patch_ref is None
+                or state.reproduction_plan_ref is None
+            ):
+                raise ValueError("repair state is missing target validation inputs")
+            snapshot = reproduction.source_workspace.resolve(state.source_snapshot_ref)
+            test_patch = artifact_store.read_patch(state.test_patch_ref)
+            fix_patch = artifact_store.read_patch(state.fix_patch_ref)
+            plan = artifact_store.read_reproduction_plan(state.reproduction_plan_ref)
+            job = SandboxJob(
+                job_id=uuid5(
+                    NAMESPACE_URL,
+                    f"mdtoword:{state.run_id}:repair:{state.repair_round}",
+                ),
+                run_id=state.run_id,
+                job_type=JobType.VALIDATE_TARGET,
+                base_sha=state.base_sha,
+                source_snapshot_sha256=snapshot.source_snapshot_sha256,
+                test_patch_sha256=_sha256_bytes(test_patch),
+                fix_patch_sha256=_sha256_bytes(fix_patch),
+                target_test_selector=plan.target_test_selector,
+                expires_at=datetime.now(UTC) + timedelta(minutes=15),
+            )
+            with repair.telemetry.start_tool(
+                ToolTrace(
+                    operation="run-target-validation",
+                    round=state.repair_round,
+                    input_summary={
+                        "job_id": str(job.job_id),
+                        "target_test_selector": plan.target_test_selector,
+                    },
+                )
+            ) as observation:
+                try:
+                    result = await reproduction.sandbox_client.submit(
+                        SandboxArtifacts(
+                            job=job,
+                            source_archive=snapshot.archive_path.read_bytes(),
+                            test_patch=test_patch,
+                            fix_patch=fix_patch,
+                        )
+                    )
+                except Exception as exc:
+                    observation.fail(
+                        error_code=getattr(exc, "error_code", "sandbox_failed"),
+                        error_type=type(exc).__name__,
+                    )
+                    raise
+                observation.succeed(_sandbox_summary(result))
+            attempt = RepairAttemptArtifact(
+                round=state.repair_round,
+                fix_patch_sha256=job.fix_patch_sha256,
+                changed_files=compose_validated_patch(
+                    snapshot.root,
+                    test_patch,
+                    fix_patch,
+                ).changed_files,
+                fix_summary=state.fix_summary or "backend repair",
+                risk_level=state.risk,
+                sandbox_result=result,
+            )
+            return {
+                "repair_result_ref": artifact_store.write_repair_result_ref(
+                    state.run_id,
+                    attempt,
+                ),
+                "tool_calls": state.tool_calls + 1,
+                "sandbox_duration_ms": state.sandbox_duration_ms + result.duration_ms,
+                "last_error_code": (
+                    "budget_exhausted"
+                    if state.sandbox_duration_ms + result.duration_ms
+                    > repair.max_sandbox_seconds * 1000
+                    else None
+                ),
+            }
+
+        async def classify_target(state: AgentState) -> dict[str, object]:
+            if state.repair_result_ref is None:
+                raise ValueError("repair state is missing target result")
+            attempt = artifact_store.read_repair_result(state.repair_result_ref)
+            report = classify_target_validation(
+                attempt.sandbox_result,
+                round_number=state.repair_round,
+            )
+            reference = artifact_store.write_repair_result_ref(
+                state.run_id,
+                attempt.model_copy(update={"report": report}),
+            )
+            return {
+                "repair_result_ref": reference,
+                "last_error_code": report.failure_code,
+            }
+
+        def route_after_target(state: AgentState) -> str:
+            if state.last_error_code == "budget_exhausted":
+                return "budget"
+            if state.repair_result_ref is None:
+                raise ValueError("repair state is missing classified target result")
+            report = artifact_store.read_repair_result(state.repair_result_ref).report
+            if report is None:
+                raise ValueError("repair target result is not classified")
+            if report.disposition is RepairDisposition.TARGET_PASSED:
+                return "validate"
+            if report.disposition is RepairDisposition.SECURITY_REJECTED:
+                return "finish"
+            return "revise" if state.repair_round < 2 else "finish"
+
+        async def finish_repair_success(state: AgentState) -> dict[str, object]:
+            if state.repair_result_ref is None:
+                raise ValueError("repair state is missing successful target result")
+            report = artifact_store.read_repair_result(state.repair_result_ref).report
+            if report is None:
+                raise ValueError("repair result is not classified")
+            feedback = await _owned_feedback(
+                feedback_repository,
+                state.feedback_id,
+                state.claim_token,
+            )
+            if feedback.status is FeedbackStatus.REPAIRING:
+                await feedback_repository.transition(
+                    feedback.id,
+                    claim_token=state.claim_token,
+                    target=FeedbackStatus.VALIDATING,
+                )
+            elif feedback.status is not FeedbackStatus.VALIDATING:
+                raise ClaimTokenMismatchError("feedback repair was finalized elsewhere")
+            await run_repository.mark_validating(
+                state.run_id,
+                report,
+                **_usage_arguments(state),
+            )
+            return {"status": AgentRunStatus.VALIDATING}
+
+        async def finish_repair_failure(state: AgentState) -> dict[str, object]:
+            if state.repair_result_ref is None:
+                raise ValueError("repair state is missing failed result")
+            report = artifact_store.read_repair_result(state.repair_result_ref).report
+            if report is None:
+                raise ValueError("repair result is not classified")
+            security = report.disposition is RepairDisposition.SECURITY_REJECTED
+            needs_human = report.disposition is RepairDisposition.NEEDS_HUMAN
+            feedback = await _owned_feedback(
+                feedback_repository,
+                state.feedback_id,
+                state.claim_token,
+            )
+            target = (
+                FeedbackStatus.NEEDS_HUMAN
+                if needs_human
+                else (
+                    FeedbackStatus.SECURITY_REJECTED
+                    if security
+                    else FeedbackStatus.FAILED
+                )
+            )
+            if feedback.status is FeedbackStatus.REPAIRING:
+                await feedback_repository.transition(
+                    feedback.id,
+                    claim_token=state.claim_token,
+                    target=target,
+                    error_code=report.failure_code,
+                    error_message=report.failure_summary,
+                )
+            elif feedback.status is not target:
+                raise ClaimTokenMismatchError("feedback repair was finalized elsewhere")
+            await run_repository.complete_repair_failure(
+                state.run_id,
+                report,
+                security_rejected=security,
+                **_usage_arguments(state),
+            )
+            return {
+                "status": (
+                    AgentRunStatus.SECURITY_REJECTED
+                    if security
+                    else AgentRunStatus.COMPLETED
+                ),
+                "route": (
+                    GateRoute.NEEDS_HUMAN.value if needs_human else state.route
+                ),
+            }
+
+        async def validate_final(state: AgentState) -> dict[str, object]:
+            assert repair is not None
+            if not _budget_allows(state, repair, tool_calls=3):
+                return {"last_error_code": "budget_exhausted"}
+            if (
+                state.base_sha is None
+                or state.source_snapshot_ref is None
+                or state.test_patch_ref is None
+                or state.fix_patch_ref is None
+                or state.reproduction_plan_ref is None
+            ):
+                raise ValueError("final validation state is incomplete")
+            snapshot = reproduction.source_workspace.resolve(state.source_snapshot_ref)
+            plan = artifact_store.read_reproduction_plan(state.reproduction_plan_ref)
+            test_patch = artifact_store.read_patch(state.test_patch_ref)
+            fix_patch = artifact_store.read_patch(state.fix_patch_ref)
+            validated = compose_validated_patch(snapshot.root, test_patch, fix_patch)
+            normalized_test_patch = normalize_authorized_patch(
+                snapshot.root,
+                test_patch,
+            )
+            validated_ref = artifact_store.write_patch_ref(
+                state.run_id,
+                "validated.patch",
+                validated.content,
+            )
+
+            results = []
+            specifications = (
+                ("reproduce-baseline", JobType.REPRODUCE_TARGET, False),
+                ("run-target-tests", JobType.VALIDATE_TARGET, True),
+                ("run-full-tests", JobType.VALIDATE_FULL, True),
+            )
+            duration_ms = state.sandbox_duration_ms
+            for operation, job_type, include_fix in specifications:
+                if duration_ms >= repair.max_sandbox_seconds * 1000:
+                    return {
+                        "tool_calls": state.tool_calls + len(results),
+                        "sandbox_duration_ms": duration_ms,
+                        "last_error_code": "budget_exhausted",
+                    }
+                job = SandboxJob(
+                    job_id=uuid5(
+                        NAMESPACE_URL,
+                        f"mdtoword:{state.run_id}:final:{operation}",
+                    ),
+                    run_id=state.run_id,
+                    job_type=job_type,
+                    base_sha=state.base_sha,
+                    source_snapshot_sha256=snapshot.source_snapshot_sha256,
+                    test_patch_sha256=_sha256_bytes(test_patch),
+                    fix_patch_sha256=(
+                        _sha256_bytes(fix_patch) if include_fix else None
+                    ),
+                    target_test_selector=plan.target_test_selector,
+                    expires_at=datetime.now(UTC) + timedelta(minutes=15),
+                )
+                with repair.telemetry.start_tool(
+                    ToolTrace(
+                        operation=operation,
+                        round=None,
+                        input_summary={
+                            "job_id": str(job.job_id),
+                            "base_sha": state.base_sha,
+                        },
+                    )
+                ) as observation:
+                    try:
+                        result = await reproduction.sandbox_client.submit(
+                            SandboxArtifacts(
+                                job=job,
+                                source_archive=snapshot.archive_path.read_bytes(),
+                                test_patch=test_patch,
+                                fix_patch=fix_patch if include_fix else None,
+                            )
+                        )
+                    except Exception as exc:
+                        observation.fail(
+                            error_code=getattr(exc, "error_code", "sandbox_failed"),
+                            error_type=type(exc).__name__,
+                        )
+                        raise
+                    observation.succeed(_sandbox_summary(result))
+                expected_workspace_hash = (
+                    validated.sha256 if include_fix else normalized_test_patch.sha256
+                )
+                if result.workspace_diff_sha256 not in {
+                    None,
+                    expected_workspace_hash,
+                }:
+                    result = result.model_copy(
+                        update={
+                            "status": SandboxStatus.SECURITY_REJECTED,
+                            "error_code": "workspace_diff_mismatch",
+                        }
+                    )
+                results.append(result)
+                duration_ms += result.duration_ms
+
+            if duration_ms > repair.max_sandbox_seconds * 1000:
+                return {
+                    "tool_calls": state.tool_calls + 3,
+                    "sandbox_duration_ms": duration_ms,
+                    "last_error_code": "budget_exhausted",
+                }
+
+            baseline_result, target_result, full_result = results
+            trusted_check = plan.oracle.trusted_assertion_name() or plan.oracle.kind.value
+            validation = build_validation_result(
+                base_sha=state.base_sha,
+                source_snapshot_sha256=snapshot.source_snapshot_sha256,
+                test_patch_sha256=_sha256_bytes(test_patch),
+                fix_patch_sha256=_sha256_bytes(fix_patch),
+                target_test_selector=plan.target_test_selector,
+                expected_failure_kind=plan.expected_failure_kind,
+                trusted_docx_check=trusted_check,
+                baseline_result=baseline_result,
+                target_result=target_result,
+                full_result=full_result,
+                baseline_skipped=repair.baseline_skipped,
+                changed_files=validated.changed_files,
+                validated_patch_ref=validated_ref,
+                validated_patch_sha256=validated.sha256,
+            )
+            validation_ref = artifact_store.write_validation_ref(
+                state.run_id,
+                validation,
+            )
+            return {
+                "validation_result_ref": validation_ref,
+                "validated_patch_sha256": (
+                    validated.sha256 if validation.passed else None
+                ),
+                "tool_calls": state.tool_calls + 3,
+                "sandbox_duration_ms": duration_ms,
+                "last_error_code": validation.failure_code,
+            }
+
+        def route_after_final_validation(state: AgentState) -> str:
+            if state.last_error_code == "budget_exhausted":
+                return "budget"
+            return "finish"
+
+        async def finish_validation(state: AgentState) -> dict[str, object]:
+            if state.validation_result_ref is None:
+                raise ValueError("final validation result is missing")
+            validation = artifact_store.read_validation(state.validation_result_ref)
+            feedback = await _owned_feedback(
+                feedback_repository,
+                state.feedback_id,
+                state.claim_token,
+            )
+            target = FeedbackStatus.VALIDATED if validation.passed else FeedbackStatus.FAILED
+            if feedback.status is FeedbackStatus.VALIDATING:
+                await feedback_repository.transition(
+                    feedback.id,
+                    claim_token=state.claim_token,
+                    target=target,
+                    error_code=validation.failure_code,
+                    error_message=validation.failure_summary,
+                )
+            elif feedback.status is not target:
+                raise ClaimTokenMismatchError("feedback validation was finalized elsewhere")
+            await run_repository.complete_validation(
+                state.run_id,
+                validation,
+                **_usage_arguments(state),
+            )
+            return {"status": AgentRunStatus.COMPLETED}
+
+        async def finish_budget_exhausted(state: AgentState) -> dict[str, object]:
+            feedback = await _owned_feedback(
+                feedback_repository,
+                state.feedback_id,
+                state.claim_token,
+            )
+            if feedback.status in {FeedbackStatus.REPAIRING, FeedbackStatus.VALIDATING}:
+                await feedback_repository.transition(
+                    feedback.id,
+                    claim_token=state.claim_token,
+                    target=FeedbackStatus.FAILED,
+                    error_code="budget_exhausted",
+                    error_message="run budget was exhausted",
+                )
+            elif feedback.status is not FeedbackStatus.FAILED:
+                raise ClaimTokenMismatchError("feedback budget status was finalized elsewhere")
+            await run_repository.exhaust_budget(
+                state.run_id,
+                **_usage_arguments(state),
+            )
+            return {
+                "status": AgentRunStatus.BUDGET_EXHAUSTED,
+                "last_error_code": "budget_exhausted",
+            }
+
         builder.add_node("prepare_source", prepare_source)
         builder.add_node("plan_reproduction", create_reproduction_plan)
         builder.add_node("generate_test_edit", generate_test_edit)
@@ -594,7 +1308,66 @@ def build_gate_graph(
             route_after_reproduction,
             {"revise": "generate_test_edit", "finish": "finish_reproduction"},
         )
-        builder.add_edge("finish_reproduction", END)
+        if repair is None:
+            builder.add_edge("finish_reproduction", END)
+        else:
+            builder.add_node("generate_fix_edit", generate_fix_edit)
+            builder.add_node("run_target_validation", run_target_validation)
+            builder.add_node("classify_target", classify_target)
+            builder.add_node("finish_repair_success", finish_repair_success)
+            builder.add_node("finish_repair_failure", finish_repair_failure)
+            builder.add_node("validate_final", validate_final)
+            builder.add_node("finish_validation", finish_validation)
+            builder.add_node("finish_budget_exhausted", finish_budget_exhausted)
+            builder.add_conditional_edges(
+                "finish_reproduction",
+                route_after_reproduction_finish,
+                {"repair": "generate_fix_edit", "end": END},
+            )
+            builder.add_conditional_edges(
+                "generate_fix_edit",
+                route_after_fix_edit,
+                {
+                    "revise": "generate_fix_edit",
+                    "sandbox": "run_target_validation",
+                    "finish": "finish_repair_failure",
+                    "budget": "finish_budget_exhausted",
+                },
+            )
+            builder.add_conditional_edges(
+                "run_target_validation",
+                lambda state: (
+                    "budget"
+                    if state.last_error_code == "budget_exhausted"
+                    else "classify"
+                ),
+                {
+                    "budget": "finish_budget_exhausted",
+                    "classify": "classify_target",
+                },
+            )
+            builder.add_conditional_edges(
+                "classify_target",
+                route_after_target,
+                {
+                    "revise": "generate_fix_edit",
+                    "validate": "finish_repair_success",
+                    "finish": "finish_repair_failure",
+                    "budget": "finish_budget_exhausted",
+                },
+            )
+            builder.add_edge("finish_repair_success", "validate_final")
+            builder.add_conditional_edges(
+                "validate_final",
+                route_after_final_validation,
+                {
+                    "budget": "finish_budget_exhausted",
+                    "finish": "finish_validation",
+                },
+            )
+            builder.add_edge("finish_repair_failure", END)
+            builder.add_edge("finish_validation", END)
+            builder.add_edge("finish_budget_exhausted", END)
     return builder.compile(
         checkpointer=checkpointer,
         interrupt_after=list(interrupt_after) if interrupt_after else None,
@@ -616,6 +1389,100 @@ def _sha256_bytes(content: bytes) -> str:
     from hashlib import sha256
 
     return sha256(content).hexdigest()
+
+
+def _budget_allows(
+    state: AgentState,
+    limits: RepairDependencies,
+    *,
+    model_calls: int = 0,
+    tool_calls: int = 0,
+) -> bool:
+    return (
+        state.model_calls + model_calls <= limits.max_model_calls
+        and state.tool_calls + tool_calls <= limits.max_tool_calls
+        and state.usage.total_tokens <= limits.max_total_tokens
+        and state.sandbox_duration_ms <= limits.max_sandbox_seconds * 1000
+    )
+
+
+def _usage_arguments(state: AgentState) -> dict[str, object]:
+    return {
+        "model_calls": state.model_calls,
+        "tool_calls": state.tool_calls,
+        "input_tokens": state.usage.input_tokens,
+        "output_tokens": state.usage.output_tokens,
+        "total_tokens": state.usage.total_tokens,
+        "estimated_cost": state.usage.estimated_cost,
+    }
+
+
+async def _owned_feedback(
+    repository: FeedbackRepository,
+    feedback_id: UUID,
+    claim_token: UUID,
+):
+    feedback = await repository.get(feedback_id)
+    if feedback is None:
+        raise FeedbackNotFoundError(f"feedback {feedback_id} does not exist")
+    if feedback.claim_token != claim_token:
+        raise ClaimTokenMismatchError(f"claim token does not own feedback {feedback_id}")
+    return feedback
+
+
+def _sandbox_summary(result: SandboxResult) -> dict[str, object]:
+    junit = result.junit_summary
+    return {
+        "status": result.status.value,
+        "exit_code": result.exit_code,
+        "timed_out": result.timed_out,
+        "duration_ms": result.duration_ms,
+        "junit": (
+            {
+                "tests": junit.tests,
+                "failures": junit.failures,
+                "errors": junit.errors,
+                "skipped": junit.skipped,
+                "target_collected": junit.target_collected,
+                "target_outcome": junit.target_outcome.value,
+            }
+            if junit
+            else None
+        ),
+    }
+
+
+def _synthetic_repair_attempt(
+    state: AgentState,
+    *,
+    round_number: int,
+    report: RepairReport,
+    summary: str,
+    risk: RiskLevel,
+) -> RepairAttemptArtifact:
+    now = datetime.now(UTC)
+    return RepairAttemptArtifact(
+        round=round_number,
+        fix_patch_sha256="0" * 64,
+        fix_summary=summary,
+        risk_level=risk,
+        sandbox_result=SandboxResult(
+            job_id=uuid5(
+                NAMESPACE_URL,
+                f"mdtoword:{state.run_id}:fix-edit:{round_number}",
+            ),
+            status=(
+                SandboxStatus.SECURITY_REJECTED
+                if report.disposition is RepairDisposition.SECURITY_REJECTED
+                else SandboxStatus.FAILED
+            ),
+            started_at=now,
+            finished_at=now,
+            duration_ms=0,
+            error_code=report.failure_code,
+        ),
+        report=report,
+    )
 
 
 def _synthetic_reproduction_attempt(

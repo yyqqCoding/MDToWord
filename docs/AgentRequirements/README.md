@@ -17,7 +17,8 @@ GitHub 创建 Pull Request，由维护者人工审核和合并。
 - 用户只提交原 Markdown 和问题描述，不采集 `expected_behavior`；
 - 插件版本从 `extension/dist/manifest.json` 读取，不逐条向用户采集版本；
 - 每次运行固定一个 `base_sha`，最终产物记录一个 `validated_patch_sha256`；
-- MVP 使用一个模型完成门禁、复现规划、测试生成和修复生成。
+- MVP 通常使用一个模型完成门禁、复现规划、测试生成和修复生成；Mermaid 第一轮测试
+  编辑无效时，Controller 可用固定受信 drawing 模板完成第二轮，不再调用模型。
 
 ## 文档结构
 
@@ -48,9 +49,13 @@ GitHub 创建 Pull Request，由维护者人工审核和合并。
   和 Docker Runner 已实现；自动测试与真实 Docker 容器隔离验收均已通过；
 - 阶段 D 自动复现已实现，并通过自动测试、真实 Docker 隔离以及
   Supabase/模型/Langfuse/GitHub/Sandbox 端到端验收；Controller 只有在显式提供
-  `--reproduce --provider configured` 时才读取固定 GitHub 快照并启动沙箱，当前仍不会
-  生成修复或创建 PR；
-- 阶段 E 至 G 尚未开始。
+  `--reproduce --provider configured` 时才读取固定 GitHub 快照并启动沙箱；
+- 阶段 E 修复循环、预算、独立验证和 `validated.patch` 已实现并通过自动测试与真实
+  Docker 验收；`--repair --provider configured` 可执行完整 D+E，也可续跑阶段 D 的
+  `repairing` checkpoint。真实 Supabase/模型/Langfuse/GitHub/Sandbox 运行已确认
+  Mermaid 缺陷复现，并按固定依赖 Policy 终结为
+  `needs_human/external_dependency_required`；阶段 E 已完成；
+- 阶段 F 和 G 尚未开始，当前不会创建 PR。
 
 可直接执行的配置和命令见 [agent/README.md](../../agent/README.md)。阶段划分、历史检查点
 和验收证据以 [implementation-plan.md](implementation-plan.md) 为准；本文档中的目标

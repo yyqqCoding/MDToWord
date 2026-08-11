@@ -8,6 +8,7 @@ from agent.domain.enums import (
     AgentRunStatus,
     FeedbackStatus,
     GateCategory,
+    GateRoute,
     RiskLevel,
 )
 from agent.domain.errors import (
@@ -20,6 +21,7 @@ from agent.domain.errors import (
 from agent.domain.gate import GateResult
 from agent.domain.models import AgentRunRecord, FeedbackRecord
 from agent.domain.reproduction import ReproductionReport
+from agent.domain.repair import RepairDisposition, RepairReport, ValidationResult
 from agent.domain.transitions import ensure_feedback_transition
 
 
@@ -283,7 +285,7 @@ class SupabaseAgentRunRepository:
             "GET",
             "/rest/v1/agent_runs",
             params={
-                "status": "in.(created,gating,preparing_source,reproducing)",
+                "status": "in.(created,gating,preparing_source,reproducing,repairing,validating)",
                 "select": "*",
                 "order": "started_at.asc",
                 "limit": "1",
@@ -445,12 +447,175 @@ class SupabaseAgentRunRepository:
             },
         )
 
+    async def mark_validating(
+        self,
+        run_id: UUID,
+        report: RepairReport,
+        *,
+        model_calls: int,
+        tool_calls: int,
+        input_tokens: int,
+        output_tokens: int,
+        total_tokens: int,
+        estimated_cost: Decimal,
+    ) -> AgentRunRecord:
+        existing = await self.get(run_id)
+        if existing is None:
+            raise AgentRunNotFoundError(f"agent run {run_id} does not exist")
+        if existing.status is AgentRunStatus.VALIDATING:
+            return existing
+        return await self._patch(
+            run_id,
+            current=AgentRunStatus.REPAIRING,
+            payload={
+                "status": AgentRunStatus.VALIDATING.value,
+                "repair": report.model_dump(mode="json"),
+                **_usage_payload(
+                    model_calls=model_calls,
+                    tool_calls=tool_calls,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    total_tokens=total_tokens,
+                    estimated_cost=estimated_cost,
+                ),
+            },
+        )
+
+    async def complete_repair_failure(
+        self,
+        run_id: UUID,
+        report: RepairReport,
+        *,
+        model_calls: int,
+        tool_calls: int,
+        input_tokens: int,
+        output_tokens: int,
+        total_tokens: int,
+        estimated_cost: Decimal,
+        security_rejected: bool = False,
+    ) -> AgentRunRecord:
+        existing = await self.get(run_id)
+        if existing is None:
+            raise AgentRunNotFoundError(f"agent run {run_id} does not exist")
+        target = (
+            AgentRunStatus.SECURITY_REJECTED
+            if security_rejected
+            else AgentRunStatus.COMPLETED
+        )
+        if existing.status is target:
+            return existing
+        return await self._patch(
+            run_id,
+            current=AgentRunStatus.REPAIRING,
+            payload={
+                "status": target.value,
+                **(
+                    {"route": GateRoute.NEEDS_HUMAN.value}
+                    if report.disposition is RepairDisposition.NEEDS_HUMAN
+                    else {}
+                ),
+                "repair": report.model_dump(mode="json"),
+                "error_code": report.failure_code,
+                "error_message": report.failure_summary,
+                "finished_at": datetime.now(UTC).isoformat(),
+                **_usage_payload(
+                    model_calls=model_calls,
+                    tool_calls=tool_calls,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    total_tokens=total_tokens,
+                    estimated_cost=estimated_cost,
+                ),
+            },
+        )
+
+    async def complete_validation(
+        self,
+        run_id: UUID,
+        result: ValidationResult,
+        *,
+        model_calls: int,
+        tool_calls: int,
+        input_tokens: int,
+        output_tokens: int,
+        total_tokens: int,
+        estimated_cost: Decimal,
+    ) -> AgentRunRecord:
+        existing = await self.get(run_id)
+        if existing is None:
+            raise AgentRunNotFoundError(f"agent run {run_id} does not exist")
+        if existing.status is AgentRunStatus.COMPLETED:
+            return existing
+        return await self._patch(
+            run_id,
+            current=AgentRunStatus.VALIDATING,
+            payload={
+                "status": AgentRunStatus.COMPLETED.value,
+                "validation": result.model_dump(mode="json"),
+                "validated_patch_sha256": (
+                    result.validated_patch_sha256 if result.passed else None
+                ),
+                "error_code": result.failure_code,
+                "error_message": result.failure_summary,
+                "finished_at": datetime.now(UTC).isoformat(),
+                **_usage_payload(
+                    model_calls=model_calls,
+                    tool_calls=tool_calls,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    total_tokens=total_tokens,
+                    estimated_cost=estimated_cost,
+                ),
+            },
+        )
+
+    async def exhaust_budget(
+        self,
+        run_id: UUID,
+        *,
+        model_calls: int,
+        tool_calls: int,
+        input_tokens: int,
+        output_tokens: int,
+        total_tokens: int,
+        estimated_cost: Decimal,
+    ) -> AgentRunRecord:
+        existing = await self.get(run_id)
+        if existing is None:
+            raise AgentRunNotFoundError(f"agent run {run_id} does not exist")
+        if existing.status is AgentRunStatus.BUDGET_EXHAUSTED:
+            return existing
+        return await self._patch(
+            run_id,
+            current=existing.status,
+            payload={
+                "status": AgentRunStatus.BUDGET_EXHAUSTED.value,
+                "error_code": "budget_exhausted",
+                "error_message": "run budget was exhausted",
+                "finished_at": datetime.now(UTC).isoformat(),
+                **_usage_payload(
+                    model_calls=model_calls,
+                    tool_calls=tool_calls,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    total_tokens=total_tokens,
+                    estimated_cost=estimated_cost,
+                ),
+            },
+        )
+
     async def fail(
         self,
         run_id: UUID,
         *,
         error_code: str,
         error_message: str,
+        model_calls: int,
+        tool_calls: int,
+        input_tokens: int,
+        output_tokens: int,
+        total_tokens: int,
+        estimated_cost: Decimal,
     ) -> AgentRunRecord:
         existing = await self.get(run_id)
         if existing is None:
@@ -465,6 +630,14 @@ class SupabaseAgentRunRepository:
                 "error_code": error_code,
                 "error_message": error_message,
                 "finished_at": datetime.now(UTC).isoformat(),
+                **_usage_payload(
+                    model_calls=model_calls,
+                    tool_calls=tool_calls,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    total_tokens=total_tokens,
+                    estimated_cost=estimated_cost,
+                ),
             },
         )
 
@@ -515,6 +688,25 @@ class SupabaseAgentRunRepository:
                 f"Supabase request failed with status {response.status_code}"
             )
         return response
+
+
+def _usage_payload(
+    *,
+    model_calls: int,
+    tool_calls: int,
+    input_tokens: int,
+    output_tokens: int,
+    total_tokens: int,
+    estimated_cost: Decimal,
+) -> dict[str, object]:
+    return {
+        "model_calls": model_calls,
+        "tool_calls": tool_calls,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+        "estimated_cost": str(estimated_cost),
+    }
 
 
 def _run_from_response(response: httpx.Response) -> AgentRunRecord:
