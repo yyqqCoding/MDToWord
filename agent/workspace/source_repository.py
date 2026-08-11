@@ -63,6 +63,8 @@ class GitHubSourceRepository:
             async with self._client.stream(
                 "GET",
                 f"{self._api_url}/repos/{self._repository}/tarball/{base_sha}",
+                # GitHub archive API 正常以 302 跳转到短期下载地址。
+                follow_redirects=True,
                 headers={
                     "Accept": "application/vnd.github+json",
                     "X-GitHub-Api-Version": "2022-11-28",

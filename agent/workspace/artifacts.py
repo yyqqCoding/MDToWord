@@ -8,6 +8,10 @@ from uuid import UUID
 from agent.domain.errors import InvalidArtifactPathError
 from agent.domain.gate import GateResult
 from agent.domain.models import TaskArtifact
+from agent.domain.reproduction import (
+    ReproductionAttemptArtifact,
+    ReproductionPlan,
+)
 
 
 _SAFE_SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -105,6 +109,31 @@ class ArtifactStore:
     def read_gate(self, reference: str) -> GateResult:
         return GateResult.model_validate_json(self._read_reference(reference))
 
+    def write_reproduction_plan_ref(
+        self,
+        run_id: UUID | str,
+        plan: ReproductionPlan,
+    ) -> str:
+        return self._write_model_ref(run_id, "reproduction-plan.json", plan)
+
+    def read_reproduction_plan(self, reference: str) -> ReproductionPlan:
+        return ReproductionPlan.model_validate_json(self._read_reference(reference))
+
+    def write_reproduction_result_ref(
+        self,
+        run_id: UUID | str,
+        result: ReproductionAttemptArtifact,
+    ) -> str:
+        return self._write_model_ref(run_id, "result.json", result)
+
+    def read_reproduction_result(
+        self,
+        reference: str,
+    ) -> ReproductionAttemptArtifact:
+        return ReproductionAttemptArtifact.model_validate_json(
+            self._read_reference(reference)
+        )
+
     def ref_for(self, run_id: UUID | str, filename: str) -> str:
         # 先通过 path_for 完成同一套白名单校验，再生成不暴露主机路径的稳定引用。
         self.path_for(run_id, filename)
@@ -115,6 +144,22 @@ class ArtifactStore:
         if not _SAFE_SEGMENT.fullmatch(run_segment):
             raise InvalidArtifactPathError("run id is not a safe artifact path segment")
         return f"artifact://{run_segment}"
+
+    def _write_model_ref(
+        self,
+        run_id: UUID | str,
+        filename: str,
+        model: object,
+    ) -> str:
+        path = self.path_for(run_id, filename)
+        model_dump_json = getattr(model, "model_dump_json", None)
+        if model_dump_json is None:
+            raise InvalidArtifactPathError("artifact payload is not a validated model")
+        content = model_dump_json(indent=2).encode("utf-8")
+        if len(content) > 200_000:
+            raise InvalidArtifactPathError("artifact payload exceeds size limit")
+        self._atomic_write(path, content)
+        return self.ref_for(run_id, filename)
 
     def _read_reference(self, reference: str) -> bytes:
         match = _ARTIFACT_REF.fullmatch(reference)

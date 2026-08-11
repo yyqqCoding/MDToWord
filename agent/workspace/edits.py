@@ -74,6 +74,8 @@ class PatchBuilder:
         snapshot_root: Path,
         edits: tuple[Edit, ...],
         phase: EditPhase,
+        *,
+        target_test_selector: str | None = None,
     ) -> PatchArtifact:
         if not edits:
             raise InvalidEditError("at least one edit is required")
@@ -106,6 +108,12 @@ class PatchBuilder:
             for edit, normalized in zip(edits, paths, strict=True):
                 self._apply_edit(worktree, normalized, edit, phase)
             _validate_python_policy(root, worktree, paths)
+            if phase is EditPhase.TEST and target_test_selector is not None:
+                _validate_generated_test_selector(
+                    root,
+                    worktree,
+                    target_test_selector,
+                )
             # intent-to-add 让新增文件也进入普通文本 diff，但不会生成提交。
             _run_git(worktree, git_environment, "add", "--intent-to-add", "--all")
             check = _run_git(
@@ -256,6 +264,9 @@ _BLOCKED_IMPORTS = frozenset(
         "subprocess",
         "telnetlib",
         "urllib",
+        "xml",
+        "lxml",
+        "zipfile",
     }
 )
 _BLOCKED_CALLS = frozenset(
@@ -323,7 +334,44 @@ def _python_security_findings(source: str) -> Counter[str]:
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             if node.name.startswith("pytest_"):
                 findings[f"hook:{node.name}"] += 1
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if any(isinstance(target, ast.Name) and target.id == "pytest_plugins" for target in targets):
+                findings["pytest_plugins"] += 1
     return findings
+
+
+def _validate_generated_test_selector(
+    baseline: Path,
+    worktree: Path,
+    selector: str,
+) -> None:
+    relative = Path("backend/tests/test_feedback_regressions.py")
+    original = baseline / relative
+    modified = worktree / relative
+    if not modified.is_file():
+        raise PatchPolicyError("target regression test file was not created")
+    original_names = _feedback_test_names(
+        original.read_text("utf-8") if original.is_file() else ""
+    )
+    modified_names = _feedback_test_names(modified.read_text("utf-8"))
+    if modified_names - original_names != {selector}:
+        raise PatchPolicyError("test patch must add exactly the planned target test")
+
+
+def _feedback_test_names(source: str) -> set[str]:
+    if not source:
+        return set()
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as exc:
+        raise InvalidEditError("edited Python must parse successfully") from exc
+    return {
+        node.name
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name.startswith("test_feedback_")
+    }
 
 
 def _qualified_name(node: ast.AST) -> str:

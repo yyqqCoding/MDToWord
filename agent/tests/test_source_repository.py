@@ -53,6 +53,32 @@ def test_github_source_repository_materializes_validated_snapshot(tmp_path: Path
     assert snapshot.archive_path.is_file()
 
 
+def test_github_source_repository_follows_archive_redirect(tmp_path: Path):
+    sha = "c" * 40
+    content = _archive({"repo-root/README.md": b"summary\n"})
+    requests: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request.url.path)
+        if request.url.path == f"/repos/example/md-to-word/tarball/{sha}":
+            return httpx.Response(302, headers={"Location": "/archive.tar.gz"})
+        assert request.url.path == "/archive.tar.gz"
+        return httpx.Response(200, content=content)
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            repository = GitHubSourceRepository("example/md-to-word", client=client)
+            return await repository.fetch_snapshot(sha, tmp_path / "snapshot")
+
+    snapshot = asyncio.run(scenario())
+
+    assert requests == [
+        f"/repos/example/md-to-word/tarball/{sha}",
+        "/archive.tar.gz",
+    ]
+    assert (snapshot.root / "README.md").read_text("utf-8") == "summary\n"
+
+
 @pytest.mark.parametrize(
     "content",
     (

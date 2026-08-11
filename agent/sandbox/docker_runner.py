@@ -23,6 +23,7 @@ from agent.sandbox.contracts import (
     SandboxStatus,
 )
 from agent.telemetry.masking import mask_text
+from agent.validators.junit import parse_junit_summary
 from agent.workspace.source_repository import materialize_snapshot_archive
 
 
@@ -112,6 +113,16 @@ class DockerRunner:
                     pids_limit=job.limits.pids,
                 ),
             }
+            junit_path = _junit_path(job, result_root)
+            if junit_path is not None and junit_path.is_file():
+                try:
+                    common["junit_summary"] = parse_junit_summary(
+                        junit_path,
+                        job.target_test_selector,
+                    )
+                except ValueError:
+                    # XML 无效由 Controller 分类为 invalid_test，不能退回解析 stdout。
+                    common["junit_summary"] = None
             if final_diff != authorized_diff:
                 return SandboxResult(
                     **common,
@@ -154,6 +165,7 @@ class DockerRunner:
             "--workdir=/workspace/backend",
             "--env=PYTEST_DISABLE_PLUGIN_AUTOLOAD=1",
             "--env=PYTHONDONTWRITEBYTECODE=1",
+            "--env=PYTHONPATH=/opt/trusted",
             "--env=HOME=/tmp",
             "--entrypoint=python",
             self._image_digest,
@@ -246,6 +258,14 @@ def _job_command(job: SandboxJob) -> tuple[str, ...]:
             "--junitxml=/result/full-junit.xml",
         )
     return ("-m", "compileall", "-q", "app", "tests")
+
+
+def _junit_path(job: SandboxJob, result_root: Path) -> Path | None:
+    if job.job_type in {JobType.REPRODUCE_TARGET, JobType.VALIDATE_TARGET}:
+        return result_root / "junit.xml"
+    if job.job_type is JobType.VALIDATE_FULL:
+        return result_root / "full-junit.xml"
+    return None
 
 
 def _initialize_baseline(job_root: Path, environment: dict[str, str]) -> None:

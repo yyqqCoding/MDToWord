@@ -74,6 +74,16 @@ class SourceReader:
             content=rendered,
         )
 
+    def list_readable_paths(self) -> tuple[str, ...]:
+        """只列出当前固定快照中实际存在且通过读取 Policy 的文件。"""
+
+        return tuple(
+            sorted(
+                set(self._candidate_paths(PathScope.BACKEND))
+                | set(self._candidate_paths(PathScope.PROJECT_DOCS))
+            )
+        )
+
     def search_source(
         self,
         query: str,

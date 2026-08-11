@@ -25,6 +25,41 @@ def test_fake_cli_scenarios_cover_stage_b_routes():
         assert classification.reason == "B2 Fake Provider 固定场景"
 
 
+def test_reproduction_cli_rejects_fake_provider_before_loading_configuration(capsys):
+    exit_code = main(
+        [
+            "run",
+            "--feedback-id",
+            str(uuid4()),
+            "--dry-run",
+            "--reproduce",
+        ]
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert exit_code == 2
+    assert output["error"] == "cli_usage_error"
+    assert "configured" in output["message"]
+
+
+def test_resume_cli_requires_reproduction_mode_before_loading_configuration(capsys):
+    exit_code = main(
+        [
+            "run",
+            "--resume-run-id",
+            str(uuid4()),
+            "--dry-run",
+            "--provider",
+            "configured",
+        ]
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert exit_code == 2
+    assert output["error"] == "cli_usage_error"
+    assert "--reproduce" in output["message"]
+
+
 def test_cli_error_never_echoes_environment_secret(monkeypatch, capsys):
     monkeypatch.setenv("SUPABASE_AGENT_KEY", "must-not-print")
     monkeypatch.delenv("SUPABASE_URL", raising=False)

@@ -172,6 +172,9 @@ def test_edit_schema_rejects_command_and_environment_fields():
         "import subprocess\nsubprocess.run(['whoami'])\n",
         "import os\nVALUE = os.environ['MODEL_API_KEY']\n",
         "def pytest_sessionstart(session):\n    pass\n",
+        "pytest_plugins = ['external_plugin']\n",
+        "import zipfile\n",
+        "import xml.etree.ElementTree\n",
     ),
 )
 def test_test_edit_rejects_new_network_shell_secret_and_pytest_hook_capabilities(
@@ -193,6 +196,30 @@ def test_test_edit_rejects_new_network_shell_secret_and_pytest_hook_capabilities
                 ),
             ),
             EditPhase.TEST,
+        )
+
+
+def test_test_patch_adds_only_the_planned_target_selector(tmp_path: Path):
+    root = _snapshot(tmp_path)
+    existing = (
+        root / "backend/tests/test_feedback_regressions.py"
+    ).read_text(encoding="utf-8")
+    edit = Edit(
+        path="backend/tests/test_feedback_regressions.py",
+        mode=EditMode.FULL_FILE,
+        content=(
+            existing
+            + "\ndef test_feedback_ab12cd_table():\n    assert False\n"
+            + "\ndef test_feedback_deadbeef_extra():\n    assert False\n"
+        ),
+    )
+
+    with pytest.raises(PatchPolicyError, match="exactly the planned"):
+        PatchBuilder(PatchPolicy.load_default()).build(
+            root,
+            (edit,),
+            EditPhase.TEST,
+            target_test_selector="test_feedback_ab12cd_table",
         )
 
 

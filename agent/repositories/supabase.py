@@ -19,6 +19,7 @@ from agent.domain.errors import (
 )
 from agent.domain.gate import GateResult
 from agent.domain.models import AgentRunRecord, FeedbackRecord
+from agent.domain.reproduction import ReproductionReport
 from agent.domain.transitions import ensure_feedback_transition
 
 
@@ -282,7 +283,7 @@ class SupabaseAgentRunRepository:
             "GET",
             "/rest/v1/agent_runs",
             params={
-                "status": "in.(created,gating)",
+                "status": "in.(created,gating,preparing_source,reproducing)",
                 "select": "*",
                 "order": "started_at.asc",
                 "limit": "1",
@@ -339,6 +340,108 @@ class SupabaseAgentRunRepository:
                 "total_tokens": total_tokens,
                 "estimated_cost": str(estimated_cost),
                 "finished_at": datetime.now(UTC).isoformat(),
+            },
+        )
+
+    async def mark_preparing_source(
+        self,
+        run_id: UUID,
+        result: GateResult,
+        *,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        total_tokens: int = 0,
+        estimated_cost: Decimal = Decimal("0"),
+    ) -> AgentRunRecord:
+        existing = await self.get(run_id)
+        if existing is None:
+            raise AgentRunNotFoundError(f"agent run {run_id} does not exist")
+        if existing.status is AgentRunStatus.PREPARING_SOURCE:
+            return existing
+        return await self._patch(
+            run_id,
+            current=AgentRunStatus.GATING,
+            payload={
+                "status": AgentRunStatus.PREPARING_SOURCE.value,
+                "route": result.route.value,
+                "category": result.category.value,
+                "classification": result.model_dump(mode="json"),
+                "model_calls": result.model_calls,
+                "tool_calls": result.tool_calls,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": total_tokens,
+                "estimated_cost": str(estimated_cost),
+            },
+        )
+
+    async def mark_reproducing(
+        self,
+        run_id: UUID,
+        *,
+        base_sha: str,
+    ) -> AgentRunRecord:
+        existing = await self.get(run_id)
+        if existing is None:
+            raise AgentRunNotFoundError(f"agent run {run_id} does not exist")
+        if existing.status is AgentRunStatus.REPRODUCING:
+            if existing.base_sha != base_sha:
+                raise RepositoryError("reproducing run has a different base")
+            return existing
+        return await self._patch(
+            run_id,
+            current=AgentRunStatus.PREPARING_SOURCE,
+            payload={
+                "status": AgentRunStatus.REPRODUCING.value,
+                "base_sha": base_sha,
+            },
+        )
+
+    async def complete_reproduction(
+        self,
+        run_id: UUID,
+        report: ReproductionReport,
+        *,
+        model_calls: int,
+        tool_calls: int,
+        input_tokens: int,
+        output_tokens: int,
+        total_tokens: int,
+        estimated_cost: Decimal,
+        reproduction_confirmed: bool = False,
+        security_rejected: bool = False,
+    ) -> AgentRunRecord:
+        existing = await self.get(run_id)
+        if existing is None:
+            raise AgentRunNotFoundError(f"agent run {run_id} does not exist")
+        target = (
+            AgentRunStatus.SECURITY_REJECTED
+            if security_rejected
+            else (
+                AgentRunStatus.REPAIRING
+                if reproduction_confirmed
+                else AgentRunStatus.COMPLETED
+            )
+        )
+        if existing.status is target:
+            return existing
+        return await self._patch(
+            run_id,
+            current=AgentRunStatus.REPRODUCING,
+            payload={
+                "status": target.value,
+                "reproduction": report.model_dump(mode="json"),
+                "model_calls": model_calls,
+                "tool_calls": tool_calls,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": total_tokens,
+                "estimated_cost": str(estimated_cost),
+                "finished_at": (
+                    None
+                    if target is AgentRunStatus.REPAIRING
+                    else datetime.now(UTC).isoformat()
+                ),
             },
         )
 

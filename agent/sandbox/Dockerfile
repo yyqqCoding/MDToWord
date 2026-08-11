@@ -13,6 +13,8 @@ WORKDIR /opt/build
 # 只复制执行后端测试所需的包，不把 Agent、Git 元数据或本地配置放入镜像。
 COPY backend/pyproject.toml ./backend/pyproject.toml
 COPY backend/app ./backend/app
+# DOCX 断言来自只读镜像层，不在模型可编辑的 workspace 中。
+COPY backend/tests/docx_assertions.py /opt/trusted/docx_assertions.py
 RUN pip install --no-cache-dir "./backend[dev]" \
     && rm -rf /opt/build
 

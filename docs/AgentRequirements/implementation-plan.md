@@ -229,7 +229,8 @@ SUPABASE_AGENT_KEY
 AGENT_DATABASE_URL / AGENT_CHECKPOINT_SCHEMA=agent_runtime
 MODEL_PROVIDER / MODEL_NAME / MODEL_API_KEY / MODEL_BASE_URL
 LANGFUSE_HOST / LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY
-GITHUB_APP_ID / GITHUB_APP_PRIVATE_KEY / GITHUB_REPOSITORY
+GITHUB_REPOSITORY / GITHUB_READ_TOKEN
+GITHUB_APP_ID / GITHUB_APP_PRIVATE_KEY
 ARTIFACT_ROOT
 EXTENSION_MANIFEST_PATH=extension/dist/manifest.json
 SANDBOX_WORKER_URL / SANDBOX_WORKER_CREDENTIAL
@@ -644,12 +645,73 @@ Cloud，使真实 Gate 调用具备严格结构化输出、有限重试、真实
 4. 运行 `agent/tests/test_docker_integration.py`；
 5. 只有测试实际执行为 passed，才能把阶段 C 更新为完成。
 
+### 阶段 D 实施检查点
+
+**状态：Implemented（2026-08-11）**
+
+**已实现**
+
+- Gate 的 `accepted_backend_bug` 路由已接入 `prepare_source -> plan_reproduction ->
+  generate_test_edit -> run_reproduction_in_sandbox -> classify_reproduction` 子图；其他 Gate
+  路由保持 Gate-only 行为；
+- 源码快照按运行和完整 `base_sha` 固定，Controller 重启时复用已校验 archive；每轮
+  Sandbox Job 都重新从该 archive 物化 workspace，不叠加上一轮修改；
+- `ReproductionPlan`、`TestGenerationResult`、Oracle 与目标测试名使用严格 Schema；完整
+  UUID、contact 和完整描述不进入测试名，contact 从 Task Artifact 结构上排除；
+- 严格 Schema 递归要求全部对象字段并以 `null` 表达未使用值；格式修正只回传字段路径
+  与规则。计划只可选择固定快照中实际存在的读取白名单，不能猜测仓库路径；
+- 每个计划源码读取范围至少覆盖 20 行，避免只读取文件首行后凭空猜测调用接口；
+- 测试补丁只能新增一个计划 selector 到固定回归测试文件；显式 pytest plugin、pytest
+  hook、直接 ZIP/XML 解析、网络、Shell、Secret、测试基础设施和额外目标测试在执行前
+  拒绝；
+- JUnit 由 XML 解析器读取目标 testcase；AssertionError 或明确的 `ConversionError`
+  才能按计划确认复现。ImportError、SyntaxError、fixture 缺失、skip、timeout、目标未
+  收集和非目标失败均不算成功；
+- 首轮测试通过或无效时只修订一次；第二轮仍未产生目标失败进入
+  `cannot_reproduce`。Policy 安全拒绝直接进入 `security_rejected`；
+- 受信 DOCX 断言固化在 Sandbox 镜像只读层，覆盖 ZIP、必需部件、XML、表格、公式、
+  图形数量、段落样式、文本缺失和三线表边框结构；模型只能选择登记 validator 和数据
+  参数；Mermaid 计划必须使用图形数量 Oracle，不能用通用 DOCX 完整性代替；
+- Langfuse 显式展示复现计划、源码读取、测试生成、结构化编辑、Sandbox 调用和轮次，
+  但不上传反馈原文、源码正文、测试源码、复现假设或 JUnit failure message；
+- `003_reproduction_runtime.sql` 扩展可恢复索引；CLI 只有显式提供 `--reproduce
+  --provider configured` 才启用阶段 D，默认 Fake/Gate 流程不启动源码或 Docker；
+- GitHub 源码读取使用独立的 Controller-only、指定仓库 `Contents: Read-only` Token；
+  tarball 跟随 GitHub 受信重定向，空的中断目录可幂等清理；`--resume-run-id` 从
+  checkpoint 继续已有运行，不重新领取 feedback；
+- 生成测试通过 Schema 后若违反固定测试路径或受信断言，只进行一次不含测试源码的
+  本地 Policy 修正；确定性的源码访问拒绝会终结 run，避免 Scheduler 无限恢复。
+- 阶段 D 长源码模型请求默认超时 180 秒，可通过环境变量在 30～300 秒内调整；模型
+  5xx/传输错误最多重试两次，使用 1 秒、4 秒的有限退避；测试编辑对不存在目标
+  使用 `search_replace` 时归为可修订的 `invalid_test_edit`，不误判为源码读取拒绝。
+
+**自动验收证据**
+
+- 设置阶段 D 镜像 digest 后执行 Agent 全量测试：178 passed，无 skipped；
+- 已知“表格导出为普通文本”的 DOCX 缺陷在真实 Docker 中产生目标
+  `AssertionError`，JUnit 分类为 `reproduced`；
+- 真实 Docker 隔离与已知缺陷复现：2 passed；
+- Graph 覆盖一轮复现、两轮直接通过、无效语法修订、两轮无效和 pytest plugin 安全
+  拒绝；每轮使用相同原始 archive 且只启动必要次数的 Sandbox；
+- 后端全量测试：44 passed，保留 1 条既有 Starlette/httpx 弃用警告；
+- Mermaid 真实反馈已走通 Supabase、Langfuse、GitHub 固定快照与计划安全边界；旧模型
+  接口曾因 `provider_unavailable` 终结，替换接口的代表性严格 Schema 预检通过，但
+  `z-ai/glm-5.2` 在真实 `generate-test` 中耗尽一次格式修正后仍为 `invalid_response`。
+  `grok-4.5` 的 Gate Schema 一次通过，但代表性 40 KB 测试生成在三次有限传输尝试中
+  均被远端断开；同一 localhost 网关的 `gpt-5.6-luna` 也只通过 Gate，35.8 KB 代表性
+  生成最终返回 503。当前 `deepseek-ai/DeepSeek-V4-Flash` 已通过 35.8 KB 代表性
+  Schema/Policy 预检；真实反馈 `7990602f-...` 的 run `27d1b938-...` 使用固定
+  `base_sha=89c9943f...`，在第二轮生成受控测试补丁。新镜像 Sandbox 只收集一个目标
+  测试并得到预期 `AssertionError`，无 error、skip 或 timeout；数据库反馈/run 终态均为
+  `repairing`，复现 disposition 为 `reproduced`。本次真实运行记录 5 次模型调用、14 次
+  工具调用、68,094 tokens，完成 Supabase、Langfuse、GitHub、模型与 Sandbox 端到端验收。
+
 | 阶段 | 状态 | 验收日期 | 证据 |
 |---|---|---|---|
 | A 基线、配置与持久化 | Implemented | 2026-08-10 | Agent 30 passed；Backend 42 passed；Supabase migration/RLS/RPC/claim 验收通过 |
 | B LangGraph Gate与Langfuse | 进行中（B1/B2完成；B3功能与安全通过，成本延后） | - | Agent 88 passed；真实分类/注入隔离/Trace/Token/Masking通过；数据库成本待配置 |
 | C 源码工具与Docker Worker | Implemented | 2026-08-11 | Agent 135 passed；Docker 集成 1 passed；Backend 42 passed |
-| D 自动复现 | 未开始 | - | - |
+| D 自动复现 | Implemented | 2026-08-11 | Agent 178 passed；Docker 2 passed；Backend 44 passed；真实 Mermaid 反馈在固定 SHA 上产生目标断言失败并进入 `repairing/reproduced` |
 | E 修复与独立验证 | 未开始 | - | - |
 | F GitHub PR | 未开始 | - | - |
 | G 评估与投产 | 未开始 | - | - |

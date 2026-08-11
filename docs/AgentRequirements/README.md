@@ -46,8 +46,11 @@ GitHub 创建 Pull Request，由维护者人工审核和合并。
   数据库成本持久化验收延后；
 - 阶段 C 的源码快照、受控工具、补丁 Policy、Sandbox 契约、认证 Client、幂等 Worker
   和 Docker Runner 已实现；自动测试与真实 Docker 容器隔离验收均已通过；
-- 阶段 D 至 G 尚未开始，当前 Controller CLI 仍只运行 Feedback Gate，不会自动读取
-  源码、启动沙箱、修改代码或创建 PR。
+- 阶段 D 自动复现已实现，并通过自动测试、真实 Docker 隔离以及
+  Supabase/模型/Langfuse/GitHub/Sandbox 端到端验收；Controller 只有在显式提供
+  `--reproduce --provider configured` 时才读取固定 GitHub 快照并启动沙箱，当前仍不会
+  生成修复或创建 PR；
+- 阶段 E 至 G 尚未开始。
 
 可直接执行的配置和命令见 [agent/README.md](../../agent/README.md)。阶段划分、历史检查点
 和验收证据以 [implementation-plan.md](implementation-plan.md) 为准；本文档中的目标

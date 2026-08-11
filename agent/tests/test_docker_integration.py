@@ -4,6 +4,7 @@ import io
 import os
 import shutil
 import tarfile
+import zipfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
@@ -16,12 +17,84 @@ from agent.sandbox.contracts import (
     SandboxJob,
     SandboxLimits,
     SandboxStatus,
+    TargetTestOutcome,
+)
+from agent.domain.reproduction import (
+    ExpectedFailureKind,
+    ReproductionDisposition,
+    classify_reproduction_result,
 )
 from agent.sandbox.docker_runner import DockerRunner
 from agent.sandbox.worker import FileJobStore, SandboxWorker
 
 
 pytestmark = pytest.mark.docker
+
+
+def test_stage_d_known_table_defect_becomes_trusted_target_failure(tmp_path: Path):
+    image_digest = os.environ.get("SANDBOX_IMAGE_DIGEST", "")
+    if not image_digest or shutil.which("docker") is None:
+        pytest.skip("SANDBOX_IMAGE_DIGEST and Docker are required")
+
+    snapshot = tmp_path / "snapshot"
+    (snapshot / "backend/app").mkdir(parents=True)
+    (snapshot / "backend/tests").mkdir(parents=True)
+    (snapshot / "backend/app/__init__.py").write_text("", encoding="utf-8")
+    # 固定一个可打开但缺少表格节点的 DOCX，代表已知“表格导出成普通文本”基线缺陷。
+    docx = io.BytesIO()
+    with zipfile.ZipFile(docx, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", "<Types />")
+        archive.writestr(
+            "word/document.xml",
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/'
+            'wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>'
+            "| A | B |</w:t></w:r></w:p></w:body></w:document>",
+        )
+    (snapshot / "backend/app/repro_target.py").write_text(
+        "DOCUMENT = bytes.fromhex(" + repr(docx.getvalue().hex()) + ")\n"
+        "def convert_known_table_case():\n    return DOCUMENT\n",
+        encoding="utf-8",
+    )
+    target = snapshot / "backend/tests/test_feedback_regressions.py"
+    original = "# Stage D known-defect baseline\n"
+    target.write_text(original, encoding="utf-8")
+    selector = "test_feedback_ab12cd34_table_structure"
+    generated_test = f'''from app.repro_target import convert_known_table_case
+from docx_assertions import assert_minimum_table_count
+
+
+def {selector}():
+    assert_minimum_table_count(convert_known_table_case(), 1)
+'''
+    patch = _trusted_smoke_patch(original, generated_test)
+    source_archive = _archive_snapshot(snapshot)
+    job = SandboxJob(
+        job_id=uuid4(),
+        run_id=uuid4(),
+        job_type=JobType.REPRODUCE_TARGET,
+        base_sha="b" * 40,
+        source_snapshot_sha256=hashlib.sha256(source_archive).hexdigest(),
+        test_patch_sha256=hashlib.sha256(patch).hexdigest(),
+        target_test_selector=selector,
+        expires_at=datetime.now(UTC) + timedelta(minutes=5),
+    )
+    result = DockerRunner(
+        image_digest=image_digest,
+        work_root=tmp_path / "work",
+    ).execute(
+        job,
+        SandboxArtifacts(job=job, source_archive=source_archive, test_patch=patch),
+    )
+
+    assert result.junit_summary is not None
+    assert result.junit_summary.target_outcome is TargetTestOutcome.FAILED
+    report = classify_reproduction_result(
+        result,
+        expected_failure_kind=ExpectedFailureKind.ASSERTION,
+        round_number=1,
+        target_test_selector=selector,
+    )
+    assert report.disposition is ReproductionDisposition.REPRODUCED
 
 
 def test_real_docker_worker_has_no_network_or_business_secrets_and_is_idempotent(

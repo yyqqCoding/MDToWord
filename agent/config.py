@@ -34,6 +34,11 @@ class AgentConfig(BaseModel):
     model_base_url: str | None = None
     model_input_cost_per_million: Decimal = Field(default=Decimal("0"), ge=0)
     model_output_cost_per_million: Decimal = Field(default=Decimal("0"), ge=0)
+    reproduction_model_timeout_seconds: float = Field(
+        default=180.0,
+        ge=30.0,
+        le=300.0,
+    )
     langfuse_host: str = "https://cloud.langfuse.com"
     langfuse_public_key: SecretStr | None = None
     langfuse_secret_key: SecretStr | None = None
@@ -42,11 +47,12 @@ class AgentConfig(BaseModel):
         pattern=r"^[a-z0-9_-]{1,40}$",
     )
     trace_content: bool = False
-    # 阶段 C 配置保持可选，当前 Gate-only CLI 不会因此强制要求 GitHub/Sandbox。
+    # GitHub/Sandbox 只在 --reproduce 时强制，Gate-only 运行保持最小配置。
     github_repository: str | None = Field(
         default=None,
         pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
     )
+    github_read_token: SecretStr | None = None
     sandbox_worker_url: str | None = None
     sandbox_worker_credential: SecretStr | None = None
 
@@ -153,6 +159,11 @@ class AgentConfig(BaseModel):
                 values,
                 "MODEL_OUTPUT_COST_PER_MILLION",
             ),
+            reproduction_model_timeout_seconds=_float_value(
+                values,
+                "REPRODUCTION_MODEL_TIMEOUT_SECONDS",
+                180.0,
+            ),
             langfuse_host=values.get(
                 "LANGFUSE_HOST",
                 "https://cloud.langfuse.com",
@@ -165,6 +176,7 @@ class AgentConfig(BaseModel):
             ).strip(),
             trace_content=_bool_value(values, "TRACE_CONTENT", False),
             github_repository=_optional_text(values, "GITHUB_REPOSITORY"),
+            github_read_token=_optional_secret(values, "GITHUB_READ_TOKEN"),
             sandbox_worker_url=_optional_text(values, "SANDBOX_WORKER_URL"),
             sandbox_worker_credential=_optional_secret(
                 values,
@@ -180,7 +192,7 @@ class AgentConfig(BaseModel):
     def require_model_settings(self) -> tuple[str, str, str]:
         if self.model_provider != "openai_compatible":
             raise ConfigurationError(
-                "MODEL_PROVIDER must be openai_compatible for the configured Gate"
+                "MODEL_PROVIDER must be openai_compatible for the configured runtime"
             )
         missing = [
             name
@@ -207,7 +219,7 @@ class AgentConfig(BaseModel):
     def require_langfuse_settings(self) -> tuple[str, str, str]:
         if self.trace_content:
             raise ConfigurationError(
-                "TRACE_CONTENT=true is not supported by the Gate CLI"
+                "TRACE_CONTENT=true is not supported by the Agent CLI"
             )
         missing = [
             name
@@ -229,13 +241,14 @@ class AgentConfig(BaseModel):
             self.langfuse_secret_key.get_secret_value(),
         )
 
-    def require_stage_c_controller_settings(self) -> tuple[str, str, str]:
+    def require_stage_c_controller_settings(self) -> tuple[str, str, str, str]:
         """在阶段 D 接入源码与沙箱节点时一次性收紧阶段 C 必需配置。"""
 
         missing = [
             name
             for name, value in (
                 ("GITHUB_REPOSITORY", self.github_repository),
+                ("GITHUB_READ_TOKEN", self.github_read_token),
                 ("SANDBOX_WORKER_URL", self.sandbox_worker_url),
                 ("SANDBOX_WORKER_CREDENTIAL", self.sandbox_worker_credential),
             )
@@ -246,10 +259,12 @@ class AgentConfig(BaseModel):
                 "missing required configuration: " + ", ".join(missing)
             )
         assert self.github_repository is not None
+        assert self.github_read_token is not None
         assert self.sandbox_worker_url is not None
         assert self.sandbox_worker_credential is not None
         return (
             self.github_repository,
+            self.github_read_token.get_secret_value(),
             self.sandbox_worker_url,
             self.sandbox_worker_credential.get_secret_value(),
         )

@@ -113,7 +113,11 @@ edits: Edit[]
 target_test_selector: string
 oracle:
   kind: conversion_success | conversion_error | docx_xpath | text_absent | style_present
-  parameters: object
+  parameters:
+    validator: registered-validator | null
+    minimum: integer | null
+    text: string | null
+    style: string | null
 expected_failure_kind: assertion | unexpected_conversion_error
 reason: string
 files_needed_for_fix: string[]
@@ -123,6 +127,11 @@ extension_sync_required: bool
 测试统一追加到 `backend/tests/test_feedback_regressions.py`，名称为
 `test_feedback_<feedback-id前8位>_<行为>`。不得包含完整 UUID、联系方式或完整问题
 描述。测试必须离线、确定且不读取环境 Secret。
+
+模型接口使用严格 Structured Outputs：每个对象属性都进入 `required`，未使用字段以
+`null` 表示，动态参数字典禁止进入模型 Schema。结构格式错误最多修正一次，修正提示
+只包含 Pydantic 字段路径/错误类型，不包含原始输出；通过 Schema 后若违反固定测试路径
+或受信断言 Policy，也只允许一次不回传测试源码的本地规则修正。
 
 `extension_sync_required` 只是审查元数据；当前修复若必须修改扩展才能成立，应在 Gate
 阶段以 `requires_extension_change=true` 路由为 `out_of_scope`，不得生成测试或补丁。
@@ -190,6 +199,17 @@ resource_summary
 error_code
 ```
 
+`junit_summary` 除总测试数、failures、errors 和 skipped 外，还包含
+`target_collected`、`target_outcome`、`target_failure_type` 与最大 1 KB 的脱敏
+`target_message`。Controller 只依据这些 XML 解析字段判定，不解析 pytest stdout。
+
+DOCX 断言固化在 Sandbox 镜像的只读 `/opt/trusted/docx_assertions.py`，测试通过固定
+`PYTHONPATH` 调用。`docx_xpath` 是兼容的 Oracle 类型名，不允许模型传入 XPath；模型
+只能从 `valid_zip`、`required_parts_present`、`xml_parseable`、
+`minimum_table_count`、`minimum_math_count`、`minimum_drawing_count`、
+`paragraph_style_present`、`text_absent` 和 `three_line_table_structure` 中选择已登记断言
+及普通数据参数。
+
 stdout/stderr 各自最多保留 4 KB，先清理控制字符和密钥模式。结果内容仍视为不可信
 数据，只能作为下一轮模型的带边界输入。
 
@@ -254,6 +274,7 @@ required_parts_present
 xml_parseable
 minimum_table_count
 minimum_math_count
+minimum_drawing_count
 paragraph_style_present
 text_absent
 three_line_table_structure

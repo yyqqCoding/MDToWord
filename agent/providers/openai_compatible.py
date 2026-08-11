@@ -1,4 +1,5 @@
 import asyncio
+from copy import deepcopy
 import json
 from collections.abc import Awaitable, Callable
 from decimal import Decimal
@@ -107,7 +108,7 @@ class OpenAICompatibleProvider:
 
             try:
                 output = response_schema.model_validate_json(payload["content"])
-            except (ValidationError, ValueError, TypeError):
+            except (ValidationError, ValueError, TypeError) as exc:
                 if format_attempt >= self._max_format_retries:
                     raise InvalidModelResponseError(
                         "model returned invalid structured output"
@@ -119,6 +120,7 @@ class OpenAICompatibleProvider:
                         "content": (
                             "上一条响应不符合指定 JSON Schema。请仅重新输出符合 Schema "
                             "的 JSON，不要添加解释、Markdown 或工具调用。"
+                            f"脱敏校验摘要：{_validation_error_hint(exc)}"
                         ),
                     }
                 )
@@ -157,7 +159,7 @@ class OpenAICompatibleProvider:
                 "json_schema": {
                     "name": _schema_name(response_schema),
                     "strict": True,
-                    "schema": response_schema.model_json_schema(),
+                    "schema": _strict_response_schema(response_schema),
                 },
             },
         }
@@ -194,7 +196,8 @@ class OpenAICompatibleProvider:
             }
             if not retryable or attempt >= self._max_transport_retries:
                 raise error
-            await self._sleep(0.25 * (2**attempt))
+            # 本地兼容网关的上游 5xx 往往持续数秒；短于 1 秒的重试只会重复击中故障窗。
+            await self._sleep(min(1.0 * (4**attempt), 10.0))
 
         raise AssertionError("transport retry loop must return or raise")
 
@@ -312,3 +315,50 @@ def _nonnegative_int(value: object) -> int:
 
 def _schema_name(response_schema: type[StructuredOutput]) -> str:
     return response_schema.__name__.lower()[:64]
+
+
+def _strict_response_schema(
+    response_schema: type[StructuredOutput],
+) -> dict[str, Any]:
+    """补齐严格 Structured Outputs 要求，同时保留 Pydantic 的本地验证。"""
+
+    schema = deepcopy(response_schema.model_json_schema())
+
+    def normalize(node: object) -> None:
+        if isinstance(node, dict):
+            properties = node.get("properties")
+            if isinstance(properties, dict):
+                # 严格模式要求对象全部属性列入 required；可选值通过 null 表达。
+                node["required"] = list(properties)
+                node["additionalProperties"] = False
+            for value in node.values():
+                normalize(value)
+        elif isinstance(node, list):
+            for value in node:
+                normalize(value)
+
+    normalize(schema)
+    return schema
+
+
+def _validation_error_hint(error: Exception) -> str:
+    """只返回字段路径与规则，不包含模型原始输出或 Pydantic input/context。"""
+
+    if not isinstance(error, ValidationError):
+        return json.dumps(
+            [{"loc": [], "type": type(error).__name__}],
+            ensure_ascii=False,
+        )
+    safe = [
+        {
+            "loc": [str(part) for part in item["loc"]],
+            "type": item["type"],
+            "message": item["msg"],
+        }
+        for item in error.errors(
+            include_url=False,
+            include_context=False,
+            include_input=False,
+        )[:8]
+    ]
+    return json.dumps(safe, ensure_ascii=False, separators=(",", ":"))

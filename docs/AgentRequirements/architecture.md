@@ -20,10 +20,11 @@ Edge 插件
 GitHub 负责源码、分支、PR 和人工协作，不负责调度、执行、沙箱或 Agent 密钥。
 Agent Controller 是常驻自托管服务；Sandbox Worker 是执行不可信代码的隔离边界。
 
-截至阶段 C，已实现 Supabase 领取、Gate-only LangGraph、模型 Provider、运行持久化、
-Langfuse Trace、Source Workspace、受控工具和独立 Docker Sandbox Worker。阶段 C 组件
-尚未接入当前 Gate-only Graph；自动复现/修复和 GitHub Publisher 分别由阶段 D 至 F
-接入，因此当前 Controller CLI 不会自动执行生成代码或创建 PR。
+截至阶段 D，已实现 Supabase 领取、Gate 与最多两轮自动复现 LangGraph、模型 Provider、
+运行持久化、Langfuse Trace、Source Workspace、受控测试编辑和独立 Docker Sandbox
+Worker。CLI 默认仍只执行 Gate；只有维护者显式使用 `--reproduce --provider configured`
+时，已接受的后端缺陷才会进入复现子图。修复、独立验证和 GitHub Publisher 由阶段 E、
+F 接入；当前流程不会生成修复或创建 PR。
 
 ## 2. 部署单元
 
@@ -44,6 +45,8 @@ Langfuse Trace、Source Workspace、受控工具和独立 Docker Sandbox Worker�
 
 Controller 不直接执行模型生成的测试或修改后的源码。GitHub 发布是 Controller 中的
 受信模块，不作为模型工具暴露；只有确定性状态达到 `validated` 才能调用。
+源码读取使用 Controller-only、指定仓库 `Contents: Read-only` 的凭据；该凭据与未来
+发布用 GitHub App 分离，也不得进入 Graph State、模型上下文、Worker 或任务容器。
 
 ### 2.2 Docker Sandbox Worker
 
@@ -209,6 +212,7 @@ current_main_sha != base_sha -> 本次 run 结束为 stale_base，feedback 重�
 - 数据库领取使用原子 claim、租约超时和最大尝试次数；
 - `operation_id = run_id + node + attempt`，所有外部副作用幂等；
 - Controller 重启后从持久化 LangGraph checkpoint 与数据库状态恢复；
+- 维护者可使用已有 `run_id` 显式恢复运行，不重新领取同一 feedback；
 - Sandbox 超时或崩溃只丢弃该临时容器，不复用工作区；
 - Langfuse 不可用不阻断主流程，最终用量仍写入 `agent_runs`；
 - GitHub 发布失败保留已验证 Artifact，状态为 `failed`，可由同一运行幂等重试；

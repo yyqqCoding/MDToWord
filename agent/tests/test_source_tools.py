@@ -45,6 +45,20 @@ def test_read_source_file_returns_only_requested_allowed_lines(tmp_path: Path):
     assert result.content == "def normalize_markdown(text):"
 
 
+def test_list_readable_paths_contains_only_existing_allowlisted_files(tmp_path: Path):
+    paths = SourceReader(_snapshot(tmp_path)).list_readable_paths()
+
+    assert paths == (
+        "AGENTS.md",
+        "README.md",
+        "backend/app/normalizer.py",
+        "backend/app/pandoc_runner.py",
+        "backend/pyproject.toml",
+        "backend/tests/test_normalizer.py",
+    )
+    assert "extension/secret.txt" not in paths
+
+
 @pytest.mark.parametrize(
     "path",
     (

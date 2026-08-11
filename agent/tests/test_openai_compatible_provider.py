@@ -11,8 +11,15 @@ from agent.domain.errors import (
     ModelRateLimitError,
 )
 from agent.domain.gate import GateClassification
+from agent.domain.reproduction import (
+    ReproductionPlan,
+    TestGenerationResult as GeneratedTestResult,
+)
 from agent.providers.base import ModelMessage
-from agent.providers.openai_compatible import OpenAICompatibleProvider
+from agent.providers.openai_compatible import (
+    OpenAICompatibleProvider,
+    _strict_response_schema,
+)
 
 
 def _classification_payload() -> dict[str, object]:
@@ -99,6 +106,27 @@ def test_provider_sends_strict_json_schema_and_normalizes_usage():
     assert result.estimated_cost == Decimal("0.00018")
 
 
+def test_stage_d_schemas_require_every_nested_property_in_strict_mode():
+    def assert_strict_objects(node: object) -> None:
+        if isinstance(node, dict):
+            properties = node.get("properties")
+            if isinstance(properties, dict):
+                assert node.get("additionalProperties") is False
+                assert set(node.get("required", ())) == set(properties)
+            for value in node.values():
+                assert_strict_objects(value)
+        elif isinstance(node, list):
+            for value in node:
+                assert_strict_objects(value)
+
+    for response_schema in (ReproductionPlan, GeneratedTestResult):
+        schema = _strict_response_schema(response_schema)
+        assert_strict_objects(schema)
+
+    parameters = _strict_response_schema(ReproductionPlan)["$defs"]["OracleParameters"]
+    assert set(parameters["properties"]) == {"validator", "minimum", "text", "style"}
+
+
 def test_invalid_structure_gets_one_bounded_format_retry():
     requests: list[dict[str, object]] = []
 
@@ -136,6 +164,9 @@ def test_invalid_structure_gets_one_bounded_format_retry():
     assert result.output_tokens == 5
     assert len(requests[1]["messages"]) == 2
     assert "not-json" not in json.dumps(requests[1])
+    correction = requests[1]["messages"][1]["content"]
+    assert "脱敏校验摘要" in correction
+    assert "json_invalid" in correction
 
 
 def test_invalid_structure_is_rejected_after_single_retry():
@@ -155,6 +186,42 @@ def test_invalid_structure_is_rejected_after_single_retry():
                 )
 
     asyncio.run(scenario())
+
+
+def test_transient_provider_failure_uses_bounded_backoff_before_success():
+    request_count = 0
+    delays: list[float] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal request_count
+        request_count += 1
+        if request_count < 3:
+            return httpx.Response(503, json={"error": {"message": "temporary"}})
+        return httpx.Response(
+            200,
+            json=_response(json.dumps(_classification_payload())),
+        )
+
+    async def record_sleep(seconds: float) -> None:
+        delays.append(seconds)
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await _run_async(
+                OpenAICompatibleProvider(
+                    api_key="secret",
+                    model="model",
+                    base_url="https://models.example/v1",
+                    client=client,
+                    sleep=record_sleep,
+                )
+            )
+
+    result = asyncio.run(scenario())
+
+    assert result.output.intent.value == "bug_report"
+    assert request_count == 3
+    assert delays == [1.0, 4.0]
 
 
 @pytest.mark.parametrize(

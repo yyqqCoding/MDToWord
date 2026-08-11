@@ -1,11 +1,10 @@
 # MD To Word Agent
 
-当前实现到阶段 C：除阶段 B 的 Feedback Gate、可恢复 Runtime、真实 Provider 和
-Langfuse 外，已经具备固定 SHA 源码快照、受控读取/结构化编辑、Patch Policy、认证且
-幂等的 Sandbox Worker，以及固定命令的 Docker Runner。
+当前实现到阶段 D 自动复现：Gate 接受后可按固定 SHA 读取源码、规划并生成受限回归
+测试，在认证 Docker Worker 中最多执行两轮，并用 JUnit 和受信 DOCX 断言生成复现报告。
 
-当前 Controller CLI **仍只执行 Gate**。阶段 C 组件会从阶段 D 开始接入复现 Graph；
-目前不会自动读取源码、启动 Docker、修改代码或创建 PR。详细边界和验收记录见
+Controller CLI 默认仍只执行 Gate。只有显式添加 `--reproduce --provider configured`
+才会启动阶段 D；当前不会生成修复、修改源码或创建 PR。详细边界和验收记录见
 [implementation-plan.md](../docs/AgentRequirements/implementation-plan.md)。
 
 ## 1. 安装与自动测试
@@ -29,9 +28,11 @@ backend/.venv/Scripts/python.exe -m pytest backend/tests -v
 
 ## 2. 数据库初始化
 
-SQL migration 为 [001_agent_foundation.sql](migrations/001_agent_foundation.sql) 和
-[002_gate_runtime.sql](migrations/002_gate_runtime.sql)。测试和应用启动都不会自动执行
-migration；数据库 owner 应在审查和备份后手工执行。
+SQL migration 为 [001_agent_foundation.sql](migrations/001_agent_foundation.sql)、
+[002_gate_runtime.sql](migrations/002_gate_runtime.sql) 和
+[003_reproduction_runtime.sql](migrations/003_reproduction_runtime.sql)。测试和应用启动
+都不会自动执行 migration；数据库 owner 应在审查和备份后手工执行。已有阶段 B
+数据库只需追加执行 `003_reproduction_runtime.sql`，它只重建 Agent 可恢复状态索引。
 
 `AGENT_DATABASE_URL` 必须是 PostgreSQL Direct Connection 或 Session Pooler DSN，
 不是 `SUPABASE_URL`。它只属于 Agent Controller，不得提供给扩展或后端转换服务。
@@ -53,8 +54,8 @@ migration；数据库 owner 应在审查和备份后手工执行。
 ## 3. Fake Provider Gate 测试
 
 默认 Provider 是 Fake，默认路由为 `needs_human`。其他路由仅用于确定性测试。请使用
-可丢弃的 `pending` 反馈；`accepted_backend_bug` 会按阶段设计将反馈停在
-`reproducing`，等待阶段 D 将已实现的阶段 C 组件接入复现 Graph：
+可丢弃的 `pending` 反馈；没有 `--reproduce` 时，`accepted_backend_bug` 只会把反馈停在
+`reproducing`，不会读取源码或启动 Sandbox：
 
 ```bash
 .venv/bin/python -m agent.cli run --feedback-id <uuid> --dry-run
@@ -74,6 +75,8 @@ migration；数据库 owner 应在审查和备份后手工执行。
 - `SUPABASE_AGENT_KEY` 与 Feedback API 凭据必须不同，只能由自托管 Controller 使用；
 - 如果兼容接口不返回 `usage.cost`，只有配置模型的美元/百万 Token 单价后，数据库
   `agent_runs.estimated_cost` 才会大于 `0`。Langfuse 自行推算的展示成本不会回写数据库。
+- 阶段 D 的长源码请求默认允许 180 秒，可用
+  `REPRODUCTION_MODEL_TIMEOUT_SECONDS` 在 30～300 秒内调整；Gate 使用独立的短请求超时。
 
 加载 `.env` 后，对可丢弃的 `pending` 反馈运行真实 Gate：
 
@@ -90,28 +93,92 @@ Provider usage 写入 `agent_runs`；Langfuse 只接收哈希和结构化摘要�
 Markdown、联系方式、Prompt 或密钥。Langfuse 导出失败不改变 Gate 路由；模型/API
 重试耗尽会把运行和反馈终结为 `failed`，避免 Scheduler 无限恢复同一运行。
 
-## 5. 当前验收结果
+## 5. 阶段 D 自动复现
 
-- Agent 自动测试：135 passed（包含真实 Docker 隔离测试）；后端自动测试：42 passed；
+先由数据库 owner 审查并执行 `agent/migrations/003_reproduction_runtime.sql`，再使用
+阶段 D 镜像启动 Worker：
+
+```bash
+docker build -f agent/sandbox/Dockerfile -t mdtoword-sandbox:stage-d .
+export SANDBOX_IMAGE_DIGEST="$(
+  docker image inspect --format '{{.Id}}' mdtoword-sandbox:stage-d
+)"
+.venv/bin/python -m agent.sandbox.worker_http
+```
+
+Worker 需要单独的最小环境，只包含 `SANDBOX_IMAGE_DIGEST`、`SANDBOX_JOB_ROOT`、
+`SANDBOX_BIND_*` 和 `SANDBOX_WORKER_CREDENTIAL`。不要把加载了 Supabase、模型或
+Langfuse Secret 的 Controller `.env` 整体传给 Worker。
+
+Controller 还需配置 `GITHUB_READ_TOKEN`。建议使用只授权
+`yyqqCoding/MDToWord`、Repository permissions 中仅 `Contents: Read-only` 的
+fine-grained token；它只进入 Controller 的 GitHub 专用 Client，不能提供给 Worker、
+任务容器、模型或 Langfuse。GitHub 发布阶段将另用 GitHub App，不复用这个读取 Token。
+
+确认 Worker 已启动后，在另一个终端加载 Controller 的私有 `.env`，为一条可丢弃的
+`pending` 后端缺陷执行：
+
+```bash
+set -a
+source .env
+set +a
+.venv/bin/python -m agent.cli run \
+  --feedback-id <uuid> \
+  --dry-run \
+  --provider configured \
+  --reproduce
+```
+
+若进程或可重试的外部依赖在复现中断，不要重新领取同一 feedback。使用输出或数据库中
+已有的 run ID，从持久化 checkpoint 继续：
+
+```bash
+.venv/bin/python -m agent.cli run \
+  --resume-run-id <run-uuid> \
+  --dry-run \
+  --provider configured \
+  --reproduce
+```
+
+若目标失败确认，feedback 与 agent run 停在 `repairing`，保留复现报告供阶段 E 继续；
+两轮仍通过或无效则 feedback 为 `cannot_reproduce`、run 为 `completed`；Sandbox Policy
+拒绝则二者进入安全终态。`--reproduce` 禁止 Fake Provider，防止人为的固定断言被当作
+真实缺陷证据。
+
+## 6. 当前验收结果
+
+- 阶段 D Agent 178 passed（含真实 Docker 两项测试，无 skipped）；后端 44 passed；
 - `gate-v2` 真实复测将“仅测试、不需要修复”路由为 `rejected_irrelevant`；
 - Prompt Injection 真实复测路由为 `quarantined_security`，`tool_calls=0`；
 - Langfuse 每次真实 Gate 包含 root Agent 和 `classify-intent` Generation，且抽查未发现
   完整 Markdown、描述或 contact；
-- 阶段 C 真实 Docker 隔离测试：1 passed；
+- 阶段 D 真实 Docker 已验证隔离边界和已知表格缺陷的目标失败分类：2 passed；
+- Mermaid 真实反馈已验证 GitHub 鉴权、固定 SHA 快照、严格计划 Schema、实际可读路径
+  约束和有界测试修正；旧模型接口因 `provider_unavailable` 终结，替换接口的代表性严格
+  Schema 预检通过，但 `z-ai/glm-5.2` 在真实 `generate-test` 中两次输出仍不合规并以
+  `invalid_response` 终结；`grok-4.5` 的 Gate Schema 一次通过，但代表性 40 KB 测试
+  生成在有限重试内均被远端断开；同一 localhost 网关的 `gpt-5.6-luna` 也只通过 Gate，
+  35.8 KB 代表性生成最终返回 503。当前 `deepseek-ai/DeepSeek-V4-Flash` 已通过
+  35.8 KB 代表性 Schema/Policy 预检；真实反馈 `7990602f-...` 的 run
+  `27d1b938-...` 在固定 SHA 上于第二轮生成有效回归测试，新镜像 Sandbox 收集到唯一
+  目标测试的预期断言失败，数据库终态为 `repairing/reproduced`。本次真实运行共 5 次
+  模型调用、14 次工具调用和 68,094 tokens，阶段 D 端到端验收完成；
+- 阶段 D 模型单次请求超时默认 180 秒（可在 30～300 秒内配置）；模型传输错误仍最多
+  重试两次，退避为 1 秒和 4 秒；`/models` 返回 200 只代表网关
+  在线，不能替代真实 Chat Completions 验收；
 - 维护者暂不填写模型单价，因此数据库成本验收仍为延后项。
 
-## 6. 阶段 C Docker 验收
+## 7. Docker 验收
 
-阶段 C 当前验收结果为 `135 passed`，其中真实 Docker 隔离测试为 `1 passed`，没有
-跳过项。复测时先在 Docker Desktop 的 Settings → Resources → WSL Integration 中启用
+复测时先在 Docker Desktop 的 Settings → Resources → WSL Integration 中启用
 当前发行版，然后在仓库根目录执行：
 
 ```bash
 docker build -f agent/sandbox/Dockerfile \
-  -t mdtoword-sandbox:stage-c .
+  -t mdtoword-sandbox:stage-d .
 
 export SANDBOX_IMAGE_DIGEST="$(
-  docker image inspect --format '{{.Id}}' mdtoword-sandbox:stage-c
+  docker image inspect --format '{{.Id}}' mdtoword-sandbox:stage-d
 )"
 
 .venv/bin/python -m pytest \
@@ -126,11 +193,12 @@ Docker 生效且能从 Docker VM 访问的代理配置，或使用临时本地�
 或提交记录。构建完成后可检查镜像未固化代理变量：
 
 ```bash
-docker image inspect mdtoword-sandbox:stage-c \
+docker image inspect mdtoword-sandbox:stage-d \
   --format '{{json .Config.Env}}'
 ```
 
-结果必须是 `1 passed`，不能是 skipped。该测试真实验证容器无外网、无业务 Secret、
+结果必须是 `2 passed`，不能是 skipped。测试同时验证已知表格缺陷产生可信目标失败，
+以及容器无外网、无业务 Secret、
 非 root、只读根文件系统、能力清空、`no-new-privileges`、内存/CPU/PID/超时限制、同一
 Job 只执行一次，并确认临时 workspace 已销毁。
 

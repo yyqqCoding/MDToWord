@@ -14,6 +14,8 @@ from agent.domain.errors import (
 )
 from agent.domain.gate import GateResult
 from agent.domain.models import AgentRunRecord, FeedbackRecord
+from agent.domain.reproduction import ReproductionReport
+from agent.domain.transitions import ensure_agent_run_transition
 from agent.domain.transitions import ensure_feedback_transition
 
 
@@ -243,7 +245,13 @@ class FakeAgentRunRepository:
                 (
                     run
                     for run in self._records.values()
-                    if run.status in {AgentRunStatus.CREATED, AgentRunStatus.GATING}
+                    if run.status
+                    in {
+                        AgentRunStatus.CREATED,
+                        AgentRunStatus.GATING,
+                        AgentRunStatus.PREPARING_SOURCE,
+                        AgentRunStatus.REPRODUCING,
+                    }
                 ),
                 key=lambda run: (run.started_at, str(run.id)),
             )
@@ -289,6 +297,90 @@ class FakeAgentRunRepository:
             run.total_tokens = total_tokens
             run.estimated_cost = estimated_cost
             run.finished_at = datetime.now(UTC)
+            return run.model_copy(deep=True)
+
+    async def mark_preparing_source(
+        self,
+        run_id: UUID,
+        result: GateResult,
+        *,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        total_tokens: int = 0,
+        estimated_cost: Decimal = Decimal("0"),
+    ) -> AgentRunRecord:
+        async with self._lock:
+            run = self._require(run_id)
+            if run.status is AgentRunStatus.PREPARING_SOURCE:
+                return run.model_copy(deep=True)
+            ensure_agent_run_transition(run.status, AgentRunStatus.PREPARING_SOURCE)
+            run.status = AgentRunStatus.PREPARING_SOURCE
+            run.route = result.route
+            run.category = result.category
+            run.classification = result
+            run.model_calls = result.model_calls
+            run.tool_calls = result.tool_calls
+            run.input_tokens = input_tokens
+            run.output_tokens = output_tokens
+            run.total_tokens = total_tokens
+            run.estimated_cost = estimated_cost
+            return run.model_copy(deep=True)
+
+    async def mark_reproducing(
+        self,
+        run_id: UUID,
+        *,
+        base_sha: str,
+    ) -> AgentRunRecord:
+        async with self._lock:
+            run = self._require(run_id)
+            if run.status is AgentRunStatus.REPRODUCING:
+                if run.base_sha != base_sha:
+                    raise InvalidStatusTransitionError("reproducing run has a different base")
+                return run.model_copy(deep=True)
+            ensure_agent_run_transition(run.status, AgentRunStatus.REPRODUCING)
+            run.status = AgentRunStatus.REPRODUCING
+            run.base_sha = base_sha
+            return run.model_copy(deep=True)
+
+    async def complete_reproduction(
+        self,
+        run_id: UUID,
+        report: ReproductionReport,
+        *,
+        model_calls: int,
+        tool_calls: int,
+        input_tokens: int,
+        output_tokens: int,
+        total_tokens: int,
+        estimated_cost: Decimal,
+        reproduction_confirmed: bool = False,
+        security_rejected: bool = False,
+    ) -> AgentRunRecord:
+        async with self._lock:
+            run = self._require(run_id)
+            target = (
+                AgentRunStatus.SECURITY_REJECTED
+                if security_rejected
+                else (
+                    AgentRunStatus.REPAIRING
+                    if reproduction_confirmed
+                    else AgentRunStatus.COMPLETED
+                )
+            )
+            if run.status is target:
+                return run.model_copy(deep=True)
+            ensure_agent_run_transition(run.status, target)
+            run.status = target
+            run.reproduction = report.model_dump(mode="json")
+            run.model_calls = model_calls
+            run.tool_calls = tool_calls
+            run.input_tokens = input_tokens
+            run.output_tokens = output_tokens
+            run.total_tokens = total_tokens
+            run.estimated_cost = estimated_cost
+            if target is not AgentRunStatus.REPAIRING:
+                run.finished_at = datetime.now(UTC)
             return run.model_copy(deep=True)
 
     async def fail(

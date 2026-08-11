@@ -9,6 +9,7 @@ from agent.telemetry.base import (
     GenerationTrace,
     NoopTelemetry,
     RunTrace,
+    ToolTrace,
     cost_details,
     exclusive_usage_buckets,
 )
@@ -98,7 +99,11 @@ class LangfuseTelemetry:
     @contextmanager
     def start_generation(self, trace: GenerationTrace):
         context = self._safe_context(
-            name="classify-intent",
+            name=(
+                "classify-intent"
+                if trace.operation == "gate"
+                else trace.operation.replace("_", "-")
+            ),
             as_type="generation",
             model=trace.model,
             input=mask_sensitive(trace.input_summary),
@@ -136,6 +141,34 @@ class LangfuseTelemetry:
         except Exception as exc:  # pragma: no cover - SDK-specific failure
             _warn(exc)
 
+    @contextmanager
+    def start_tool(self, trace: ToolTrace):
+        context = self._safe_context(
+            name=trace.operation,
+            as_type="tool",
+            input=mask_sensitive(trace.input_summary),
+            metadata={"round": trace.round},
+        )
+        if context is None:
+            with NoopTelemetry().start_tool(trace) as observation:
+                yield observation
+            return
+        try:
+            raw = context.__enter__()
+        except Exception as exc:  # pragma: no cover - SDK-specific failure
+            _warn(exc)
+            with NoopTelemetry().start_tool(trace) as observation:
+                yield observation
+            return
+        wrapped = _LangfuseToolObservation(raw)
+        try:
+            yield wrapped
+        except BaseException as exc:
+            _safe_exit(context, type(exc), exc, exc.__traceback__)
+            raise
+        else:
+            _safe_exit(context, None, None, None)
+
     def _safe_context(self, **kwargs: object):
         try:
             return self._client.start_as_current_observation(**kwargs)
@@ -163,10 +196,7 @@ class _LangfuseGenerationObservation:
         self._raw = raw
 
     def succeed(self, response: StructuredModelResponse[object]) -> None:
-        output = response.output.model_dump(mode="json")
-        # reason 可能复述用户原文，Trace 只保留是否存在该字段。
-        if "reason" in output:
-            output["reason"] = "[REDACTED_SUMMARY]"
+        output = _safe_model_output(response.output.model_dump(mode="json"))
         update: dict[str, object] = {
             "output": mask_sensitive(output),
             "usage_details": exclusive_usage_buckets(response),
@@ -195,11 +225,59 @@ class _LangfuseGenerationObservation:
             _warn(exc)
 
 
+class _LangfuseToolObservation:
+    def __init__(self, raw: Any) -> None:
+        self._raw = raw
+
+    def succeed(self, output_summary: dict[str, object]) -> None:
+        try:
+            self._raw.update(
+                output=mask_sensitive(output_summary),
+                metadata={"status": "success"},
+            )
+        except Exception as exc:
+            _warn(exc)
+
+    def fail(self, *, error_code: str, error_type: str) -> None:
+        try:
+            self._raw.update(
+                level="ERROR",
+                status_message=error_code,
+                output={"error_code": error_code, "error_type": error_type},
+            )
+        except Exception as exc:
+            _warn(exc)
+
 def _safe_exit(context: Any, *args: object) -> None:
     try:
         context.__exit__(*args)
     except Exception as exc:  # pragma: no cover - SDK-specific failure
         _warn(exc)
+
+
+def _safe_model_output(output: dict[str, object]) -> dict[str, object]:
+    """Stage D 输出可能带测试源码或反馈复述，Trace 只保存可审计结构摘要。"""
+
+    safe: dict[str, object] = {}
+    for key, value in output.items():
+        if key in {"reason", "hypothesis"}:
+            safe[key] = "[REDACTED_SUMMARY]"
+        elif key == "edits" and isinstance(value, list):
+            safe[key] = [
+                {
+                    "path": item.get("path"),
+                    "mode": item.get("mode"),
+                }
+                for item in value
+                if isinstance(item, dict)
+            ]
+        elif key == "parameters" and isinstance(value, dict):
+            safe[key] = {"parameter_names": sorted(value)}
+        elif isinstance(value, dict):
+            safe[key] = _safe_model_output(value)
+        else:
+            safe[key] = value
+    return safe
 
 
 def _warn(exc: Exception) -> None:

@@ -56,7 +56,11 @@ def classification(
 
 @pytest.mark.parametrize(
     "category",
-    [GateCategory.TABLE_PARSING, GateCategory.FORMULA_PARSING],
+    [
+        GateCategory.TABLE_PARSING,
+        GateCategory.FORMULA_PARSING,
+        GateCategory.DOCX_STRUCTURE,
+    ],
 )
 def test_backend_table_and_formula_feedback_is_accepted(category):
     provider = FakeModelProvider([classification(category=category)])

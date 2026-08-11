@@ -74,10 +74,13 @@ B3 的 Gate 模型通过自定义 `ModelProvider` 调用，不属于 LangChain L
 observation 并传播确定性 Trace ID、Session ID 和最终 route。后续接入标准 Graph
 callback 时不得再次记录同一 Provider 调用。
 
-当前 B3 每次真实 Gate 预期包含两个 observation：root `feedback-repair-run` Agent 和
-`classify-intent` Generation。Telemetry 创建、更新或 flush 失败采用 fail-open，只记录
-脱敏 warning；Masking 回调兼容 Langfuse v4 的 `mask(data=...)` 调用方式。默认
-`TRACE_CONTENT=false`，B3 CLI 会拒绝启用完整 Trace 内容。
+Gate-only 运行预期包含 root `feedback-repair-run` Agent 和 `classify-intent`
+Generation。阶段 D 复现运行还会显式记录 `plan-reproduction`、`read-source-file`、
+`generate-test`、`submit-test-edits` 和 `run-reproduction`，工具 metadata 保存轮次。
+Telemetry 创建、更新或 flush 失败采用 fail-open，只记录脱敏 warning；Masking 回调兼容
+Langfuse v4 的 `mask(data=...)` 调用方式。默认 `TRACE_CONTENT=false`，CLI 会拒绝启用
+完整 Trace 内容。生成测试源码、复现假设、反馈原文和 JUnit failure message 不进入
+Langfuse，只保留 Schema、路径、大小、Hash、计数和分类摘要。
 
 ## 5. Generation字段
 

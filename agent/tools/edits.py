@@ -33,8 +33,16 @@ class StructuredEditTools:
         run_id: UUID,
         snapshot_root: Path,
         edits: tuple[Edit, ...],
+        *,
+        target_test_selector: str | None = None,
     ) -> SubmittedPatch:
-        return self._submit(run_id, snapshot_root, edits, EditPhase.TEST)
+        return self._submit(
+            run_id,
+            snapshot_root,
+            edits,
+            EditPhase.TEST,
+            target_test_selector=target_test_selector,
+        )
 
     def submit_fix_edits(
         self,
@@ -50,8 +58,15 @@ class StructuredEditTools:
         snapshot_root: Path,
         edits: tuple[Edit, ...],
         phase: EditPhase,
+        *,
+        target_test_selector: str | None = None,
     ) -> SubmittedPatch:
-        patch = self._builder.build(snapshot_root, edits, phase)
+        patch = self._builder.build(
+            snapshot_root,
+            edits,
+            phase,
+            target_test_selector=target_test_selector,
+        )
         filename = "test.patch" if phase is EditPhase.TEST else "fix.patch"
         # 只返回 Artifact 引用，避免大补丁重复进入模型上下文和 Trace。
         reference = self._artifacts.write_patch_ref(run_id, filename, patch.content)

@@ -38,3 +38,13 @@ def test_stage_b_migration_creates_private_checkpoint_schema():
     assert "claim_agent_feedback" in sql
     assert "claim_token" in sql
     assert "task_artifact_ref" in sql
+
+
+def test_stage_d_migration_indexes_all_resumable_reproduction_states():
+    sql = (
+        Path(__file__).parents[1] / "migrations" / "003_reproduction_runtime.sql"
+    ).read_text(encoding="utf-8").lower()
+
+    assert "preparing_source" in sql
+    assert "reproducing" in sql
+    assert "agent_runs_resumable_idx" in sql

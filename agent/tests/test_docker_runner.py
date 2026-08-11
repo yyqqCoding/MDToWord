@@ -10,6 +10,7 @@ from agent.sandbox.contracts import (
     SandboxArtifacts,
     SandboxJob,
     SandboxStatus,
+    TargetTestOutcome,
 )
 from agent.sandbox.docker_runner import CommandOutcome, DockerRunner
 
@@ -92,8 +93,55 @@ def test_docker_runner_builds_fixed_hardened_argv_and_destroys_workspace(tmp_pat
     assert "--cpus=2.0" in argv
     assert "--pids-limit=256" in argv
     assert "--user=65532:65532" in argv
+    assert "--env=PYTHONPATH=/opt/trusted" in argv
     assert "sh" not in argv
     assert "bash" not in argv
     assert result.status is SandboxStatus.COMPLETED
     assert result.workspace_diff_sha256 is not None
     assert not Path(captured["workspace"]).exists()
+
+
+def test_docker_runner_parses_target_result_from_junit_not_stdout(tmp_path: Path):
+    source = _archive()
+    patch = _patch()
+    job = SandboxJob(
+        job_id=uuid4(),
+        run_id=uuid4(),
+        job_type=JobType.REPRODUCE_TARGET,
+        base_sha="a" * 40,
+        source_snapshot_sha256=hashlib.sha256(source).hexdigest(),
+        test_patch_sha256=hashlib.sha256(patch).hexdigest(),
+        target_test_selector="feedback_ab12cd_table",
+        expires_at=datetime.now(UTC) + timedelta(minutes=5),
+    )
+
+    def execute(argv: tuple[str, ...], timeout_seconds: int) -> CommandOutcome:
+        del timeout_seconds
+        result_arg = next(item for item in argv if item.endswith(":/result:rw"))
+        result_root = Path(
+            result_arg.removeprefix("--volume=").removesuffix(":/result:rw")
+        )
+        (result_root / "junit.xml").write_text(
+            """<testsuite><testcase name="test_feedback_ab12cd_table">
+<failure type="AssertionError" message="assert 2 == 3">traceback</failure>
+</testcase></testsuite>""",
+            encoding="utf-8",
+        )
+        return CommandOutcome(
+            exit_code=1,
+            stdout=b"misleading text: 1 passed",
+            stderr=b"",
+        )
+
+    result = DockerRunner(
+        image_digest="registry.example/mdtoword-sandbox@sha256:" + "f" * 64,
+        work_root=tmp_path / "work",
+        execute_command=execute,
+    ).execute(
+        job,
+        SandboxArtifacts(job=job, source_archive=source, test_patch=patch),
+    )
+
+    assert result.junit_summary is not None
+    assert result.junit_summary.target_outcome is TargetTestOutcome.FAILED
+    assert result.junit_summary.target_failure_type == "AssertionError"

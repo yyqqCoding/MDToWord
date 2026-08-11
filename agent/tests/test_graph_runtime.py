@@ -16,7 +16,7 @@ from agent.domain.enums import (
     GateRoute,
 )
 from agent.domain.gate import GateClassification
-from agent.domain.errors import ModelAuthError
+from agent.domain.errors import ModelAuthError, SourceAccessError
 from agent.domain.models import FeedbackRecord
 from agent.providers.base import StructuredModelResponse
 from agent.providers.fake import FakeModelProvider
@@ -211,7 +211,18 @@ def test_gate_graph_persists_real_provider_usage_and_deterministic_trace_id(
     int(run.trace_id, 16)
 
 
-def test_provider_failure_terminalizes_run_and_feedback(tmp_path: Path):
+@pytest.mark.parametrize(
+    ("failure", "error_code"),
+    (
+        (ModelAuthError("safe message"), "auth_error"),
+        (SourceAccessError("safe message"), "source_access_denied"),
+    ),
+)
+def test_non_retryable_failure_terminalizes_run_and_feedback(
+    tmp_path: Path,
+    failure: Exception,
+    error_code: str,
+):
     class FailingProvider:
         provider = "openai_compatible"
         model = "compatible-model"
@@ -225,7 +236,7 @@ def test_provider_failure_terminalizes_run_and_feedback(tmp_path: Path):
             timeout_seconds,
         ):
             del messages, response_schema, tools, timeout_seconds
-            raise ModelAuthError("safe message")
+            raise failure
 
     async def scenario():
         feedback = make_feedback()
@@ -244,7 +255,7 @@ def test_provider_failure_terminalizes_run_and_feedback(tmp_path: Path):
             artifact_store=ArtifactStore(tmp_path),
             checkpointer=InMemorySaver(),
         )
-        with pytest.raises(ModelAuthError):
+        with pytest.raises(type(failure)):
             await controller.start(claimed)
         run = await run_repository.find_resumable()
         stored_feedback = await feedback_repository.get(feedback.id)
@@ -259,6 +270,6 @@ def test_provider_failure_terminalizes_run_and_feedback(tmp_path: Path):
     assert resumable is None
     assert feedback is not None
     assert feedback.status is FeedbackStatus.FAILED
-    assert feedback.last_error_code == "auth_error"
+    assert feedback.last_error_code == error_code
     assert failed_run.status is AgentRunStatus.FAILED
-    assert failed_run.error_message == "ModelAuthError"
+    assert failed_run.error_message == type(failure).__name__

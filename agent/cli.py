@@ -14,14 +14,21 @@ from agent.controller import GateController, GateRunOutcome
 from agent.domain.enums import GateCategory, GateIntent, GateRoute
 from agent.domain.errors import AgentError, ConfigurationError
 from agent.domain.gate import GateClassification
+from agent.graph import ReproductionDependencies
 from agent.providers.fake import FakeModelProvider
 from agent.providers.openai_compatible import OpenAICompatibleProvider
 from agent.repositories.supabase import (
     SupabaseAgentRunRepository,
     SupabaseFeedbackRepository,
 )
+from agent.sandbox.client import HttpSandboxClient
+from agent.tools.edits import StructuredEditTools
 from agent.workspace.artifacts import ArtifactStore
-from agent.workspace.versioning import read_extension_version
+from agent.workspace.edits import PatchBuilder
+from agent.workspace.patch_policy import PatchPolicy
+from agent.workspace.preparation import GitHubSourceWorkspace
+from agent.workspace.source_repository import GitHubSourceRepository
+from agent.workspace.versioning import GitHubMainRevisionReader, read_extension_version
 from agent.telemetry.base import NoopTelemetry
 from agent.telemetry.langfuse import LangfuseTelemetry
 
@@ -44,8 +51,15 @@ def build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
 
     run_parser = commands.add_parser("run")
-    run_parser.add_argument("--feedback-id", type=UUID, required=True)
+    target = run_parser.add_mutually_exclusive_group(required=True)
+    target.add_argument("--feedback-id", type=UUID)
+    target.add_argument("--resume-run-id", type=UUID)
     run_parser.add_argument("--dry-run", action="store_true")
+    run_parser.add_argument(
+        "--reproduce",
+        action="store_true",
+        help="continue accepted backend feedback through the Stage D reproduction graph",
+    )
     run_parser.add_argument(
         "--provider",
         choices=("fake", "configured"),
@@ -69,6 +83,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "run" and not args.dry_run:
             _print_json({"error": "dry_run_required"})
             return 2
+        if (
+            args.command == "run"
+            and (args.reproduce or args.resume_run_id is not None)
+            and (args.provider != "configured" or not args.reproduce)
+        ):
+            raise CliUsageError(
+                "reproduction and resume require --reproduce --provider configured"
+            )
         return asyncio.run(_execute(args))
     except (ConfigurationError, CliUsageError) as exc:
         _print_json({"error": exc.error_code, "message": str(exc)})
@@ -100,6 +122,8 @@ async def _execute(args: argparse.Namespace) -> int:
         args.fake_route,
         config,
         provider_mode=args.provider,
+        reproduce=args.reproduce,
+        resume_run_id=args.resume_run_id,
     )
     _print_json(
         {
@@ -109,20 +133,25 @@ async def _execute(args: argparse.Namespace) -> int:
             "completed": result.completed,
             "dry_run": True,
             "provider": args.provider,
+            "stage": "reproduction" if args.reproduce else "gate",
         }
     )
     return 0
 
 
 async def _run_dry_gate(
-    feedback_id: UUID,
+    feedback_id: UUID | None,
     fake_route: GateRoute,
     config: AgentConfig,
     *,
     provider_mode: str = "fake",
+    reproduce: bool = False,
+    resume_run_id: UUID | None = None,
 ) -> GateRunOutcome:
     # 所有外部依赖配置在领取反馈前完成校验，避免配置错误留下无主租约。
     database_url = config.require_database_url()
+    if reproduce and provider_mode != "configured":
+        raise CliUsageError("--reproduce requires --provider configured")
     async with httpx.AsyncClient(timeout=30) as client:
         telemetry = NoopTelemetry()
         if provider_mode == "configured":
@@ -147,6 +176,39 @@ async def _run_dry_gate(
         else:
             provider = FakeModelProvider([fake_classification_for_route(fake_route)])
 
+        artifacts = ArtifactStore(config.artifact_root)
+        reproduction = None
+        github_client: httpx.AsyncClient | None = None
+        if reproduce:
+            repository, github_read_token, worker_url, worker_credential = (
+                config.require_stage_c_controller_settings()
+            )
+            # GitHub 凭据只进入专用 Client，不能随共享 Client 请求到其他外部服务。
+            github_client = httpx.AsyncClient(
+                timeout=30,
+                headers={"Authorization": f"Bearer {github_read_token}"},
+            )
+            reproduction = ReproductionDependencies(
+                plan_provider=provider,
+                test_provider=provider,
+                source_workspace=GitHubSourceWorkspace(
+                    config.source_workspace_root,
+                    GitHubMainRevisionReader(repository, client=github_client),
+                    GitHubSourceRepository(repository, client=github_client),
+                ),
+                edit_tools=StructuredEditTools(
+                    PatchBuilder(PatchPolicy.load_default()),
+                    artifacts,
+                ),
+                sandbox_client=HttpSandboxClient(
+                    worker_url,
+                    credential=worker_credential,
+                    client=client,
+                ),
+                telemetry=telemetry,
+                model_timeout_seconds=config.reproduction_model_timeout_seconds,
+            )
+
         feedback_repository = SupabaseFeedbackRepository(
             config.supabase_url,
             config.supabase_agent_key.get_secret_value(),
@@ -157,36 +219,42 @@ async def _run_dry_gate(
             config.supabase_agent_key.get_secret_value(),
             client=client,
         )
-        claimed = await feedback_repository.claim_by_id(
-            feedback_id,
-            now=_utc_now(),
-            lease_seconds=config.claim_lease_seconds,
-            max_attempts=config.max_claim_attempts,
-        )
-        if claimed is None:
-            raise CliUsageError("feedback is not claimable")
-
-        async with open_postgres_checkpointer(
-            database_url,
-            config.checkpoint_schema,
-        ) as checkpointer:
-            controller = GateController(
-                feedback_repository=feedback_repository,
-                run_repository=run_repository,
-                provider=provider,
-                artifact_store=ArtifactStore(config.artifact_root),
-                checkpointer=checkpointer,
-                min_confidence=config.min_gate_confidence,
-                extension_version=read_extension_version(
-                    config.extension_manifest_path
-                ),
-                telemetry=telemetry,
-                environment=config.agent_environment,
-            )
-            try:
+        try:
+            async with open_postgres_checkpointer(
+                database_url,
+                config.checkpoint_schema,
+            ) as checkpointer:
+                controller = GateController(
+                    feedback_repository=feedback_repository,
+                    run_repository=run_repository,
+                    provider=provider,
+                    artifact_store=artifacts,
+                    checkpointer=checkpointer,
+                    min_confidence=config.min_gate_confidence,
+                    extension_version=read_extension_version(
+                        config.extension_manifest_path
+                    ),
+                    telemetry=telemetry,
+                    environment=config.agent_environment,
+                    reproduction=reproduction,
+                )
+                if resume_run_id is not None:
+                    return await controller.resume(resume_run_id)
+                if feedback_id is None:
+                    raise CliUsageError("feedback id is required for a new run")
+                claimed = await feedback_repository.claim_by_id(
+                    feedback_id,
+                    now=_utc_now(),
+                    lease_seconds=config.claim_lease_seconds,
+                    max_attempts=config.max_claim_attempts,
+                )
+                if claimed is None:
+                    raise CliUsageError("feedback is not claimable")
                 return await controller.start(claimed)
-            finally:
-                telemetry.flush()
+        finally:
+            if github_client is not None:
+                await github_client.aclose()
+            telemetry.flush()
 
 
 def fake_classification_for_route(route: GateRoute) -> GateClassification:

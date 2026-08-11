@@ -72,6 +72,29 @@ def test_gate_confidence_rejects_out_of_range_value(tmp_path: Path):
         )
 
 
+def test_reproduction_model_timeout_is_bounded_and_configurable(tmp_path: Path):
+    config = AgentConfig.from_env(
+        {
+            "SUPABASE_URL": "https://example.supabase.co",
+            "SUPABASE_AGENT_KEY": "secret",
+            "REPRODUCTION_MODEL_TIMEOUT_SECONDS": "240",
+        },
+        project_root=tmp_path,
+    )
+
+    assert config.reproduction_model_timeout_seconds == 240.0
+
+    with pytest.raises(ValueError):
+        AgentConfig.from_env(
+            {
+                "SUPABASE_URL": "https://example.supabase.co",
+                "SUPABASE_AGENT_KEY": "secret",
+                "REPRODUCTION_MODEL_TIMEOUT_SECONDS": "301",
+            },
+            project_root=tmp_path,
+        )
+
+
 def test_checkpoint_database_url_is_optional_until_runtime_needs_it(tmp_path: Path):
     config = AgentConfig.from_env(
         {
@@ -178,14 +201,18 @@ def test_stage_c_settings_are_optional_until_requested_and_secret(tmp_path: Path
             "SUPABASE_URL": "https://example.supabase.co",
             "SUPABASE_AGENT_KEY": "supabase-secret",
             "GITHUB_REPOSITORY": "example/md-to-word",
+            "GITHUB_READ_TOKEN": "github-read-secret",
             "SANDBOX_WORKER_URL": "http://sandbox.internal:8090",
             "SANDBOX_WORKER_CREDENTIAL": "worker-secret",
         },
         project_root=tmp_path,
     )
 
-    assert configured.require_stage_c_controller_settings()[:2] == (
+    assert configured.require_stage_c_controller_settings()[:3] == (
         "example/md-to-word",
+        "github-read-secret",
         "http://sandbox.internal:8090",
     )
-    assert "worker-secret" not in repr(configured)
+    rendered = repr(configured)
+    assert "github-read-secret" not in rendered
+    assert "worker-secret" not in rendered

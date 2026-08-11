@@ -45,8 +45,9 @@ MVP 不要求每个模块都是微服务，但凭证和能力必须按下表隔�
 | Telemetry模块 | 向指定Langfuse项目写Trace | 控制Agent状态、读取联系方式 |
 | Maintainer | 查看Trace和PR、审核合并 | 无需向Agent暴露个人GitHub凭证 |
 
-Controller 可在同一服务中包含 Publisher，但 GitHub App 凭证只由受信发布代码读取，
-不得进入 Graph State、模型消息、工具参数、Artifact 或沙箱环境。
+Controller 的源码读取凭据只授予指定仓库 `Contents: Read-only`；未来 Publisher 使用
+独立 GitHub App 凭据。两类凭据都只由对应的受信适配器读取，不得进入 Graph State、
+模型消息、工具参数、Artifact、Worker 或沙箱环境。
 
 ## 4. Prompt Injection 防护
 

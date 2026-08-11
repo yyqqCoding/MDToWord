@@ -28,12 +28,25 @@ class GenerationTrace:
     input_summary: dict[str, object]
 
 
+@dataclass(frozen=True)
+class ToolTrace:
+    operation: str
+    round: int | None
+    input_summary: dict[str, object]
+
+
 class RunObservation(Protocol):
     def finish(self, *, route: str | None, status: str) -> None: ...
 
 
 class GenerationObservation(Protocol):
     def succeed(self, response: StructuredModelResponse[object]) -> None: ...
+
+    def fail(self, *, error_code: str, error_type: str) -> None: ...
+
+
+class ToolObservation(Protocol):
+    def succeed(self, output_summary: dict[str, object]) -> None: ...
 
     def fail(self, *, error_code: str, error_type: str) -> None: ...
 
@@ -45,6 +58,8 @@ class Telemetry(Protocol):
         self,
         trace: GenerationTrace,
     ) -> AbstractContextManager[GenerationObservation]: ...
+
+    def start_tool(self, trace: ToolTrace) -> AbstractContextManager[ToolObservation]: ...
 
     def flush(self) -> None: ...
 
@@ -62,6 +77,14 @@ class _NoopGenerationObservation:
         del error_code, error_type
 
 
+class _NoopToolObservation:
+    def succeed(self, output_summary: dict[str, object]) -> None:
+        del output_summary
+
+    def fail(self, *, error_code: str, error_type: str) -> None:
+        del error_code, error_type
+
+
 class NoopTelemetry:
     @contextmanager
     def start_run(self, trace: RunTrace):
@@ -72,6 +95,11 @@ class NoopTelemetry:
     def start_generation(self, trace: GenerationTrace):
         del trace
         yield _NoopGenerationObservation()
+
+    @contextmanager
+    def start_tool(self, trace: ToolTrace):
+        del trace
+        yield _NoopToolObservation()
 
     def flush(self) -> None:
         return None

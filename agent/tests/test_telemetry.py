@@ -5,7 +5,12 @@ from agent.domain.gate import GateClassification
 from agent.providers.base import ModelMessage, StructuredModelResponse
 from agent.providers.fake import FakeModelProvider
 from agent.providers.observed import ObservedModelProvider
-from agent.telemetry.base import GenerationTrace, RunTrace, exclusive_usage_buckets
+from agent.telemetry.base import (
+    GenerationTrace,
+    RunTrace,
+    ToolTrace,
+    exclusive_usage_buckets,
+)
 from agent.telemetry.langfuse import LangfuseTelemetry
 from agent.telemetry.masking import mask_sensitive
 
@@ -180,6 +185,31 @@ def test_observed_provider_never_sends_message_content_to_telemetry():
     rendered = repr(client.starts)
     assert "private markdown" not in rendered
     assert "user@example.com" not in rendered
+
+
+def test_langfuse_records_reproduction_tool_name_round_and_bounded_summary():
+    client = _FakeLangfuseClient()
+    telemetry = LangfuseTelemetry(
+        public_key="public",
+        secret_key="secret",
+        host="https://cloud.langfuse.com",
+        environment="development",
+        client=client,
+    )
+
+    with telemetry.start_tool(
+        ToolTrace(
+            operation="run-reproduction",
+            round=2,
+            input_summary={"job_id": "safe-job", "contact": "user@example.com"},
+        )
+    ) as observed:
+        observed.succeed({"status": "completed", "exit_code": 1})
+
+    assert client.starts[0]["name"] == "run-reproduction"
+    assert client.starts[0]["metadata"] == {"round": 2}
+    assert client.starts[0]["input"]["contact"] == "[REDACTED]"
+    assert client.observations[0].updates[0]["output"]["status"] == "completed"
 
 
 def test_langfuse_start_failure_is_fail_open():

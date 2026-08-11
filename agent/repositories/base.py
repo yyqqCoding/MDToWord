@@ -6,6 +6,7 @@ from uuid import UUID
 from agent.domain.enums import FeedbackStatus, GateCategory, RiskLevel
 from agent.domain.gate import GateResult
 from agent.domain.models import AgentRunRecord, FeedbackRecord
+from agent.domain.reproduction import ReproductionReport
 
 
 class FeedbackRepository(Protocol):
@@ -69,6 +70,39 @@ class AgentRunRepository(Protocol):
         output_tokens: int = 0,
         total_tokens: int = 0,
         estimated_cost: Decimal = Decimal("0"),
+    ) -> AgentRunRecord: ...
+
+    async def mark_preparing_source(
+        self,
+        run_id: UUID,
+        result: GateResult,
+        *,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        total_tokens: int = 0,
+        estimated_cost: Decimal = Decimal("0"),
+    ) -> AgentRunRecord: ...
+
+    async def mark_reproducing(
+        self,
+        run_id: UUID,
+        *,
+        base_sha: str,
+    ) -> AgentRunRecord: ...
+
+    async def complete_reproduction(
+        self,
+        run_id: UUID,
+        report: ReproductionReport,
+        *,
+        model_calls: int,
+        tool_calls: int,
+        input_tokens: int,
+        output_tokens: int,
+        total_tokens: int,
+        estimated_cost: Decimal,
+        reproduction_confirmed: bool = False,
+        security_rejected: bool = False,
     ) -> AgentRunRecord: ...
 
     async def fail(

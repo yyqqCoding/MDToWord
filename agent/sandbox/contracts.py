@@ -37,6 +37,14 @@ class SandboxStatus(StrEnum):
     SECURITY_REJECTED = "security_rejected"
 
 
+class TargetTestOutcome(StrEnum):
+    NOT_COLLECTED = "not_collected"
+    PASSED = "passed"
+    FAILED = "failed"
+    ERROR = "error"
+    SKIPPED = "skipped"
+
+
 class SandboxLimits(BaseModel):
     """固定沙箱资源上限；调用方只能在安全范围内收紧，不能关闭隔离。"""
 
@@ -98,6 +106,10 @@ class JUnitSummary(BaseModel):
     failures: int = Field(ge=0)
     errors: int = Field(ge=0)
     skipped: int = Field(ge=0)
+    target_collected: bool = False
+    target_outcome: TargetTestOutcome = TargetTestOutcome.NOT_COLLECTED
+    target_failure_type: str | None = Field(default=None, max_length=200)
+    target_message: str = Field(default="", max_length=1000)
 
 
 class ResourceSummary(BaseModel):
@@ -203,9 +215,12 @@ class SandboxArtifacts(BaseModel):
         )
 
     def request_fingerprint(self) -> str:
-        # 指纹只绑定规范化 Job；Artifact 内容已由 Job 中的 SHA-256 间接绑定。
+        # expiry 只控制 Worker 是否接收首次执行，不改变任务内容。重试沿用确定性 job_id
+        # 时排除 expiry，避免 checkpoint 恢复因新的过期时间触发幂等冲突。
+        job_payload = self.job.model_dump(mode="json")
+        job_payload.pop("expires_at", None)
         canonical = json.dumps(
-            self.job.model_dump(mode="json"),
+            job_payload,
             ensure_ascii=True,
             separators=(",", ":"),
             sort_keys=True,

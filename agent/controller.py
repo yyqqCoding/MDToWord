@@ -1,17 +1,30 @@
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from hashlib import sha256
 from uuid import UUID, uuid4
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from agent.domain.enums import AgentRunStatus, FeedbackStatus, GateRoute
-from agent.domain.errors import InvalidModelResponseError, ModelProviderError
+from agent.domain.errors import (
+    InvalidModelResponseError,
+    ModelProviderError,
+    SourceAccessError,
+)
 from agent.domain.models import AgentRunRecord, FeedbackRecord, TaskArtifact
 from agent.gate import GATE_PROMPT_VERSION
-from agent.graph import GRAPH_VERSION, POLICY_VERSION, build_gate_graph
+from agent.graph import (
+    GRAPH_VERSION,
+    POLICY_VERSION,
+    ReproductionDependencies,
+    build_gate_graph,
+)
 from agent.providers.base import ModelProvider
 from agent.providers.observed import ObservedModelProvider
+from agent.reproduction import (
+    REPRODUCTION_PLAN_PROMPT_VERSION,
+    TEST_GENERATION_PROMPT_VERSION,
+)
 from agent.repositories.base import AgentRunRepository, FeedbackRepository
 from agent.state import AgentState
 from agent.telemetry.base import NoopTelemetry, RunTrace, Telemetry
@@ -42,6 +55,7 @@ class GateController:
         interrupt_after: Sequence[str] | None = None,
         telemetry: Telemetry | None = None,
         environment: str = "development",
+        reproduction: ReproductionDependencies | None = None,
     ) -> None:
         self._feedback_repository = feedback_repository
         self._run_repository = run_repository
@@ -52,6 +66,25 @@ class GateController:
         self._checkpointer = checkpointer
         self._min_confidence = min_confidence
         self._extension_version = extension_version
+        observed_reproduction = None
+        if reproduction is not None:
+            observed_reproduction = replace(
+                reproduction,
+                plan_provider=ObservedModelProvider(
+                    reproduction.plan_provider,
+                    self._telemetry,
+                    operation="plan_reproduction",
+                    prompt_version=REPRODUCTION_PLAN_PROMPT_VERSION,
+                ),
+                test_provider=ObservedModelProvider(
+                    reproduction.test_provider,
+                    self._telemetry,
+                    operation="generate_test",
+                    prompt_version=TEST_GENERATION_PROMPT_VERSION,
+                ),
+                telemetry=self._telemetry,
+            )
+        self._reproduction_enabled = observed_reproduction is not None
         self.graph = build_gate_graph(
             feedback_repository=feedback_repository,
             run_repository=run_repository,
@@ -64,6 +97,7 @@ class GateController:
             artifact_store=artifact_store,
             checkpointer=checkpointer,
             min_confidence=min_confidence,
+            reproduction=observed_reproduction,
             interrupt_after=interrupt_after,
         )
 
@@ -88,7 +122,17 @@ class GateController:
             provider=getattr(self._provider, "provider", "unknown"),
             model=getattr(self._provider, "model", "unknown"),
             graph_version=GRAPH_VERSION,
-            prompt_versions={"gate": GATE_PROMPT_VERSION},
+            prompt_versions={
+                "gate": GATE_PROMPT_VERSION,
+                **(
+                    {
+                        "plan_reproduction": REPRODUCTION_PLAN_PROMPT_VERSION,
+                        "generate_test": TEST_GENERATION_PROMPT_VERSION,
+                    }
+                    if self._reproduction_enabled
+                    else {}
+                ),
+            },
             policy_version=POLICY_VERSION,
             artifact_path=self._artifact_store.run_ref(run_id),
             task_artifact_ref=task_ref,
@@ -115,7 +159,12 @@ class GateController:
         run = await self._run_repository.get(run_id)
         if run is None:
             raise ValueError(f"agent run {run_id} does not exist")
-        if run.status is AgentRunStatus.COMPLETED:
+        if run.status in {
+            AgentRunStatus.COMPLETED,
+            AgentRunStatus.REPAIRING,
+            AgentRunStatus.SECURITY_REJECTED,
+            AgentRunStatus.FAILED,
+        }:
             return _outcome_from_run(run)
 
         feedback = await self._feedback_repository.get(run.feedback_id)
@@ -202,23 +251,24 @@ class GateController:
         with self._telemetry.start_run(trace) as observation:
             try:
                 output = await self.graph.ainvoke(state, _thread_config(run_id))
-            except (ModelProviderError, InvalidModelResponseError) as exc:
-                await self._finalize_provider_failure(run_id, exc)
+            except (ModelProviderError, InvalidModelResponseError, SourceAccessError) as exc:
+                await self._finalize_run_failure(run_id, exc)
                 observation.finish(route=None, status="failed")
                 raise
-            outcome = _outcome_from_state(AgentState.model_validate(output))
+            final_state = AgentState.model_validate(output)
+            outcome = _outcome_from_state(final_state)
             observation.finish(
                 route=outcome.route.value if outcome.route else None,
-                status="completed" if outcome.completed else "interrupted",
+                status=final_state.status.value,
             )
             return outcome
 
-    async def _finalize_provider_failure(
+    async def _finalize_run_failure(
         self,
         run_id: UUID,
-        error: ModelProviderError | InvalidModelResponseError,
+        error: ModelProviderError | InvalidModelResponseError | SourceAccessError,
     ) -> None:
-        """终结不可恢复的 Provider 失败，避免 Scheduler 无限恢复同一节点。"""
+        """终结确定性或已耗尽重试的失败，避免 Scheduler 无限恢复同一节点。"""
 
         run = await self._run_repository.get(run_id)
         if run is None:
@@ -228,7 +278,12 @@ class GateController:
         if (
             feedback is not None
             and feedback.claim_token == run.claim_token
-            and feedback.status in {FeedbackStatus.CLAIMED, FeedbackStatus.GATING}
+            and feedback.status
+            in {
+                FeedbackStatus.CLAIMED,
+                FeedbackStatus.GATING,
+                FeedbackStatus.REPRODUCING,
+            }
         ):
             await self._feedback_repository.transition(
                 feedback.id,
