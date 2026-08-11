@@ -1,0 +1,6 @@
+# 仓库源码、配置和文档统一使用 LF，避免 Windows/WSL 切换产生整库伪差异。
+* text=auto eol=lf
+
+# Windows 批处理脚本需要时保留原生 CRLF。
+*.bat text eol=crlf
+*.cmd text eol=crlf
