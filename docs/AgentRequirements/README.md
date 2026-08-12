@@ -31,6 +31,7 @@ GitHub 创建 Pull Request，由维护者人工审核和合并。
 | [security-and-sandbox.md](security-and-sandbox.md) | 信任边界、权限、Prompt Injection、Docker 与补丁策略 |
 | [observability.md](observability.md) | Trace ID、Langfuse、Token/成本、日志与脱敏 |
 | [implementation-plan.md](implementation-plan.md) | 实施顺序、每阶段交付物与验收证据 |
+| [deployment-and-operations.md](deployment-and-operations.md) | 转换/修复完整链路、Docker 运行位置与启停方式 |
 
 策略只维护一份：权限、路径白名单和沙箱约束只在
 `security-and-sandbox.md` 定义；状态转换只在 `architecture.md` 定义；工具请求与
@@ -38,13 +39,13 @@ GitHub 创建 Pull Request，由维护者人工审核和合并。
 
 ## 当前实现状态
 
-截至 2026-08-11：
+截至 2026-08-12：
 
 - 阶段 A、B1 和 B2 已完成；
 - 阶段 B3 的真实模型分类、Prompt Injection 隔离、Langfuse Trace、Token 统计和默认
   脱敏已通过手工验收；
-- 维护者暂不配置模型单价，因此 `agent_runs.estimated_cost` 当前保持 `0`，阶段 B 的
-  数据库成本持久化验收延后；
+- 维护者暂不配置模型单价，因此 `agent_runs.estimated_cost` 当前保持 `0`；真实 Token
+  已完整记录，该可选运营字段不阻塞阶段 B 完成；
 - 阶段 C 的源码快照、受控工具、补丁 Policy、Sandbox 契约、认证 Client、幂等 Worker
   和 Docker Runner 已实现；自动测试与真实 Docker 容器隔离验收均已通过；
 - 阶段 D 自动复现已实现，并通过自动测试、真实 Docker 隔离以及
@@ -56,15 +57,20 @@ GitHub 创建 Pull Request，由维护者人工审核和合并。
   `needs_human/external_dependency_required` 安全终态；2026-08-12 经维护者确认后，
   已新增生产/Sandbox 同版本的本地 Mermaid CLI + Chromium 平台能力，Mermaid 可继续
   进入自动修复和 drawing 验证，模型仍不能修改依赖或部署文件；
-- 阶段 F GitHub App Publisher、固定分支/提交/PR、基线过期与幂等恢复已实现；阶段 G
-  的 12 条离线评估、Fake E2E 发布场景和默认关闭的生产 Scheduler 已实现；真实 Provider
-  使用 `gate-v6/publication-policy-v3` 完成 12 条评估，Gate/自动化精确率/Schema/注入召回
-  均为 100%，注入误报为 0。当前仍需完成真实 GitHub App PR、人工 Review/部署回放和
-  连续生产反馈验收，因此 F/G 尚未标记最终完成。
+- 阶段 F GitHub App Publisher、固定分支/提交/PR、基线过期与幂等恢复已实现；真实
+  run 已创建 PR #1，维护者已人工审核并合并；
+- 阶段 G 的 12 条离线评估、Fake E2E 发布场景和默认关闭的生产 Scheduler 已实现；真实
+  Provider 的 Gate/自动化精确率/Schema/注入召回均为 100%，注入误报为 0；合并后的
+  Render 部署与原 Mermaid 反馈回放已成功完成。阶段 A～G 的开发与首条生产闭环验收
+  完成，是否部署 7×24 小时 Scheduler 作为后续独立运维选择。
 
 可直接执行的配置和命令见 [agent/README.md](../../agent/README.md)。阶段划分、历史检查点
 和验收证据以 [implementation-plan.md](implementation-plan.md) 为准；本文档中的目标
 架构不表示对应组件已经实现。
+
+运行位置、本地 Docker 是否需要开启以及常驻部署建议见
+[deployment-and-operations.md](deployment-and-operations.md)。开发期间遇到的问题与解决
+方案按阶段归档在 [AgentProblem](../AgentProblem/README.md)。
 
 ## 目标链路
 

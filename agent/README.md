@@ -1,9 +1,10 @@
 # MD To Word Agent
 
-当前已实现阶段 F 发布和阶段 G 评估/投产控制：Gate 接受后可按固定 SHA 复现缺陷，最多生成两轮
+当前已完成阶段 A～G 的开发与首条生产闭环验收：Gate 接受后可按固定 SHA 复现缺陷，最多生成两轮
 受限后端修复，并在全新 Docker 沙箱中重新证明基线失败、修复后目标/全量/DOCX 验证
 通过；只有验证凭据和最终补丁哈希一致时，GitHub App Publisher 才能创建固定分支、
-单个提交和 PR。生产 Scheduler 默认关闭，离线评估不领取数据库反馈。
+单个提交和 PR。真实 PR 已完成人工合并、Render 部署和 Mermaid 原样例回放。生产
+Scheduler 默认关闭，离线评估不领取数据库反馈。
 
 Controller CLI 默认仍只执行 Gate。`--reproduce` 只执行阶段 D，`--repair` 执行阶段
 D+E，`--publish` 执行完整 D+E+F；三者都必须显式使用真实 Provider。系统没有自动
@@ -271,14 +272,14 @@ Scheduler 每次优先恢复 checkpoint，再领取一条反馈，进程内并�
 - 阶段 E 当前实现验收为 Agent 217 passed，其中真实 Docker 4 passed；后端固定镜像
   44 passed；真实 Provider/Supabase/Langfuse/GitHub/Sandbox 运行已得到修正后的
   `needs_human/external_dependency_required` 终态；
-- 阶段 F/G 本地实现覆盖验证失败/哈希不符/过期基线拒绝、合法 PR、幂等复用、最小 App
+- 阶段 F/G 实现覆盖验证失败/哈希不符/过期基线拒绝、合法 PR、幂等复用、最小 App
   权限、发布失败保留 Artifact、同 run 发布重试、12 条 Fake 评估和默认关闭的生产
-  Scheduler；当前 Agent 全量（含 4 项 Docker 集成）256 passed，后端只读固定镜像
-  52 passed；
+  Scheduler；最终提交前 Agent 非 Docker 回归为 252 passed、4 个 Docker 条件测试 skipped，
+  已配置固定 digest 时 4 个 Docker 集成测试均通过；同步 `main` 后端回归为 54 passed；
   `deepseek-ai/DeepSeek-V4-Flash` 使用 `gate-v6/publication-policy-v3` 的 12 条真实评估达到
   Gate accuracy、automatable precision、Schema compliance、注入召回均 100%，注入误报
-  0%；GitHub App 真实 JWT、单仓库安装和最小权限令牌预检已通过，真实 PR 和生产连续运行
-  仍需手工验收；
+  0%；GitHub App 真实 JWT、单仓库安装和最小权限令牌预检已通过；真实 PR #1 已人工合并，
+  Render 部署和插件 Mermaid 原样例回放成功。常驻 Scheduler 部署为后续可选运维事项；
 - `gate-v2` 真实复测将“仅测试、不需要修复”路由为 `rejected_irrelevant`；
 - Prompt Injection 真实复测路由为 `quarantined_security`，`tool_calls=0`；
 - Langfuse 每次真实 Gate 包含 root Agent 和 `classify-intent` Generation，且抽查未发现
@@ -323,7 +324,7 @@ Scheduler 每次优先恢复 checkpoint，再领取一条反馈，进程内并�
   可以引入审核后的依赖；当前 `publication-policy-v4/patch-policy-v2/fix-generation-v2`
   已预装固定 Mermaid CLI + Chromium + 中文字体，删除 Mermaid 提前终止，并在无网络、
   非 root、只读 Sandbox 中用中文流程图验证“旧基线 drawing 失败、接入后通过”。历史 run
-  不重开；平台变更合并部署后需提交新 feedback 执行真实 PR 验收；
+  不重开；后续新 feedback 已完成真实 PR、合并、Render 部署与插件回放；
 - 第一条平台合并后的真实发布 run `878a75c3-...` 正确复现 drawing 缺失，但修复模型只
   读取 `pandoc_runner.py` 前 50 行，两轮结构化 Edit 均未通过本地应用，以
   `invalid_fix_edit` 安全终止且未创建 GitHub 资源；旧 Artifact 没有保存 Edit，不能据此
@@ -342,6 +343,14 @@ Scheduler 每次优先恢复 checkpoint，再领取一条反馈，进程内并�
 - 维护者暂不填写模型单价，因此数据库成本验收仍为延后项。
 
 ## 10. Docker 验收
+
+这里的 Sandbox Docker 当前运行在开发者电脑的 Docker Desktop/WSL 中，不是 Render
+转换后端的一部分。使用线上插件导出 Word 时，本地 Docker 可以关闭；只有运行
+`--reproduce`、`--repair`、`--publish` 或 Docker 集成测试时，才需要同时启动 Docker
+Engine 和 Worker。若要让 Scheduler 7×24 小时自动处理反馈，应在独立私有 Linux 主机
+部署 Controller、Worker 和 Docker Engine，且 Worker 只暴露在 Controller 可访问的内网。
+完整拓扑见
+[deployment-and-operations.md](../docs/AgentRequirements/deployment-and-operations.md)。
 
 复测时先在 Docker Desktop 的 Settings → Resources → WSL Integration 中启用
 当前发行版，然后在仓库根目录执行：

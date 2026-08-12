@@ -20,11 +20,16 @@ Edge 插件
 GitHub 负责源码、分支、PR 和人工协作，不负责调度、执行、沙箱或 Agent 密钥。
 Agent Controller 是常驻自托管服务；Sandbox Worker 是执行不可信代码的隔离边界。
 
-截至阶段 G 本地实现，已实现 Supabase 领取、Gate、最多两轮自动复现与修复、独立验证、模型
+截至阶段 G 完成，已实现 Supabase 领取、Gate、最多两轮自动复现与修复、独立验证、模型
 Provider、运行持久化、Langfuse Trace、Source Workspace、受控结构化编辑和独立 Docker
 Sandbox Worker。CLI 默认仍只执行 Gate；维护者显式使用 `--reproduce` 执行到复现，使用
 `--repair` 执行完整 D+E，使用 `--publish` 才允许 GitHub App 执行完整 D+E+F。
 生产 Scheduler 另受默认关闭的投产开关保护；系统始终不自动合并或部署。
+
+当前 Render 只部署公开转换后端；Agent Controller 与 Sandbox Worker 尚未作为 Render
+服务部署。开发环境的 Worker 使用本地 Docker Desktop/WSL，常驻自动处理反馈时应改为
+独立私有主机上的 Docker Engine 和内网 Worker。详见
+[deployment-and-operations.md](deployment-and-operations.md)。
 
 ## 2. 部署单元
 

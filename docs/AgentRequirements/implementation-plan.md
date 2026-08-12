@@ -246,15 +246,12 @@ TRACE_CONTENT=false
 
 ## 11. 验证命令
 
-### 11.1 当前已实现入口（阶段 B3）
+### 11.1 自动测试与初始化
 
 ```bash
 uv sync --extra dev
 .venv/bin/python -m pytest agent/tests -q
 .venv/bin/python -m agent.cli checkpoint setup
-.venv/bin/python -m agent.cli run --feedback-id <uuid> --dry-run
-.venv/bin/python -m agent.cli run --feedback-id <uuid> --dry-run \
-  --provider configured
 ```
 
 后端回归从仓库根目录执行：
@@ -267,20 +264,39 @@ cd backend && .venv/bin/python -m pytest -v
 backend/.venv/Scripts/python.exe -m pytest backend/tests -v
 ```
 
-当前 `run` 强制要求 `--dry-run`，并且只执行 Gate。Fake Provider 是默认值；真实模型
-必须显式传入 `--provider configured`。
-
-### 11.2 后续阶段目标入口
-
-以下入口要到对应阶段实现后才能使用，不属于阶段 B3：
+### 11.2 Gate、复现、修复与发布
 
 ```bash
-python -m agent.evals.runner --provider fake  # 阶段 G
-python -m agent.cli run --feedback-id <uuid>  # 阶段 C 至 F 完整链路
+# Fake 或真实 Provider 的 Gate-only dry run
+.venv/bin/python -m agent.cli run --feedback-id <uuid> --dry-run
+.venv/bin/python -m agent.cli run --feedback-id <uuid> --dry-run \
+  --provider configured
+
+# 阶段 D、D+E 和 D+E+F
+.venv/bin/python -m agent.cli run --feedback-id <uuid> --dry-run \
+  --provider configured --reproduce
+.venv/bin/python -m agent.cli run --feedback-id <uuid> --dry-run \
+  --provider configured --repair
+.venv/bin/python -m agent.cli run --feedback-id <uuid> \
+  --provider configured --publish
 ```
 
-Docker Worker 另提供不依赖真实模型和 GitHub 的集成测试。文档中的命令必须与实际
-CLI 保持一致，接口调整时在同一个变更中更新。
+除真实 `--publish` 外，CLI 运行必须提供 `--dry-run`；`--publish` 反而禁止与
+`--dry-run` 同用。复现、修复、发布和恢复必须显式使用真实 Provider。可恢复错误使用
+`--resume-run-id <uuid>` 配合同一个阶段开关，不重新领取 feedback。
+
+### 11.3 评估与生产 Scheduler
+
+```bash
+.venv/bin/python -m agent.evals.runner --provider fake
+.venv/bin/python -m agent.evals.runner --provider configured
+.venv/bin/python -m agent.cli scheduler --once
+.venv/bin/python -m agent.cli scheduler --forever
+```
+
+生产 Scheduler 默认关闭，只有 `PRODUCTION_SCHEDULER_ENABLED=true` 且 D→E→F 配置预检
+全部通过时才领取反馈。Docker Worker 的构建、启动和隔离验收命令见
+[agent/README.md](../../agent/README.md)。
 
 ## 12. 进度记录
 
@@ -844,7 +860,7 @@ Cloud，使真实 Gate 调用具备严格结构化输出、有限重试、真实
 
 ### 阶段 G 实施检查点
 
-**状态：实现与真实模型评估完成；投产验收待执行（2026-08-12）**
+**状态：开发与首条生产闭环验收完成（2026-08-12）**
 
 - `agent/evals/cases.json` 保存 12 条脱敏/构造用例，覆盖表格、公式、标题、崩溃、后端
   规范化、前端、功能建议、无关、信息不足、Prompt Injection 和缺失输入；数据模型没有
@@ -861,18 +877,21 @@ Cloud，使真实 Gate 调用具备严格结构化输出、有限重试、真实
   Sandbox Job、stale base 重排及现有无关/注入/前端/无法复现/两轮失败/补丁越界/全量
   回归路径；`deepseek-ai/DeepSeek-V4-Flash` 使用 `gate-v6/publication-policy-v3` 完成 12 条
   真实 Gate 评估，Gate accuracy、automatable precision、Schema compliance、注入隔离
-  recall 均为 1.0，注入误报率为 0，且无超时。第一条真实自动修复 PR、人工 Review、Render
-  部署回放和连续生产反馈属于下一验收动作，完成前不打开生产 Scheduler，也不把阶段 F/G
-  标为完成。
+  recall 均为 1.0，注入误报率为 0，且无超时；
+- 第一条真实自动修复 run `f11032d7-...` 创建 PR #1，维护者已人工 Review、合并并完成
+  Render 部署；原 Mermaid 反馈在插件中重新导出成功，生产转换闭环验收完成；
+- 生产 Scheduler 继续默认关闭。是否把 Controller、Worker 与 Docker Engine 部署为
+  7×24 小时服务属于运维选择，不阻塞阶段 G 的开发完成状态；启用前仍必须完成配置预检，
+  并按小流量持续核对重复 PR、权限、成本和失败原因。
 
 | 阶段 | 状态 | 验收日期 | 证据 |
 |---|---|---|---|
 | A 基线、配置与持久化 | Implemented | 2026-08-10 | Agent 30 passed；Backend 42 passed；Supabase migration/RLS/RPC/claim 验收通过 |
-| B LangGraph Gate与Langfuse | 进行中（B1/B2完成；B3功能与安全通过，成本延后） | - | Agent 88 passed；真实分类/注入隔离/Trace/Token/Masking通过；数据库成本待配置 |
+| B LangGraph Gate与Langfuse | Completed（成本字段按维护者选择保持 0） | 2026-08-10 | Agent 88 passed；真实分类/注入隔离/Trace/Token/Masking通过；未配置模型单价不阻塞功能验收 |
 | C 源码工具与Docker Worker | Implemented | 2026-08-11 | Agent 135 passed；Docker 集成 1 passed；Backend 42 passed |
 | D 自动复现 | Implemented | 2026-08-11 | Agent 178 passed；Docker 2 passed；Backend 44 passed；真实 Mermaid 反馈在固定 SHA 上产生目标断言失败并进入 `repairing/reproduced` |
-| E 修复与独立验证 | Implemented | 2026-08-11；Mermaid 平台能力更新 2026-08-12 | 历史 Agent 217 passed/Docker 4 passed/Backend 44 passed；真实旧 run 安全转人工；当前固定本地渲染器已通过中文流程图 Docker 的“基线失败 -> 修复通过”验证，待新 feedback 生成真实 PR |
-| F GitHub PR | Implemented（真实 PR 待人工 Review） | 2026-08-12 | 当前 Agent 全量 256 passed（Docker 4 项、无 skipped）、Backend 52 passed；真实 App 最小权限预检通过；run `f11032d7-...` 的 validated patch 经幂等恢复创建 PR #1，数据库与 Artifact 一致；待人工 Review |
-| G 评估与投产 | 进行中（真实模型评估完成，投产验收待执行） | - | 同一 Agent 256 passed；12 条真实 Gate 评估核心路由/安全指标通过，Fake 发布 E2E、生产开关与单并发 Scheduler 已覆盖；待 Review、部署回放及连续运行 |
+| E 修复与独立验证 | Completed | 2026-08-11；Mermaid 平台能力更新 2026-08-12 | 历史 Agent 217 passed/Docker 4 passed/Backend 44 passed；固定渲染器完成中文流程图“基线失败 -> 修复通过”，真实 run 最终生成 validated patch |
+| F GitHub PR | Completed | 2026-08-12 | Agent 全量回归通过；真实 App 最小权限预检通过；run `f11032d7-...` 幂等创建 PR #1，数据库与 Artifact 一致，维护者已人工合并 |
+| G 评估与投产 | Completed（常驻 Scheduler 部署为可选运维项） | 2026-08-12 | 12 条真实 Gate 评估指标通过；Fake 发布 E2E、生产开关与单并发 Scheduler 已覆盖；PR 合并、Render 部署及 Mermaid 插件回放成功 |
 
 状态只在完成对应验收后更新。已有代码不因存在文件或历史提交自动视为通过。

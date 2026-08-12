@@ -19,7 +19,8 @@ MD To Word converts AI-generated Markdown into editable Word `.docx`.
 - `backend/`: FastAPI + Pandoc conversion service.
 - `extension/`: Chrome/Edge Manifest V3 extension.
 - `agent/`: self-hosted feedback triage and repair runtime.
-- `docs/`: deployment and release notes.
+- `docs/AgentRequirements/`: Agent 权威需求、架构、接口和验收记录。
+- `docs/AgentProblem/`: 按阶段整理的历史问题与解决方案，不替代权威需求。
 - `logs/`: real user samples and failure cases.
 
 ## Agent Development
@@ -38,6 +39,8 @@ MD To Word converts AI-generated Markdown into editable Word `.docx`.
   只用于明确批准的手工集成验收，并使用可丢弃的测试数据。
 - 真实缺陷允许在维护者明确批准后增加平台依赖；必须固定版本、提交锁文件，并同步进入
   生产与 Sandbox 镜像。Agent 生成的补丁仍不得修改依赖、Dockerfile 或受信平台模块。
+- 历史故障与排障结论写入 `docs/AgentProblem/`；稳定行为或接口变化仍必须同步更新
+  `docs/AgentRequirements/`，避免从复盘文档反推当前契约。
 
 Agent 代码或权威设计文档变更后至少运行：
 
@@ -118,6 +121,19 @@ Backend deploys to Render from `backend/`.
 - Public service URL: `https://mdtoword.onrender.com`
 
 Extension is not deployed to Render. Build and load `extension/dist` in browser extensions.
+
+Docker 有两个互相独立的用途：
+
+- Render 根据 `backend/Dockerfile` 构建并运行公开转换后端，容器内包含 Pandoc、Mermaid
+  CLI 和 Chromium；插件使用线上服务时不依赖开发者电脑，也不要求本地 Docker 常驻。
+- `agent/sandbox/Dockerfile` 是 Agent 执行不可信测试和补丁的隔离镜像。当前开发环境由
+  本地 Docker Desktop/WSL 和 `agent.sandbox.worker_http` 提供；只有执行 Agent 的
+  reproduce/repair/publish 或 Docker 集成测试时才需要开启。
+
+生产常驻 Agent 必须把 Controller 与 Sandbox Worker 部署到受控的独立主机/内网；该
+主机需要 Docker Engine。不要把 Worker 合并进公开 Render 转换服务，也不要公开暴露
+Docker Socket 或 Worker 端口。完整拓扑与启停说明见
+`docs/AgentRequirements/deployment-and-operations.md`。
 
 After backend changes:
 
