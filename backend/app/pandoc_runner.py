@@ -9,6 +9,7 @@ from pathlib import Path
 
 from app.normalizer import normalize_markdown
 from app.settings import settings
+from app.mermaid_renderer import render_mermaid_blocks, MermaidRenderError
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +71,12 @@ def convert_markdown_to_docx(markdown: str, work_dir: Path | None = None) -> byt
 def _convert(markdown: str, work_dir: Path) -> bytes:
     input_path = work_dir / "input.md"
     output_path = work_dir / "result.docx"
-    input_path.write_text(normalize_markdown(markdown), encoding="utf-8")
+    try:
+        rendered_markdown = render_mermaid_blocks(markdown, work_dir)
+    except MermaidRenderError as exc:
+        raise ConversionError(exc.message, exc.details)
+    normalized = normalize_markdown(rendered_markdown)
+    input_path.write_text(normalized, encoding="utf-8")
 
     command = [
         _resolve_pandoc_binary(),
