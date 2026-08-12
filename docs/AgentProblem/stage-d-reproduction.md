@@ -84,3 +84,16 @@ Worker 或 CLI。不要在已经失效的 Docker bind mount 目录中继续运�
 
 可恢复错误使用原来的 `--resume-run-id` 从 PostgreSQL checkpoint 继续，不重新领取反馈；
 历史终态保持不变。需要重新验证修正后行为时，新建一条可丢弃的 `pending` 反馈。
+
+## 问题 9：Mermaid 测试生成在严格 Schema 阶段直接失败
+
+生产模型可以正确完成 Gate 和复现计划，但 `generate-test` 的复杂返回连续两次不符合
+严格 Schema，运行以 `InvalidModelResponseError/invalid_response` 终结。原有 Mermaid
+回退只处理已经通过 Schema、随后被本地编辑规则拒绝的结果，因此无法接管这种失败。
+
+### 解决方案
+
+模型格式修正耗尽后，仅当原文包含 Mermaid、计划要求 `AssertionError`，并且 Oracle 是
+受信的 `assert_minimum_drawing_count` 时，Controller 使用已有固定测试与 fixture。模板仍
+经过 Patch Policy 和 Docker Sandbox；普通反馈继续保持严格失败，不放宽 Schema，也不
+增加模型重试或外部依赖。

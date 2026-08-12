@@ -40,12 +40,16 @@ def build_mermaid_test_fallback(
     plan: ReproductionPlan,
     previous_report: ReproductionReport | None,
     existing_test_source: str,
+    after_invalid_model_response: bool = False,
 ) -> TestGenerationResult | None:
-    """首轮文本编辑无效时，用固定受信模板生成 Mermaid drawing 回归测试。"""
+    """模型格式或首轮编辑无效时，生成受信 Mermaid drawing 回归测试。"""
 
+    previous_edit_was_invalid = (
+        previous_report is not None
+        and previous_report.failure_code == "invalid_test_edit"
+    )
     if (
-        previous_report is None
-        or previous_report.failure_code != "invalid_test_edit"
+        not (previous_edit_was_invalid or after_invalid_model_response)
         or not contains_mermaid_diagram(task.markdown_content)
         or plan.expected_failure_kind is not ExpectedFailureKind.ASSERTION
         or plan.oracle.trusted_assertion_name() != "assert_minimum_drawing_count"
@@ -100,7 +104,11 @@ def build_mermaid_test_fallback(
         target_test_selector=plan.target_test_selector,
         oracle=plan.oracle,
         expected_failure_kind=plan.expected_failure_kind,
-        reason="trusted Mermaid drawing regression fallback after invalid model edit",
+        reason=(
+            "trusted Mermaid drawing regression fallback after invalid model response"
+            if after_invalid_model_response
+            else "trusted Mermaid drawing regression fallback after invalid model edit"
+        ),
         files_needed_for_fix=fix_paths,
         extension_sync_required=False,
     )

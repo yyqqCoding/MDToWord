@@ -697,7 +697,8 @@ Cloud，使真实 Gate 调用具备严格结构化输出、有限重试、真实
   tarball 跟随 GitHub 受信重定向，空的中断目录可幂等清理；`--resume-run-id` 从
   checkpoint 继续已有运行，不重新领取 feedback；
 - 生成测试通过 Schema 后若违反固定测试路径或受信断言，只进行一次不含测试源码的
-  本地 Policy 修正；确定性的源码访问拒绝会终结 run，避免 Scheduler 无限恢复。
+  本地 Policy 修正；Mermaid 测试生成耗尽格式修正时仅在受信 drawing Oracle 下改用
+  Controller 固定模板；确定性的源码访问拒绝会终结 run，避免 Scheduler 无限恢复。
 - 阶段 D 长源码模型请求默认超时 180 秒，可通过环境变量在 30～300 秒内调整；模型
   5xx/传输错误最多重试两次，使用 1 秒、4 秒的有限退避；测试编辑对不存在目标
   使用 `search_replace` 时归为可修订的 `invalid_test_edit`，不误判为源码读取拒绝。

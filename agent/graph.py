@@ -17,9 +17,10 @@ from agent.domain.enums import (
 from agent.domain.content import contains_mermaid_diagram
 from agent.domain.errors import (
     ClaimTokenMismatchError,
+    ExternalDependencyError,
     FeedbackNotFoundError,
     InvalidEditError,
-    ExternalDependencyError,
+    InvalidModelResponseError,
     PatchPolicyError,
     PublicationError,
     SourceAccessError,
@@ -397,14 +398,31 @@ def build_gate_graph(
                         )
                         source_items.append(source_item)
                 source_files = tuple(source_items)
-                execution = await generate_reproduction_test(
-                    task,
-                    plan=plan,
-                    source_files=source_files,
-                    previous_report=previous_report,
-                    provider=reproduction.test_provider,
-                    timeout_seconds=reproduction.model_timeout_seconds,
-                )
+                try:
+                    execution = await generate_reproduction_test(
+                        task,
+                        plan=plan,
+                        source_files=source_files,
+                        previous_report=previous_report,
+                        provider=reproduction.test_provider,
+                        timeout_seconds=reproduction.model_timeout_seconds,
+                    )
+                except InvalidModelResponseError:
+                    fallback = build_mermaid_test_fallback(
+                        task,
+                        plan=plan,
+                        previous_report=previous_report,
+                        existing_test_source=existing_test_source,
+                        after_invalid_model_response=True,
+                    )
+                    if fallback is None:
+                        raise
+                    # Mermaid 的图形 Oracle 和测试结构均已受信，可在模型格式重试耗尽后
+                    # 确定性接管；普通反馈仍保留严格 Schema 失败边界。
+                    execution = ReproductionModelExecution(
+                        output=fallback,
+                        model_calls=0,
+                    )
             generated = execution.output
             submitted = None
             edit_error: Exception | None = None
