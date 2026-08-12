@@ -1,0 +1,34 @@
+[Unit]
+Description=MD To Word Sandbox Worker
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mdtoword-worker
+Group=mdtoword-worker
+SupplementaryGroups=docker
+WorkingDirectory=/opt/mdtoword
+EnvironmentFile=/etc/mdtoword/worker.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/mdtoword/.venv/bin/python -m agent.sandbox.worker_http
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+UMask=0077
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictSUIDSGID=true
+ReadWritePaths=/var/lib/mdtoword-worker
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

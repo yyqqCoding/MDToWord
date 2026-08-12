@@ -85,3 +85,14 @@ Docker、Secret、告警和小流量观察。
 workspace 的旧基线，再用 test patch 证明 drawing 断言失败，并把当前实现作为 fix patch
 重新应用后证明通过。生产源码不回退。修正后非 Docker Agent 测试 252 passed，真实
 Docker 集成 4 passed。
+
+## 问题 9：手工复制多层 shell、Python 和 systemd 命令容易产生语法错误
+
+SSH 终端换行会把 `python -c` 的 import 拆开，前导空格又会触发 `IndentationError`；长
+命令还难以审查是否意外加载了 Controller Secret 或开放 Worker 端口。
+
+### 解决方案
+
+把预检 Python、两个 systemd 单元、安装脚本和管理命令全部纳入版本控制。服务器只需
+`git pull` 后运行 `deploy/agent/install.sh`。脚本不包含 Secret，读取既有隔离配置；每次
+安装都保持 Scheduler 关闭，并通过 `mdtoword-agentctl enable` 的审计与二次确认单独启用。

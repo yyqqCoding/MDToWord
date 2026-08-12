@@ -100,3 +100,43 @@ Controller 与 Worker 通过内网通信。Worker 端口不得暴露到公网，
 截至 2026-08-12，阶段 A～G 的开发、自动测试、真实模型评估、真实 GitHub App PR、
 人工合并、Render 部署和 Mermaid 原样例回放均已完成。常驻 Scheduler 是否上线是独立的
 运维决策；未部署常驻 Agent 不代表转换后端或本轮开发未完成。
+
+## 6. Linux 常驻 Agent 一键安装
+
+仓库提供以下受版本控制的生产文件：
+
+```text
+deploy/agent/install.sh
+deploy/agent/mdtoword-agentctl
+deploy/agent/systemd/mdtoword-worker.service
+deploy/agent/systemd/mdtoword-scheduler.service
+```
+
+适用前提：仓库位于 `/opt/mdtoword`，虚拟环境、`mdtoword-controller`、
+`mdtoword-worker`、运行目录、Docker 镜像以及 `/etc/mdtoword/controller.env`、
+`worker.env` 已按本方案准备完成。更新代码后执行：
+
+```bash
+cd /opt/mdtoword
+sudo git pull --ff-only origin main
+sudo bash deploy/agent/install.sh
+```
+
+安装脚本不会创建、复制或输出 Secret，也不会覆盖两份环境文件。它会安装最新 systemd
+单元与管理命令、启动并启用 Worker、明确停止并禁用 Scheduler，然后执行只读审计。审计
+只输出活动状态数量，不读取反馈正文、联系方式或 Artifact。
+
+常用命令：
+
+```bash
+sudo mdtoword-agentctl audit    # 配置、Worker、镜像、监听地址和数据库状态计数
+sudo mdtoword-agentctl enable   # 审计后要求输入 ENABLE，才开启自动领取
+sudo mdtoword-agentctl disable  # 立即停止领取，并把生产开关恢复为 false
+sudo mdtoword-agentctl status
+sudo mdtoword-agentctl logs
+```
+
+`enable` 会先备份 `controller.env`，再原子更新
+`PRODUCTION_SCHEDULER_ENABLED=true`。Scheduler 启动后优先恢复审计中列出的活动 run，随后
+领取 `pending` 反馈；因此首次启用前必须人工核对两个状态计数对象。运行代码更新时重新
+执行安装脚本是有意的 fail-safe：它会关闭 Scheduler，完成审计后再由维护者重新启用。

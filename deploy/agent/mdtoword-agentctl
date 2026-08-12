@@ -1,0 +1,169 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+readonly PROJECT_ROOT=/opt/mdtoword
+readonly CONTROLLER_ENV=/etc/mdtoword/controller.env
+readonly WORKER_ENV=/etc/mdtoword/worker.env
+readonly CONTROLLER_SERVICE=mdtoword-scheduler
+readonly WORKER_SERVICE=mdtoword-worker
+
+require_root() {
+    if [[ "${EUID}" -ne 0 ]]; then
+        echo "请使用 sudo 运行。" >&2
+        exit 1
+    fi
+}
+
+set_scheduler_flag() {
+    local value="$1"
+    local temporary
+    temporary="$(mktemp /etc/mdtoword/controller.env.XXXXXX)"
+    chmod 0600 "${temporary}"
+
+    awk -v value="${value}" '
+        BEGIN { found = 0 }
+        /^PRODUCTION_SCHEDULER_ENABLED=/ {
+            if (!found) {
+                print "PRODUCTION_SCHEDULER_ENABLED=" value
+                found = 1
+            }
+            next
+        }
+        { print }
+        END {
+            if (!found) print "PRODUCTION_SCHEDULER_ENABLED=" value
+        }
+    ' "${CONTROLLER_ENV}" > "${temporary}"
+
+    chown root:mdtoword-controller "${temporary}"
+    chmod 0640 "${temporary}"
+    mv "${temporary}" "${CONTROLLER_ENV}"
+}
+
+check_files() {
+    [[ -d "${PROJECT_ROOT}/.git" ]]
+    [[ -x "${PROJECT_ROOT}/.venv/bin/python" ]]
+    [[ -r "${CONTROLLER_ENV}" ]]
+    [[ -r "${WORKER_ENV}" ]]
+    [[ "$(stat -c '%a' "${CONTROLLER_ENV}")" == "640" ]]
+    [[ "$(stat -c '%a' "${WORKER_ENV}")" == "640" ]]
+    [[ "$(stat -c '%G' "${CONTROLLER_ENV}")" == "mdtoword-controller" ]]
+    [[ "$(stat -c '%G' "${WORKER_ENV}")" == "mdtoword-worker" ]]
+    echo "files_and_permissions_ready"
+}
+
+check_worker() {
+    systemctl is-active --quiet "${WORKER_SERVICE}"
+
+    local http_code
+    http_code="$(curl -sS --connect-timeout 3 --max-time 10 \
+        -o /dev/null -w '%{http_code}' -X POST \
+        http://127.0.0.1:8090/v1/jobs)"
+    if [[ "${http_code}" != "400" ]]; then
+        echo "Worker HTTP 状态异常：${http_code}" >&2
+        exit 1
+    fi
+
+    runuser -u mdtoword-worker -- env -i \
+        PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+        LANG=C.UTF-8 \
+        HOME=/var/lib/mdtoword-worker \
+        /bin/bash -c 'set -a; source /etc/mdtoword/worker.env; set +a; docker image inspect "$SANDBOX_IMAGE_DIGEST" >/dev/null'
+
+    local listeners
+    listeners="$(ss -H -ltn 'sport = :8090' | awk '{print $4}')"
+    if [[ -z "${listeners}" ]] || grep -qv '^127\.0\.0\.1:8090$' <<<"${listeners}"; then
+        echo "Worker 必须且只能监听 127.0.0.1:8090。" >&2
+        exit 1
+    fi
+    echo "worker_ready"
+}
+
+check_controller() {
+    runuser -u mdtoword-controller -- env -i \
+        PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+        LANG=C.UTF-8 \
+        HOME=/var/lib/mdtoword-controller \
+        /bin/bash -c 'set -a; source /etc/mdtoword/controller.env; set +a; cd /opt/mdtoword; exec .venv/bin/python -m agent.operations.preflight'
+}
+
+audit() {
+    check_files
+    check_worker
+    check_controller
+    echo "production_preflight_ready"
+}
+
+enable_scheduler() {
+    audit
+    echo
+    echo "警告：启用后会优先恢复上面列出的运行，然后领取 pending 反馈。"
+    read -r -p '确认启用请输入 ENABLE：' confirmation
+    if [[ "${confirmation}" != "ENABLE" ]]; then
+        echo "已取消，Scheduler 保持关闭。"
+        exit 0
+    fi
+
+    cp -a "${CONTROLLER_ENV}" \
+        "${CONTROLLER_ENV}.backup.$(date -u +%Y%m%dT%H%M%SZ)"
+    set_scheduler_flag true
+    if ! systemctl enable --now "${CONTROLLER_SERVICE}"; then
+        systemctl disable --now "${CONTROLLER_SERVICE}" 2>/dev/null || true
+        set_scheduler_flag false
+        echo "Scheduler 启动失败，已恢复为关闭状态。" >&2
+        journalctl -u "${CONTROLLER_SERVICE}" -n 50 --no-pager >&2
+        exit 1
+    fi
+    sleep 3
+    if ! systemctl is-active --quiet "${CONTROLLER_SERVICE}"; then
+        systemctl disable --now "${CONTROLLER_SERVICE}" 2>/dev/null || true
+        set_scheduler_flag false
+        echo "Scheduler 未保持运行，已恢复为关闭状态。" >&2
+        journalctl -u "${CONTROLLER_SERVICE}" -n 50 --no-pager >&2
+        exit 1
+    fi
+    echo "scheduler_enabled"
+}
+
+disable_scheduler() {
+    systemctl disable --now "${CONTROLLER_SERVICE}" 2>/dev/null || true
+    set_scheduler_flag false
+    echo "scheduler_disabled"
+}
+
+status_services() {
+    echo "worker=$(systemctl is-active "${WORKER_SERVICE}" 2>/dev/null || true)"
+    echo "worker_enabled=$(systemctl is-enabled "${WORKER_SERVICE}" 2>/dev/null || true)"
+    echo "scheduler=$(systemctl is-active "${CONTROLLER_SERVICE}" 2>/dev/null || true)"
+    echo "scheduler_enabled=$(systemctl is-enabled "${CONTROLLER_SERVICE}" 2>/dev/null || true)"
+}
+
+show_logs() {
+    journalctl -u "${WORKER_SERVICE}" -u "${CONTROLLER_SERVICE}" \
+        --since '30 minutes ago' --no-pager
+}
+
+usage() {
+    cat <<'EOF'
+用法：
+  sudo mdtoword-agentctl audit
+  sudo mdtoword-agentctl enable
+  sudo mdtoword-agentctl disable
+  sudo mdtoword-agentctl status
+  sudo mdtoword-agentctl logs
+EOF
+}
+
+main() {
+    require_root
+    case "${1:-}" in
+        audit) audit ;;
+        enable) enable_scheduler ;;
+        disable) disable_scheduler ;;
+        status) status_services ;;
+        logs) show_logs ;;
+        *) usage; exit 2 ;;
+    esac
+}
+
+main "$@"

@@ -1,0 +1,33 @@
+[Unit]
+Description=MD To Word Feedback Repair Scheduler
+After=network-online.target mdtoword-worker.service
+Wants=network-online.target
+Requires=mdtoword-worker.service
+
+[Service]
+Type=simple
+User=mdtoword-controller
+Group=mdtoword-controller
+WorkingDirectory=/opt/mdtoword
+EnvironmentFile=/etc/mdtoword/controller.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/mdtoword/.venv/bin/python -m agent.cli scheduler --forever
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+UMask=0077
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictSUIDSGID=true
+ReadWritePaths=/var/lib/mdtoword-controller
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

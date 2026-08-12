@@ -395,3 +395,24 @@ Worker 的独立启动入口为：
 启动前只向 Worker 注入 `.env.example` 中的 Worker-only `SANDBOX_*` 配置，不要加载
 Supabase、模型、Langfuse 或 GitHub Secret。开发环境默认绑定 `127.0.0.1:8090`；部署时
 只能暴露到 Controller 可访问的内部网络。
+
+## 11. Linux 常驻服务
+
+独立 Linux 主机完成用户、目录、Docker 镜像、虚拟环境和 `/etc/mdtoword/*.env` 配置后，
+不再手工复制 systemd 或多层引号命令。仓库位于 `/opt/mdtoword` 时执行：
+
+```bash
+cd /opt/mdtoword
+sudo git pull --ff-only origin main
+sudo bash deploy/agent/install.sh
+```
+
+脚本安装受版本控制的 Worker/Scheduler 单元和 `mdtoword-agentctl`，但默认只启动 Worker，
+Scheduler 保持 `inactive/disabled`。确认审计输出后才运行：
+
+```bash
+sudo mdtoword-agentctl enable
+```
+
+完整安全行为、状态审计和停止命令见
+[deployment-and-operations.md](../docs/AgentRequirements/deployment-and-operations.md)。
