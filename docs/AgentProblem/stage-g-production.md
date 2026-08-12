@@ -72,3 +72,16 @@ Scheduler、Controller 和 Worker 已实现并验证，不代表维护者必须�
 把“阶段 A～G 开发和首条生产闭环完成”与“常驻 Scheduler 部署”分开记录。当前插件和
 Render 转换服务可以正常使用；常驻 Agent 是后续可选运维决策，启用时再配置私有服务器、
 Docker、Secret、告警和小流量观察。
+
+## 问题 8：Mermaid 修复合并后，Docker 回归仍把当前代码当作故障基线
+
+服务器首次运行 4 项 Docker 集成测试时有 1 项失败：测试直接复制已经包含 Mermaid
+接入的当前 `backend/app`，drawing 断言因此直接通过，JUnit 没有失败类型；旧断言却仍
+要求 `target_failure_type=AssertionError`。该测试只在 PR 合并前的未修复分支上成立。
+
+### 解决方案
+
+测试先从当前已修复 `pandoc_runner.py` 确定性移除 Mermaid 接入，构造只存在于临时
+workspace 的旧基线，再用 test patch 证明 drawing 断言失败，并把当前实现作为 fix patch
+重新应用后证明通过。生产源码不回退。修正后非 Docker Agent 测试 252 passed，真实
+Docker 集成 4 passed。

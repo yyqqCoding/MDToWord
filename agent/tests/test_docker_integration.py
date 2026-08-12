@@ -373,6 +373,29 @@ def test_mermaid_renderer_reproduces_and_validates_real_fix_in_docker(tmp_path: 
     snapshot = tmp_path / "mermaid-fallback-snapshot"
     repository_root = Path(__file__).resolve().parents[2]
     shutil.copytree(repository_root / "backend/app", snapshot / "backend/app")
+    runner_path = snapshot / "backend/app/pandoc_runner.py"
+    fixed_runner = runner_path.read_text(encoding="utf-8")
+    # 生产代码已经包含 Mermaid 接入；测试必须确定性还原合并前基线，才能继续证明
+    # drawing 断言在旧实现失败、重新应用当前实现后通过。
+    baseline_runner = fixed_runner.replace(
+        "from app.mermaid_renderer import render_mermaid_blocks, MermaidRenderError\n",
+        "",
+        1,
+    ).replace(
+        (
+            "    try:\n"
+            "        rendered_markdown = render_mermaid_blocks(markdown, work_dir)\n"
+            "    except MermaidRenderError as exc:\n"
+            "        raise ConversionError(exc.message, exc.details)\n"
+            "    normalized = normalize_markdown(rendered_markdown)\n"
+            '    input_path.write_text(normalized, encoding="utf-8")\n'
+        ),
+        '    input_path.write_text(normalize_markdown(markdown), encoding="utf-8")\n',
+        1,
+    )
+    assert baseline_runner != fixed_runner
+    assert "render_mermaid_blocks" not in baseline_runner
+    runner_path.write_text(baseline_runner, encoding="utf-8")
     tests_root = snapshot / "backend/tests"
     tests_root.mkdir(parents=True)
     existing_test = "# Mermaid fallback baseline\n"
@@ -457,32 +480,9 @@ def test_mermaid_renderer_reproduces_and_validates_real_fix_in_docker(tmp_path: 
     assert result.junit_summary.target_outcome is TargetTestOutcome.FAILED
     assert report.disposition is ReproductionDisposition.REPRODUCED
 
-    runner_path = snapshot / "backend/app/pandoc_runner.py"
-    original_runner = runner_path.read_text(encoding="utf-8")
-    fixed_runner = original_runner.replace(
-        "from app.normalizer import normalize_markdown\n",
-        (
-            "from app.mermaid_renderer import "
-            "MermaidRenderError, render_mermaid_blocks\n"
-            "from app.normalizer import normalize_markdown\n"
-        ),
-        1,
-    ).replace(
-        '    input_path.write_text(normalize_markdown(markdown), encoding="utf-8")\n',
-        (
-            "    normalized = normalize_markdown(markdown)\n"
-            "    try:\n"
-            "        normalized = render_mermaid_blocks(normalized, work_dir)\n"
-            "    except MermaidRenderError as exc:\n"
-            "        raise ConversionError(exc.message, exc.details) from exc\n"
-            '    input_path.write_text(normalized, encoding="utf-8")\n'
-        ),
-        1,
-    )
-    assert fixed_runner != original_runner
     fix_patch = _patch_for(
         "backend/app/pandoc_runner.py",
-        original_runner,
+        baseline_runner,
         fixed_runner,
     )
     validation_job = job.model_copy(

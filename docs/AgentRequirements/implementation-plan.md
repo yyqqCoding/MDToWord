@@ -880,6 +880,10 @@ Cloud，使真实 Gate 调用具备严格结构化输出、有限重试、真实
   recall 均为 1.0，注入误报率为 0，且无超时；
 - 第一条真实自动修复 run `f11032d7-...` 创建 PR #1，维护者已人工 Review、合并并完成
   Render 部署；原 Mermaid 反馈在插件中重新导出成功，生产转换闭环验收完成；
+- 合并后首次在常驻 Agent 目标服务器运行 Docker 回归时，Mermaid 用例仍把当前已修复
+  源码当作故障基线，因目标直接通过而缺少 `AssertionError`。测试现从当前实现确定性
+  构造临时旧基线，再验证“drawing 失败 -> 应用当前实现后通过”；复测为非 Docker
+  252 passed、真实 Docker 4 passed，生产代码未改变；
 - 生产 Scheduler 继续默认关闭。是否把 Controller、Worker 与 Docker Engine 部署为
   7×24 小时服务属于运维选择，不阻塞阶段 G 的开发完成状态；启用前仍必须完成配置预检，
   并按小流量持续核对重复 PR、权限、成本和失败原因。
