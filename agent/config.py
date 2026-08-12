@@ -2,6 +2,7 @@ import os
 from collections.abc import Mapping
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
@@ -28,6 +29,7 @@ class AgentConfig(BaseModel):
         pattern=r"^[a-z_][a-z0-9_]{0,62}$",
     )
     poll_interval_seconds: float = Field(default=5.0, gt=0)
+    production_scheduler_enabled: bool = False
     model_provider: str = "openai_compatible"
     model_name: str | None = None
     model_api_key: SecretStr | None = None
@@ -58,6 +60,14 @@ class AgentConfig(BaseModel):
         pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
     )
     github_read_token: SecretStr | None = None
+    github_app_id: str | None = Field(default=None, pattern=r"^\d+$")
+    github_app_private_key: SecretStr | None = None
+    github_api_url: str = "https://api.github.com"
+    github_main_branch: str = Field(
+        default="main",
+        pattern=r"^[A-Za-z0-9._/-]{1,100}$",
+    )
+    langfuse_trace_url_template: str | None = None
     sandbox_worker_url: str | None = None
     sandbox_worker_credential: SecretStr | None = None
 
@@ -75,11 +85,35 @@ class AgentConfig(BaseModel):
             raise ValueError("AGENT_ENVIRONMENT cannot start with langfuse")
         return value
 
-    @field_validator("model_base_url", "langfuse_host", "sandbox_worker_url")
+    @field_validator(
+        "model_base_url",
+        "langfuse_host",
+        "sandbox_worker_url",
+        "github_api_url",
+    )
     @classmethod
     def require_http_external_url(cls, value: str | None) -> str | None:
         if value is not None and not value.startswith(("https://", "http://")):
             raise ValueError("external service URL must use HTTP(S)")
+        return value
+
+    @field_validator("langfuse_trace_url_template")
+    @classmethod
+    def require_trace_url_placeholder(cls, value: str | None) -> str | None:
+        parsed = urlsplit(value) if value is not None else None
+        if value is not None and (
+            parsed is None
+            or parsed.scheme not in {"https", "http"}
+            or not parsed.netloc
+            or parsed.username is not None
+            or parsed.password is not None
+            or bool(parsed.query)
+            or bool(parsed.fragment)
+            or "{trace_id}" not in value
+        ):
+            raise ValueError(
+                "LANGFUSE_TRACE_URL_TEMPLATE must be HTTP(S) and contain {trace_id}"
+            )
         return value
 
     @classmethod
@@ -149,6 +183,11 @@ class AgentConfig(BaseModel):
                 "POLL_INTERVAL_SECONDS",
                 5.0,
             ),
+            production_scheduler_enabled=_bool_value(
+                values,
+                "PRODUCTION_SCHEDULER_ENABLED",
+                False,
+            ),
             model_provider=values.get(
                 "MODEL_PROVIDER",
                 "openai_compatible",
@@ -207,6 +246,20 @@ class AgentConfig(BaseModel):
             trace_content=_bool_value(values, "TRACE_CONTENT", False),
             github_repository=_optional_text(values, "GITHUB_REPOSITORY"),
             github_read_token=_optional_secret(values, "GITHUB_READ_TOKEN"),
+            github_app_id=_optional_text(values, "GITHUB_APP_ID"),
+            github_app_private_key=_private_key_secret(
+                values,
+                "GITHUB_APP_PRIVATE_KEY",
+            ),
+            github_api_url=values.get(
+                "GITHUB_API_URL",
+                "https://api.github.com",
+            ).strip().rstrip("/"),
+            github_main_branch=values.get("GITHUB_MAIN_BRANCH", "main").strip(),
+            langfuse_trace_url_template=_optional_text(
+                values,
+                "LANGFUSE_TRACE_URL_TEMPLATE",
+            ),
             sandbox_worker_url=_optional_text(values, "SANDBOX_WORKER_URL"),
             sandbox_worker_credential=_optional_secret(
                 values,
@@ -218,6 +271,12 @@ class AgentConfig(BaseModel):
         if self.database_url is None:
             raise ConfigurationError("missing required configuration: AGENT_DATABASE_URL")
         return self.database_url.get_secret_value()
+
+    def require_production_scheduler_enabled(self) -> None:
+        if not self.production_scheduler_enabled:
+            raise ConfigurationError(
+                "PRODUCTION_SCHEDULER_ENABLED must be true before claiming production feedback"
+            )
 
     def require_model_settings(self) -> tuple[str, str, str]:
         if self.model_provider != "openai_compatible":
@@ -299,6 +358,33 @@ class AgentConfig(BaseModel):
             self.sandbox_worker_credential.get_secret_value(),
         )
 
+    def require_stage_f_publisher_settings(self) -> tuple[str, str, str, str, str]:
+        """发布前一次性校验 GitHub App 与可审查 Trace URL 配置。"""
+
+        missing = [
+            name
+            for name, value in (
+                ("GITHUB_APP_ID", self.github_app_id),
+                ("GITHUB_APP_PRIVATE_KEY", self.github_app_private_key),
+                ("LANGFUSE_TRACE_URL_TEMPLATE", self.langfuse_trace_url_template),
+            )
+            if value is None
+        ]
+        if missing:
+            raise ConfigurationError(
+                "missing required configuration: " + ", ".join(missing)
+            )
+        assert self.github_app_id is not None
+        assert self.github_app_private_key is not None
+        assert self.langfuse_trace_url_template is not None
+        return (
+            self.github_app_id,
+            self.github_app_private_key.get_secret_value(),
+            self.github_api_url,
+            self.github_main_branch,
+            self.langfuse_trace_url_template,
+        )
+
 
 def _int_value(values: Mapping[str, str], name: str, default: int) -> int:
     raw = values.get(name)
@@ -354,6 +440,17 @@ def _optional_text(values: Mapping[str, str], name: str) -> str | None:
 def _optional_secret(values: Mapping[str, str], name: str) -> SecretStr | None:
     value = values.get(name, "").strip()
     return SecretStr(value) if value else None
+
+
+def _private_key_secret(
+    values: Mapping[str, str],
+    name: str,
+) -> SecretStr | None:
+    value = values.get(name, "").strip()
+    if not value:
+        return None
+    # 同时支持 dotenv 多行值和以字面量 \n 保存的 Secret 注入方式。
+    return SecretStr(value.replace("\\n", "\n"))
 
 
 def _rooted_path(root: Path, value: str) -> Path:

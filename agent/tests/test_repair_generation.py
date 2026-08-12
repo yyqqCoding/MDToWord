@@ -105,6 +105,9 @@ def test_generate_fix_uses_no_model_tools_and_returns_structured_edits() -> None
     assert provider.requests[0].tools == ()
     assert provider.requests[0].response_schema is FixGenerationResult
     assert "<untrusted-repair-context>" in provider.requests[0].messages[-1].content
+    assert "app.mermaid_renderer.render_mermaid_blocks" in (
+        provider.requests[0].messages[0].content
+    )
 
 
 def test_extension_dependent_fix_gets_one_bounded_policy_correction() -> None:

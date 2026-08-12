@@ -148,6 +148,7 @@ class FakeFeedbackRepository:
         error_message: str | None = None,
         category: GateCategory | None = None,
         risk: RiskLevel | None = None,
+        pr_url: str | None = None,
     ) -> FeedbackRecord:
         async with self._lock:
             record = self._records.get(feedback_id)
@@ -175,6 +176,10 @@ class FakeFeedbackRepository:
                 record.category = category.value
             if risk is not None:
                 record.risk = risk
+            if pr_url is not None:
+                record.pr_url = pr_url
+            if target is FeedbackStatus.PR_OPENED:
+                record.resolved_at = record.updated_at
             return record.model_copy(deep=True)
 
     async def find_open_by_fingerprint(
@@ -192,6 +197,35 @@ class FakeFeedbackRepository:
                 ):
                     return record.model_copy(deep=True)
             return None
+
+    async def retry_publication(
+        self,
+        feedback_id: UUID,
+        *,
+        claim_token: UUID,
+    ) -> FeedbackRecord:
+        async with self._lock:
+            record = self._records.get(feedback_id)
+            if record is None:
+                raise FeedbackNotFoundError(f"feedback {feedback_id} does not exist")
+            if record.claim_token != claim_token:
+                raise ClaimTokenMismatchError(
+                    f"claim token does not own feedback {feedback_id}"
+                )
+            if record.status is FeedbackStatus.PUBLISHING:
+                return record.model_copy(deep=True)
+            if (
+                record.status is not FeedbackStatus.FAILED
+                or not _is_publication_error(record.last_error_code)
+            ):
+                raise InvalidStatusTransitionError(
+                    "only a failed publication can be retried"
+                )
+            record.status = FeedbackStatus.PUBLISHING
+            record.last_error_code = None
+            record.last_error_message = None
+            record.updated_at = datetime.now(UTC)
+            return record.model_copy(deep=True)
 
     def _ordered_records(self) -> list[FeedbackRecord]:
         return sorted(self._records.values(), key=lambda item: (item.created_at, str(item.id)))
@@ -260,6 +294,7 @@ class FakeAgentRunRepository:
                         AgentRunStatus.REPRODUCING,
                         AgentRunStatus.REPAIRING,
                         AgentRunStatus.VALIDATING,
+                        AgentRunStatus.PUBLISHING,
                     }
                 ),
                 key=lambda run: (run.started_at, str(run.id)),
@@ -474,13 +509,19 @@ class FakeAgentRunRepository:
         output_tokens: int,
         total_tokens: int,
         estimated_cost: Decimal,
+        publish_pending: bool = False,
     ) -> AgentRunRecord:
         async with self._lock:
             run = self._require(run_id)
-            if run.status is AgentRunStatus.COMPLETED:
+            target = (
+                AgentRunStatus.PUBLISHING
+                if result.passed and publish_pending
+                else AgentRunStatus.COMPLETED
+            )
+            if run.status is target:
                 return run.model_copy(deep=True)
-            ensure_agent_run_transition(run.status, AgentRunStatus.COMPLETED)
-            run.status = AgentRunStatus.COMPLETED
+            ensure_agent_run_transition(run.status, target)
+            run.status = target
             run.validation = result.model_dump(mode="json")
             run.validated_patch_sha256 = (
                 result.validated_patch_sha256 if result.passed else None
@@ -496,7 +537,67 @@ class FakeAgentRunRepository:
                 total_tokens=total_tokens,
                 estimated_cost=estimated_cost,
             )
+            run.finished_at = None if target is AgentRunStatus.PUBLISHING else datetime.now(UTC)
+            return run.model_copy(deep=True)
+
+    async def complete_publication(
+        self,
+        run_id: UUID,
+        *,
+        pr_url: str,
+        tool_calls: int,
+    ) -> AgentRunRecord:
+        async with self._lock:
+            run = self._require(run_id)
+            if run.status is AgentRunStatus.COMPLETED:
+                if run.pr_url != pr_url:
+                    raise InvalidStatusTransitionError(
+                        "completed publication has a different pull request"
+                    )
+                return run.model_copy(deep=True)
+            ensure_agent_run_transition(run.status, AgentRunStatus.COMPLETED)
+            run.status = AgentRunStatus.COMPLETED
+            run.pr_url = pr_url
+            run.tool_calls = tool_calls
             run.finished_at = datetime.now(UTC)
+            return run.model_copy(deep=True)
+
+    async def complete_stale_base(
+        self,
+        run_id: UUID,
+        *,
+        tool_calls: int,
+    ) -> AgentRunRecord:
+        async with self._lock:
+            run = self._require(run_id)
+            if run.status is AgentRunStatus.STALE_BASE:
+                return run.model_copy(deep=True)
+            ensure_agent_run_transition(run.status, AgentRunStatus.STALE_BASE)
+            run.status = AgentRunStatus.STALE_BASE
+            run.tool_calls = tool_calls
+            run.error_code = "stale_base"
+            run.error_message = "repository main changed before publication"
+            run.finished_at = datetime.now(UTC)
+            return run.model_copy(deep=True)
+
+    async def retry_publication(self, run_id: UUID) -> AgentRunRecord:
+        async with self._lock:
+            run = self._require(run_id)
+            if run.status is AgentRunStatus.PUBLISHING:
+                return run.model_copy(deep=True)
+            if (
+                run.status is not AgentRunStatus.FAILED
+                or not _is_publication_error(run.error_code)
+                or run.validation is None
+                or not bool(run.validation.get("passed"))
+            ):
+                raise InvalidStatusTransitionError(
+                    "only a validated publication failure can be retried"
+                )
+            run.status = AgentRunStatus.PUBLISHING
+            run.error_code = None
+            run.error_message = None
+            run.finished_at = None
             return run.model_copy(deep=True)
 
     async def exhaust_budget(
@@ -583,3 +684,11 @@ def _set_usage(
     run.output_tokens = output_tokens
     run.total_tokens = total_tokens
     run.estimated_cost = estimated_cost
+
+
+def _is_publication_error(error_code: str | None) -> bool:
+    return error_code in {
+        "publication_failed",
+        "publication_auth_error",
+        "publication_conflict",
+    }

@@ -10,4 +10,6 @@ uv pip install -e ".[dev]"
 .venv/bin/uvicorn app.main:app --reload
 ```
 
-Pandoc must be installed for `.docx` conversion. The Docker image installs Pandoc automatically.
+Pandoc must be installed for `.docx` conversion. Mermaid diagrams additionally require the pinned
+Mermaid CLI and Chromium runtime under `backend/mermaid/`. The Docker image installs all three;
+local Python development can run non-Mermaid tests without installing the renderer.

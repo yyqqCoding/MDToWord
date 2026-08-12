@@ -1,13 +1,35 @@
+FROM python:3.11-slim AS mermaid-runtime
+
+ENV PUPPETEER_SKIP_DOWNLOAD=true
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends nodejs npm \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /opt/mermaid
+COPY backend/mermaid/package.json backend/mermaid/package-lock.json ./
+RUN npm ci --omit=dev --no-audit --no-fund
+
+
 FROM python:3.11-slim
 
 # 禁止写入字节码和自动加载宿主未知的 pytest 插件，减少运行时副作用。
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
+    PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+    PUPPETEER_SKIP_DOWNLOAD=true
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends pandoc \
+    && apt-get install -y --no-install-recommends \
+        chromium \
+        fonts-noto-cjk \
+        fonts-noto-color-emoji \
+        nodejs \
+        pandoc \
     && rm -rf /var/lib/apt/lists/*
+
+# 与生产镜像使用同一锁文件；最终 Sandbox 不保留 npm，模型也不能运行时安装依赖。
+COPY --from=mermaid-runtime /opt/mermaid/node_modules /opt/mdtoword/mermaid/node_modules
+RUN ln -s /opt/mdtoword/mermaid/node_modules/.bin/mmdc /usr/local/bin/mmdc
+COPY backend/mermaid/puppeteer-config.json backend/mermaid/mermaid-config.json /opt/mdtoword/
 
 WORKDIR /opt/build
 # 只复制执行后端测试所需的包，不把 Agent、Git 元数据或本地配置放入镜像。

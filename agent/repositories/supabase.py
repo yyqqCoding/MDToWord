@@ -117,6 +117,7 @@ class SupabaseFeedbackRepository:
         error_message: str | None = None,
         category: GateCategory | None = None,
         risk: RiskLevel | None = None,
+        pr_url: str | None = None,
     ) -> FeedbackRecord:
         current = await self.get(feedback_id)
         if current is None:
@@ -149,6 +150,10 @@ class SupabaseFeedbackRepository:
             payload["category"] = category.value
         if risk is not None:
             payload["risk"] = risk.value
+        if pr_url is not None:
+            payload["pr_url"] = pr_url
+        if target is FeedbackStatus.PR_OPENED:
+            payload["resolved_at"] = (now or datetime.now(UTC)).isoformat()
 
         response = await self._request(
             "PATCH",
@@ -189,6 +194,53 @@ class SupabaseFeedbackRepository:
         response = await self._request("GET", "/rest/v1/feedback", params=params)
         rows = _response_rows(response)
         return _feedback_from_row(rows[0]) if rows else None
+
+    async def retry_publication(
+        self,
+        feedback_id: UUID,
+        *,
+        claim_token: UUID,
+    ) -> FeedbackRecord:
+        current = await self.get(feedback_id)
+        if current is None:
+            raise FeedbackNotFoundError(f"feedback {feedback_id} does not exist")
+        if current.claim_token != claim_token:
+            raise ClaimTokenMismatchError(
+                f"claim token does not own feedback {feedback_id}"
+            )
+        if current.status is FeedbackStatus.PUBLISHING:
+            return current
+        if (
+            current.status is not FeedbackStatus.FAILED
+            or not _is_publication_error(current.last_error_code)
+        ):
+            raise ConcurrentFeedbackUpdateError(
+                "only a failed publication can be retried"
+            )
+        response = await self._request(
+            "PATCH",
+            "/rest/v1/feedback",
+            params={
+                "id": f"eq.{feedback_id}",
+                "claim_token": f"eq.{claim_token}",
+                "status": f"eq.{FeedbackStatus.FAILED.value}",
+                "last_error_code": f"eq.{current.last_error_code}",
+                "select": "*",
+            },
+            headers={"Prefer": "return=representation"},
+            json={
+                "status": FeedbackStatus.PUBLISHING.value,
+                "last_error_code": None,
+                "last_error_message": None,
+                "updated_at": datetime.now(UTC).isoformat(),
+            },
+        )
+        rows = _response_rows(response)
+        if not rows:
+            raise ConcurrentFeedbackUpdateError(
+                f"feedback {feedback_id} changed during publication retry"
+            )
+        return _feedback_from_row(rows[0])
 
     async def _request(
         self,
@@ -285,7 +337,7 @@ class SupabaseAgentRunRepository:
             "GET",
             "/rest/v1/agent_runs",
             params={
-                "status": "in.(created,gating,preparing_source,reproducing,repairing,validating)",
+                "status": "in.(created,gating,preparing_source,reproducing,repairing,validating,publishing)",
                 "select": "*",
                 "order": "started_at.asc",
                 "limit": "1",
@@ -540,24 +592,34 @@ class SupabaseAgentRunRepository:
         output_tokens: int,
         total_tokens: int,
         estimated_cost: Decimal,
+        publish_pending: bool = False,
     ) -> AgentRunRecord:
         existing = await self.get(run_id)
         if existing is None:
             raise AgentRunNotFoundError(f"agent run {run_id} does not exist")
-        if existing.status is AgentRunStatus.COMPLETED:
+        target = (
+            AgentRunStatus.PUBLISHING
+            if result.passed and publish_pending
+            else AgentRunStatus.COMPLETED
+        )
+        if existing.status is target:
             return existing
         return await self._patch(
             run_id,
             current=AgentRunStatus.VALIDATING,
             payload={
-                "status": AgentRunStatus.COMPLETED.value,
+                "status": target.value,
                 "validation": result.model_dump(mode="json"),
                 "validated_patch_sha256": (
                     result.validated_patch_sha256 if result.passed else None
                 ),
                 "error_code": result.failure_code,
                 "error_message": result.failure_summary,
-                "finished_at": datetime.now(UTC).isoformat(),
+                "finished_at": (
+                    None
+                    if target is AgentRunStatus.PUBLISHING
+                    else datetime.now(UTC).isoformat()
+                ),
                 **_usage_payload(
                     model_calls=model_calls,
                     tool_calls=tool_calls,
@@ -566,6 +628,82 @@ class SupabaseAgentRunRepository:
                     total_tokens=total_tokens,
                     estimated_cost=estimated_cost,
                 ),
+            },
+        )
+
+    async def complete_publication(
+        self,
+        run_id: UUID,
+        *,
+        pr_url: str,
+        tool_calls: int,
+    ) -> AgentRunRecord:
+        existing = await self.get(run_id)
+        if existing is None:
+            raise AgentRunNotFoundError(f"agent run {run_id} does not exist")
+        if existing.status is AgentRunStatus.COMPLETED:
+            if existing.pr_url != pr_url:
+                raise RepositoryError(
+                    "completed publication has a different pull request"
+                )
+            return existing
+        return await self._patch(
+            run_id,
+            current=AgentRunStatus.PUBLISHING,
+            payload={
+                "status": AgentRunStatus.COMPLETED.value,
+                "pr_url": pr_url,
+                "tool_calls": tool_calls,
+                "finished_at": datetime.now(UTC).isoformat(),
+            },
+        )
+
+    async def complete_stale_base(
+        self,
+        run_id: UUID,
+        *,
+        tool_calls: int,
+    ) -> AgentRunRecord:
+        existing = await self.get(run_id)
+        if existing is None:
+            raise AgentRunNotFoundError(f"agent run {run_id} does not exist")
+        if existing.status is AgentRunStatus.STALE_BASE:
+            return existing
+        return await self._patch(
+            run_id,
+            current=AgentRunStatus.PUBLISHING,
+            payload={
+                "status": AgentRunStatus.STALE_BASE.value,
+                "tool_calls": tool_calls,
+                "error_code": "stale_base",
+                "error_message": "repository main changed before publication",
+                "finished_at": datetime.now(UTC).isoformat(),
+            },
+        )
+
+    async def retry_publication(self, run_id: UUID) -> AgentRunRecord:
+        existing = await self.get(run_id)
+        if existing is None:
+            raise AgentRunNotFoundError(f"agent run {run_id} does not exist")
+        if existing.status is AgentRunStatus.PUBLISHING:
+            return existing
+        if (
+            existing.status is not AgentRunStatus.FAILED
+            or not _is_publication_error(existing.error_code)
+            or existing.validation is None
+            or not bool(existing.validation.get("passed"))
+        ):
+            raise RepositoryError(
+                "only a validated publication failure can be retried"
+            )
+        return await self._patch(
+            run_id,
+            current=AgentRunStatus.FAILED,
+            payload={
+                "status": AgentRunStatus.PUBLISHING.value,
+                "error_code": None,
+                "error_message": None,
+                "finished_at": None,
             },
         )
 
@@ -706,6 +844,14 @@ def _usage_payload(
         "output_tokens": output_tokens,
         "total_tokens": total_tokens,
         "estimated_cost": str(estimated_cost),
+    }
+
+
+def _is_publication_error(error_code: str | None) -> bool:
+    return error_code in {
+        "publication_failed",
+        "publication_auth_error",
+        "publication_conflict",
     }
 
 

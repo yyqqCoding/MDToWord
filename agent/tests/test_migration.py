@@ -59,3 +59,13 @@ def test_stage_e_migration_adds_repair_summary_and_resumable_states():
     assert "repairing" in sql
     assert "validating" in sql
     assert "agent_runs_resumable_idx" in sql
+
+
+def test_stage_f_migration_makes_publication_resumable():
+    sql = (
+        Path(__file__).parents[1] / "migrations" / "005_publication_runtime.sql"
+    ).read_text(encoding="utf-8").lower()
+
+    assert "publishing" in sql
+    assert "agent_runs_resumable_idx" in sql
+    assert "delete" not in sql

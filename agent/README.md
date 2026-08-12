@@ -1,11 +1,13 @@
 # MD To Word Agent
 
-当前已实现阶段 E 修复与独立验证：Gate 接受后可按固定 SHA 复现缺陷，最多生成两轮
+当前已实现阶段 F 发布和阶段 G 评估/投产控制：Gate 接受后可按固定 SHA 复现缺陷，最多生成两轮
 受限后端修复，并在全新 Docker 沙箱中重新证明基线失败、修复后目标/全量/DOCX 验证
-通过，最终生成带 SHA-256 的 `validated.patch`。
+通过；只有验证凭据和最终补丁哈希一致时，GitHub App Publisher 才能创建固定分支、
+单个提交和 PR。生产 Scheduler 默认关闭，离线评估不领取数据库反馈。
 
 Controller CLI 默认仍只执行 Gate。`--reproduce` 只执行阶段 D，`--repair` 执行阶段
-D+E；两者都必须显式使用真实 Provider。当前不会创建分支、提交、PR 或自动合并。详细边界和验收记录见
+D+E，`--publish` 执行完整 D+E+F；三者都必须显式使用真实 Provider。系统没有自动
+合并、部署或回滚入口。详细边界和验收记录见
 [implementation-plan.md](../docs/AgentRequirements/implementation-plan.md)。
 
 ## 1. 安装与自动测试
@@ -31,10 +33,11 @@ backend/.venv/Scripts/python.exe -m pytest backend/tests -v
 
 SQL migration 为 [001_agent_foundation.sql](migrations/001_agent_foundation.sql)、
 [002_gate_runtime.sql](migrations/002_gate_runtime.sql)、
-[003_reproduction_runtime.sql](migrations/003_reproduction_runtime.sql) 和
-[004_repair_runtime.sql](migrations/004_repair_runtime.sql)。测试和应用启动都不会自动执行
-migration；数据库 owner 应在审查和备份后手工执行。阶段 D 数据库只需追加执行
-`004_repair_runtime.sql`，它新增修复摘要列并重建 Agent 可恢复状态索引。
+[003_reproduction_runtime.sql](migrations/003_reproduction_runtime.sql)、
+[004_repair_runtime.sql](migrations/004_repair_runtime.sql) 和
+[005_publication_runtime.sql](migrations/005_publication_runtime.sql)。测试和应用启动都不会
+自动执行 migration；数据库 owner 应在审查和备份后手工执行。升级到阶段 F/G 只需
+追加执行 `005_publication_runtime.sql`，把 `publishing` 纳入可恢复运行索引。
 
 `AGENT_DATABASE_URL` 必须是 PostgreSQL Direct Connection 或 Session Pooler DSN，
 不是 `SUPABASE_URL`。它只属于 Agent Controller，不得提供给扩展或后端转换服务。
@@ -175,19 +178,105 @@ set +a
 ```
 
 成功时 feedback 为 `validated`、run 为 `completed`，Artifact 包含 `fix.patch`、
-`validated.patch` 和 `validation.json`；当前阶段不会发布这些文件。目标修复两轮仍失败
+`validated.patch` 和 `validation.json`。目标修复两轮仍失败
 或最终全量/DOCX 验证失败时不会产生可发布凭据；预算耗尽进入 `budget_exhausted`，之后
-不再调用模型或沙箱。若生成的修复需要新增外部可执行程序、Pandoc filter 或部署变更，
-本地 Policy 会在 Sandbox 前把 feedback/run 路由为 `needs_human`，不会继续第二轮生成。
-已确认复现的 Mermaid drawing 缺陷更早在修复范围 Policy 中确定为需要渲染器与部署
-评估，直接输出 `external_dependency_required`，不调用 `generate_fix`。
+不再调用模型或沙箱。若生成的修复需要新增未预装的外部可执行程序、Pandoc filter 或
+部署变更，本地 Policy 会在 Sandbox 前把 feedback/run 路由为 `needs_human`，不会继续
+第二轮生成。Mermaid CLI、Chromium 与中文字体已由维护者固定版本并同时放入生产和
+Sandbox 镜像；已复现的 drawing 缺陷会读取只读受信渲染器 API、调用 `generate_fix` 并
+进行完整验证。模型仍不能修改渲染器、依赖清单或 Dockerfile。
 
-## 7. 当前验收结果
+## 7. 阶段 F GitHub Pull Request
+
+先手工执行 `agent/migrations/005_publication_runtime.sql`。Publisher 使用独立 GitHub App，
+App 只安装到目标仓库，并只授予 `Contents: Read and write`、
+`Pull requests: Read and write`；不得授予 Actions、Administration、Secrets 或合并权限。
+在 Controller 私有 `.env` 中填写：
+
+```text
+GITHUB_APP_ID=
+GITHUB_APP_PRIVATE_KEY=
+GITHUB_API_URL=https://api.github.com
+GITHUB_MAIN_BRANCH=main
+LANGFUSE_TRACE_URL_TEMPLATE=https://<实际项目路径>/traces/{trace_id}
+```
+
+私钥支持 dotenv 多行 PEM 或使用字面量 `\n`。运行时会签发只限当前仓库、只含
+`contents:write` 与 `pull_requests:write` 的短期安装令牌，不保存到 Artifact、数据库、
+Trace 或日志。首次发布前可只校验 App 安装和权限，不创建 GitHub 资源：
+
+```bash
+.venv/bin/python -m agent.publishing.check
+```
+
+对新的、明确可自动修复的 `pending` 反馈执行完整 D+E+F：
+
+```bash
+.venv/bin/python -m agent.cli run \
+  --feedback-id <uuid> \
+  --provider configured \
+  --publish
+```
+
+`--publish` 是唯一允许真实 GitHub 写入的 CLI 开关，不能与 `--dry-run` 同用。发布前会
+重新应用 `validated.patch` 并核对哈希和文件集合，再检查 `current_main_sha == base_sha`。
+主分支已变化时不会创建分支或 PR，feedback 自动重排一次；第二次仍过期则转
+`needs_human`。GitHub 临时失败后可用原 run ID 重试，只恢复发布节点：
+
+```bash
+.venv/bin/python -m agent.cli run \
+  --resume-run-id <run-uuid> \
+  --provider configured \
+  --publish
+```
+
+成功后 feedback 为 `pr_opened`，run 为 `completed`，二者保存相同 `pr_url`，Artifact
+新增 `publication.json`。固定分支为 `agent/feedback-<short-id>-<category>`；PR 正文只含
+结构化验证证据和 Trace URL，不含联系方式、完整 Markdown 或用户描述。Publisher 没有
+自动合并接口。
+
+## 8. 阶段 G 评估与生产 Scheduler
+
+Fake 离线评估不会访问模型、数据库、GitHub 或 Sandbox：
+
+```bash
+.venv/bin/python -m agent.evals.runner --provider fake
+```
+
+当前评估集包含 12 条表格、公式、标题、崩溃、后端规范化、前端、功能建议、无关、
+信息不足、Prompt Injection 和缺失输入用例。报告 Gate accuracy、automatable precision、
+Schema compliance、注入隔离召回/误报、Token、成本、延迟和 Oracle 覆盖率。真实模型
+Gate-only Dry Run 会产生模型费用并写 Langfuse，需显式执行：
+
+```bash
+.venv/bin/python -m agent.evals.runner --provider configured
+```
+
+生产 Scheduler 默认由 `PRODUCTION_SCHEDULER_ENABLED=false` 硬关闭。只有维护者完成真实
+PR 审核后，才把私有部署 Secret 改为 `true` 并使用：
+
+```bash
+.venv/bin/python -m agent.cli scheduler --once
+.venv/bin/python -m agent.cli scheduler --forever
+```
+
+Scheduler 每次优先恢复 checkpoint，再领取一条反馈，进程内并发固定为 1。开关只控制
+是否领取生产反馈；领取后仍自动执行 D→E→F，不增加逐条人工批准，也不自动合并或部署。
+
+## 9. 当前验收结果
 
 - 阶段 D Agent 178 passed（含真实 Docker 两项测试，无 skipped）；后端 44 passed；
 - 阶段 E 当前实现验收为 Agent 217 passed，其中真实 Docker 4 passed；后端固定镜像
   44 passed；真实 Provider/Supabase/Langfuse/GitHub/Sandbox 运行已得到修正后的
   `needs_human/external_dependency_required` 终态；
+- 阶段 F/G 本地实现覆盖验证失败/哈希不符/过期基线拒绝、合法 PR、幂等复用、最小 App
+  权限、发布失败保留 Artifact、同 run 发布重试、12 条 Fake 评估和默认关闭的生产
+  Scheduler；当前 Agent 全量（含 4 项 Docker 集成）249 passed，后端只读固定镜像
+  52 passed；
+  `deepseek-ai/DeepSeek-V4-Flash` 使用 `gate-v6/publication-policy-v3` 的 12 条真实评估达到
+  Gate accuracy、automatable precision、Schema compliance、注入召回均 100%，注入误报
+  0%；GitHub App 真实 JWT、单仓库安装和最小权限令牌预检已通过，真实 PR 和生产连续运行
+  仍需手工验收；
 - `gate-v2` 真实复测将“仅测试、不需要修复”路由为 `rejected_irrelevant`；
 - Prompt Injection 真实复测路由为 `quarantined_security`，`tool_calls=0`；
 - Langfuse 每次真实 Gate 包含 root Agent 和 `classify-intent` Generation，且抽查未发现
@@ -228,22 +317,27 @@ set +a
   `needs_human/external_dependency_required`。数据库记录 4 次模型、7 次工具、36,216
   tokens，并同时保存 `result.json`、`test.patch` 与 `repair-result.json`；阶段 E 真实
   服务终态验收完成；
+- 以上 Mermaid 转人工记录是依赖尚未获批时的历史证据。2026-08-12 维护者确认真实问题
+  可以引入审核后的依赖；当前 `publication-policy-v4/patch-policy-v2/fix-generation-v2`
+  已预装固定 Mermaid CLI + Chromium + 中文字体，删除 Mermaid 提前终止，并在无网络、
+  非 root、只读 Sandbox 中用中文流程图验证“旧基线 drawing 失败、接入后通过”。历史 run
+  不重开；平台变更合并部署后需提交新 feedback 执行真实 PR 验收；
 - 阶段 D 模型单次请求超时默认 180 秒（可在 30～300 秒内配置）；模型传输错误仍最多
   重试两次，退避为 1 秒和 4 秒；`/models` 返回 200 只代表网关
   在线，不能替代真实 Chat Completions 验收；
 - 维护者暂不填写模型单价，因此数据库成本验收仍为延后项。
 
-## 8. Docker 验收
+## 10. Docker 验收
 
 复测时先在 Docker Desktop 的 Settings → Resources → WSL Integration 中启用
 当前发行版，然后在仓库根目录执行：
 
 ```bash
 docker build -f agent/sandbox/Dockerfile \
-  -t mdtoword-sandbox:stage-d .
+  -t mdtoword-sandbox:mermaid .
 
 export SANDBOX_IMAGE_DIGEST="$(
-  docker image inspect --format '{{.Id}}' mdtoword-sandbox:stage-d
+  docker image inspect --format '{{.Id}}' mdtoword-sandbox:mermaid
 )"
 
 .venv/bin/python -m pytest \
@@ -258,12 +352,12 @@ Docker 生效且能从 Docker VM 访问的代理配置，或使用临时本地�
 或提交记录。构建完成后可检查镜像未固化代理变量：
 
 ```bash
-docker image inspect mdtoword-sandbox:stage-d \
+docker image inspect mdtoword-sandbox:mermaid \
   --format '{{json .Config.Env}}'
 ```
 
 结果必须是 `4 passed`，不能是 skipped。测试同时验证已知表格缺陷产生可信目标失败、
-Mermaid 受信回退模板在真实 pytest/JUnit 中产生 drawing 断言失败，
+Mermaid 受信回退模板先产生 drawing 断言失败，再用预装渲染器验证最小接入后通过，
 以及阶段 E 在三个独立容器中重新证明基线失败、修复后目标/全量/DOCX 通过和最终补丁
 哈希一致；同时验证容器无外网、无业务 Secret、
 非 root、只读根文件系统、能力清空、`no-new-privileges`、内存/CPU/PID/超时限制、同一

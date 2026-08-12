@@ -110,3 +110,45 @@ def test_scheduler_resumes_existing_gate_run_before_claiming_new_feedback():
 
     assert result == "resumed"
     assert controller.resumed == [resumable.id]
+
+
+def test_scheduler_resumes_publication_before_claiming_new_feedback():
+    """发布中断也必须优先恢复，不能越过旧 run 领取下一条反馈。"""
+
+    class RecordingController:
+        async def start(self, feedback):
+            raise AssertionError("new feedback must not be claimed first")
+
+        async def resume(self, run_id):
+            return run_id
+
+    async def scenario():
+        now = datetime.now(UTC)
+        feedback_repository = FakeFeedbackRepository([make_feedback(now)])
+        run_repository = FakeAgentRunRepository()
+        publishing = AgentRunRecord(
+            id=uuid4(),
+            feedback_id=uuid4(),
+            claim_token=uuid4(),
+            trace_id="trace-publishing-resume",
+            status=AgentRunStatus.PUBLISHING,
+            graph_version="agent-graph-v6",
+            prompt_versions={"gate": "gate-v3"},
+            policy_version="publication-policy-v1",
+            task_artifact_ref="artifact://run/task.redacted.json",
+            artifact_path="artifact://run",
+        )
+        await run_repository.create(publishing)
+        scheduler = FeedbackScheduler(
+            feedback_repository=feedback_repository,
+            run_repository=run_repository,
+            controller=RecordingController(),
+            lease_seconds=60,
+            max_attempts=3,
+        )
+        result = await scheduler.run_once()
+        return publishing.id, result
+
+    run_id, result = asyncio.run(scenario())
+
+    assert result == run_id

@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
@@ -18,6 +19,7 @@ from agent.domain.enums import (
     RiskLevel,
 )
 from agent.domain.gate import GateClassification
+from agent.domain.errors import PublicationError
 from agent.domain.models import FeedbackRecord
 from agent.domain.reproduction import (
     ExpectedFailureKind,
@@ -29,7 +31,15 @@ from agent.domain.reproduction import (
     TestGenerationResult as GeneratedTestResult,
 )
 from agent.domain.repair import FixGenerationResult
-from agent.graph import RepairDependencies, ReproductionDependencies
+from agent.graph import (
+    PublishingDependencies,
+    RepairDependencies,
+    ReproductionDependencies,
+)
+from agent.publishing.contracts import (
+    PublicationDisposition,
+    PublicationResult,
+)
 from agent.providers.fake import FakeModelProvider
 from agent.repositories.fake import FakeAgentRunRepository, FakeFeedbackRepository
 from agent.sandbox.contracts import (
@@ -57,6 +67,10 @@ class _SourceWorkspace:
         (root / "backend/tests").mkdir(parents=True)
         (root / "backend/app/normalizer.py").write_text(
             "def normalize(value: str) -> str:\n    return value\n",
+            encoding="utf-8",
+        )
+        (root / "backend/app/mermaid_renderer.py").write_text(
+            "def render_mermaid_blocks(markdown: str, work_dir):\n    return markdown\n",
             encoding="utf-8",
         )
         self.archive = root.parent / "source.tar.gz"
@@ -106,6 +120,50 @@ class _Sandbox:
                 target_message="expected three rows",
             ),
         )
+
+
+class _Publisher:
+    def __init__(self, disposition: PublicationDisposition) -> None:
+        self.disposition = disposition
+        self.requests = []
+
+    async def publish(self, request):
+        self.requests.append(request)
+        branch = f"agent/feedback-{str(request.feedback_id)[:8]}-table_parsing"
+        if self.disposition is PublicationDisposition.STALE_BASE:
+            return PublicationResult(
+                disposition=self.disposition,
+                branch=branch,
+            )
+        return PublicationResult(
+            disposition=self.disposition,
+            branch=branch,
+            commit_sha="f" * 40,
+            pr_number=17,
+            pr_url="https://github.com/example/md-to-word/pull/17",
+        )
+
+
+class _FailingPublisher:
+    def __init__(self) -> None:
+        self.requests = []
+
+    async def publish(self, request):
+        self.requests.append(request)
+        raise PublicationError("safe publication failure")
+
+
+class _RetryingPublisher(_Publisher):
+    def __init__(self) -> None:
+        super().__init__(PublicationDisposition.PR_OPENED)
+        self.attempts = 0
+
+    async def publish(self, request):
+        self.attempts += 1
+        if self.attempts == 1:
+            self.requests.append(request)
+            raise PublicationError("safe first publication failure")
+        return await super().publish(request)
 
 
 def _classification() -> GateClassification:
@@ -252,6 +310,9 @@ async def _run_stage_e(
     gate_classification: GateClassification | None = None,
     reproduction_plan: ReproductionPlan | None = None,
     generated_test: GeneratedTestResult | None = None,
+    publisher: _Publisher | _FailingPublisher | _RetryingPublisher | None = None,
+    capture_publication_error: bool = False,
+    runtime_capture: dict[str, object] | None = None,
 ):
     feedback = FeedbackRecord(
         id=FEEDBACK_ID,
@@ -288,8 +349,36 @@ async def _run_stage_e(
             fix_provider=fix_provider,
             max_model_calls=max_model_calls,
         ),
+        publishing=(
+            PublishingDependencies(
+                publisher=publisher,
+                trace_url_template="https://trace.example/{trace_id}",
+            )
+            if publisher is not None
+            else None
+        ),
     )
-    outcome = await controller.start(feedback)
+    if runtime_capture is not None:
+        runtime_capture.update(
+            {
+                "controller": controller,
+                "feedbacks": feedbacks,
+                "runs": runs,
+            }
+        )
+    try:
+        outcome = await controller.start(feedback)
+    except PublicationError as exc:
+        if not capture_publication_error:
+            raise
+        run_directories = list((tmp_path / "artifacts").iterdir())
+        assert len(run_directories) == 1
+        outcome = SimpleNamespace(
+            run_id=UUID(run_directories[0].name),
+            completed=False,
+            pr_url=None,
+            error=exc,
+        )
     return (
         outcome,
         await feedbacks.get(FEEDBACK_ID),
@@ -600,6 +689,136 @@ def test_stage_e_first_fix_is_independently_validated(tmp_path: Path) -> None:
     ]
 
 
+def test_stage_f_publishes_validated_patch_and_persists_pr_url(tmp_path: Path) -> None:
+    publisher = _Publisher(PublicationDisposition.PR_OPENED)
+    outcome, feedback, run, _, _, artifacts = asyncio.run(
+        _run_stage_e(
+            tmp_path,
+            [
+                TargetTestOutcome.FAILED,
+                TargetTestOutcome.PASSED,
+                TargetTestOutcome.FAILED,
+                TargetTestOutcome.PASSED,
+                TargetTestOutcome.PASSED,
+            ],
+            fixes=[_fix()],
+            publisher=publisher,
+        )
+    )
+
+    assert outcome.completed is True
+    assert outcome.pr_url == "https://github.com/example/md-to-word/pull/17"
+    assert feedback is not None and feedback.status is FeedbackStatus.PR_OPENED
+    assert feedback.pr_url == outcome.pr_url
+    assert run is not None and run.status is AgentRunStatus.COMPLETED
+    assert run.pr_url == outcome.pr_url
+    assert len(publisher.requests) == 1
+    assert publisher.requests[0].validation.passed is True
+    assert publisher.requests[0].validated_patch == artifacts.path_for(
+        outcome.run_id,
+        "validated.patch",
+    ).read_bytes()
+    assert artifacts.path_for(outcome.run_id, "publication.json").is_file()
+
+
+def test_stage_f_stale_base_requeues_feedback_once_without_pr(tmp_path: Path) -> None:
+    publisher = _Publisher(PublicationDisposition.STALE_BASE)
+    outcome, feedback, run, _, _, artifacts = asyncio.run(
+        _run_stage_e(
+            tmp_path,
+            [
+                TargetTestOutcome.FAILED,
+                TargetTestOutcome.PASSED,
+                TargetTestOutcome.FAILED,
+                TargetTestOutcome.PASSED,
+                TargetTestOutcome.PASSED,
+            ],
+            fixes=[_fix()],
+            publisher=publisher,
+        )
+    )
+
+    assert outcome.completed is False
+    assert feedback is not None and feedback.status is FeedbackStatus.PENDING
+    assert feedback.stale_requeue_count == 1
+    assert feedback.pr_url is None
+    assert run is not None and run.status is AgentRunStatus.STALE_BASE
+    assert run.error_code == "stale_base"
+    assert artifacts.path_for(outcome.run_id, "publication.json").is_file()
+
+
+def test_stage_g_fake_e2e_publication_failure_preserves_validated_artifacts(
+    tmp_path: Path,
+) -> None:
+    publisher = _FailingPublisher()
+    outcome, feedback, run, _, _, artifacts = asyncio.run(
+        _run_stage_e(
+            tmp_path,
+            [
+                TargetTestOutcome.FAILED,
+                TargetTestOutcome.PASSED,
+                TargetTestOutcome.FAILED,
+                TargetTestOutcome.PASSED,
+                TargetTestOutcome.PASSED,
+            ],
+            fixes=[_fix()],
+            publisher=publisher,
+            capture_publication_error=True,
+        )
+    )
+
+    assert isinstance(outcome.error, PublicationError)
+    assert feedback is not None and feedback.status is FeedbackStatus.FAILED
+    assert feedback.last_error_code == "publication_failed"
+    assert run is not None and run.status is AgentRunStatus.FAILED
+    assert run.error_code == "publication_failed"
+    assert run.validated_patch_sha256 is not None
+    assert artifacts.path_for(outcome.run_id, "validated.patch").is_file()
+    assert len(publisher.requests) == 1
+
+
+def test_stage_f_explicit_retry_reuses_validation_without_rerunning_sandbox(
+    tmp_path: Path,
+) -> None:
+    async def scenario():
+        publisher = _RetryingPublisher()
+        capture: dict[str, object] = {}
+        first, _, _, sandbox, _, _ = await _run_stage_e(
+            tmp_path,
+            [
+                TargetTestOutcome.FAILED,
+                TargetTestOutcome.PASSED,
+                TargetTestOutcome.FAILED,
+                TargetTestOutcome.PASSED,
+                TargetTestOutcome.PASSED,
+            ],
+            fixes=[_fix()],
+            publisher=publisher,
+            capture_publication_error=True,
+            runtime_capture=capture,
+        )
+        controller = capture["controller"]
+        resumed = await controller.resume(first.run_id)
+        feedbacks = capture["feedbacks"]
+        runs = capture["runs"]
+        return (
+            publisher,
+            resumed,
+            await feedbacks.get(FEEDBACK_ID),
+            await runs.get(first.run_id),
+            sandbox,
+        )
+
+    publisher, outcome, feedback, run, sandbox = asyncio.run(scenario())
+
+    assert outcome.completed is True
+    assert feedback is not None and feedback.status is FeedbackStatus.PR_OPENED
+    assert run is not None and run.status is AgentRunStatus.COMPLETED
+    assert run.pr_url == "https://github.com/example/md-to-word/pull/17"
+    assert publisher.attempts == 2
+    assert len(sandbox.jobs) == 5
+
+
 def test_stage_e_second_fix_uses_fresh_baseline_and_then_validates(tmp_path: Path) -> None:
     _, feedback, run, sandbox, fix_provider, _ = asyncio.run(
         _run_stage_e(
@@ -667,7 +886,7 @@ def test_stage_e_external_dependency_fix_goes_to_human_without_sandbox(
     assert len(sandbox.jobs) == 1
 
 
-def test_stage_e_reproduced_mermaid_routes_to_dependency_review_without_fix_model(
+def test_stage_e_reproduced_mermaid_uses_preinstalled_renderer_fix_path(
     tmp_path: Path,
 ) -> None:
     selector = "test_feedback_a257a846_mermaid_drawing"
@@ -708,8 +927,14 @@ def test_stage_e_reproduced_mermaid_routes_to_dependency_review_without_fix_mode
     outcome, feedback, run, sandbox, fix_provider, _ = asyncio.run(
         _run_stage_e(
             tmp_path,
-            [TargetTestOutcome.FAILED],
-            fixes=[],
+            [
+                TargetTestOutcome.FAILED,
+                TargetTestOutcome.PASSED,
+                TargetTestOutcome.FAILED,
+                TargetTestOutcome.PASSED,
+                TargetTestOutcome.PASSED,
+            ],
+            fixes=[_fix()],
             markdown="graph TD\nA([开始]) --> B([结束])",
             description="Word only contains Mermaid source instead of a drawing",
             gate_classification=GateClassification(
@@ -727,14 +952,16 @@ def test_stage_e_reproduced_mermaid_routes_to_dependency_review_without_fix_mode
     )
 
     assert outcome.completed is True
-    assert outcome.route is GateRoute.NEEDS_HUMAN
-    assert feedback is not None and feedback.status is FeedbackStatus.NEEDS_HUMAN
+    assert outcome.route is GateRoute.ACCEPTED_BACKEND_BUG
+    assert feedback is not None and feedback.status is FeedbackStatus.VALIDATED
     assert run is not None and run.status is AgentRunStatus.COMPLETED
     assert run.repair is not None
-    assert run.repair["disposition"] == "needs_human"
-    assert run.error_code == "external_dependency_required"
-    assert len(fix_provider.requests) == 0
-    assert len(sandbox.jobs) == 1
+    assert run.repair["disposition"] == "target_passed"
+    assert run.error_code is None
+    assert len(fix_provider.requests) == 1
+    assert len(sandbox.jobs) == 5
+    repair_context = fix_provider.requests[0].messages[-1].content
+    assert "backend/app/mermaid_renderer.py" in repair_context
 
 
 def test_stage_e_budget_exhaustion_blocks_model_and_sandbox_calls(tmp_path: Path) -> None:

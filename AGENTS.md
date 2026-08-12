@@ -36,6 +36,8 @@ MD To Word converts AI-generated Markdown into editable Word `.docx`.
   以 `.env.example` 为准；不得提交、记录或通过聊天传递任何密钥。
 - Fake Provider 是自动测试默认值。真实 Supabase、模型、Langfuse、GitHub 或沙箱调用
   只用于明确批准的手工集成验收，并使用可丢弃的测试数据。
+- 真实缺陷允许在维护者明确批准后增加平台依赖；必须固定版本、提交锁文件，并同步进入
+  生产与 Sandbox 镜像。Agent 生成的补丁仍不得修改依赖、Dockerfile 或受信平台模块。
 
 Agent 代码或权威设计文档变更后至少运行：
 

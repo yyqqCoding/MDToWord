@@ -43,6 +43,7 @@ class AgentState(BaseModel):
     fix_patch_ref: str | None = None
     repair_result_ref: str | None = None
     validation_result_ref: str | None = None
+    publication_result_ref: str | None = None
     fix_summary: str | None = Field(default=None, max_length=1000)
     fix_source_paths: tuple[str, ...] = ()
     reproduction_round: int = Field(default=0, ge=0)

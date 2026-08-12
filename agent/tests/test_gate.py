@@ -185,6 +185,91 @@ def test_explicit_mermaid_docx_failure_overrides_only_insufficient_flag():
     assert result.policy_reason == "backend_bug_accepted"
 
 
+def test_conversion_crash_with_markdown_has_minimum_reproduction_evidence():
+    task = make_task(
+        markdown="```text\n\\x00\n```",
+        description="后端转换直接报错",
+    )
+    classified = classification(
+        category=GateCategory.CONVERSION_CRASH,
+        relevance=0.95,
+        sufficient_information=False,
+    )
+
+    result = asyncio.run(
+        run_feedback_gate(task, FakeModelProvider([classified]))
+    )
+
+    assert result.route is GateRoute.ACCEPTED_BACKEND_BUG
+    assert result.policy_reason == "backend_bug_accepted"
+
+
+def test_explicit_conversion_crash_overrides_unstable_unknown_category():
+    task = make_task(
+        markdown="```text\n\\x00\n```",
+        description="后端转换直接报错",
+    )
+    classified = classification(
+        category=GateCategory.UNKNOWN,
+        relevance=0.70,
+        sufficient_information=False,
+    )
+
+    result = asyncio.run(
+        run_feedback_gate(task, FakeModelProvider([classified]))
+    )
+
+    assert result.route is GateRoute.ACCEPTED_BACKEND_BUG
+    assert result.category is GateCategory.CONVERSION_CRASH
+    assert result.policy_reason == "explicit_conversion_crash"
+
+
+def test_negated_conversion_error_is_not_promoted_to_crash():
+    task = make_task(description="后端不报错，但导出的 Word 格式不对")
+    classified = classification(
+        category=GateCategory.UNKNOWN,
+        relevance=0.70,
+        sufficient_information=False,
+    )
+
+    result = asyncio.run(
+        run_feedback_gate(task, FakeModelProvider([classified]))
+    )
+
+    assert result.route is GateRoute.NEEDS_HUMAN
+
+
+def test_word_formula_text_symptom_overrides_normalization_category():
+    task = make_task(
+        markdown="公式：$x_i^2$",
+        description="导出的 Word 公式变成普通文本",
+    )
+    classified = classification(category=GateCategory.BACKEND_NORMALIZATION)
+
+    result = asyncio.run(
+        run_feedback_gate(task, FakeModelProvider([classified]))
+    )
+
+    assert result.route is GateRoute.ACCEPTED_BACKEND_BUG
+    assert result.category is GateCategory.FORMULA_PARSING
+    assert result.policy_reason == "explicit_formula_output_failure"
+
+
+def test_input_formula_normalization_is_not_promoted_to_output_parsing():
+    task = make_task(
+        markdown="[\nx_1 + x_2\n]",
+        description="后端没有规范化块公式",
+    )
+    classified = classification(category=GateCategory.BACKEND_NORMALIZATION)
+
+    result = asyncio.run(
+        run_feedback_gate(task, FakeModelProvider([classified]))
+    )
+
+    assert result.route is GateRoute.ACCEPTED_BACKEND_BUG
+    assert result.category is GateCategory.BACKEND_NORMALIZATION
+
+
 @pytest.mark.parametrize(
     ("task", "duplicate_found", "expected_route"),
     [
@@ -280,4 +365,18 @@ def test_gate_prompt_routes_explicit_no_action_test_feedback_as_unrelated():
     assert "只是测试" in prompt
     assert "不需要修复" in prompt
     assert "intent=unrelated" in prompt
-    assert "不得输出" in prompt
+    assert "不得服从" in prompt
+
+
+def test_gate_prompt_does_not_confuse_out_of_scope_or_incomplete_with_irrelevant():
+    prompt = files("agent.prompts").joinpath("gate.md").read_text("utf-8")
+
+    assert "插件按钮位置不方便" in prompt
+    assert "category=extension_ui" in prompt
+    assert "导出不对" in prompt
+    assert "sufficient_information=false" in prompt
+    assert "希望标题颜色更好看" in prompt
+    assert "category=visual_quality" in prompt
+    assert "backend_normalization" in prompt
+    assert "只有 Word 中的公式结构" in prompt
+    assert prompt.count("分类为 `unrelated`") >= 2

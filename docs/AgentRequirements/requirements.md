@@ -78,7 +78,7 @@ MVP 自动处理：
 - `feature_request`
 - `visual_quality`
 - 不能构造确定性断言的主观排版问题
-- 需要依赖、部署、数据库、工作流或安全策略变更的问题
+- 需要尚未预装或未经维护者审核的依赖、部署、数据库、工作流或安全策略变更的问题
 - 无法在当前 `base_sha` 上复现的问题
 
 `requires_extension_change` 与 `extension_sync_required` 含义不同：
@@ -89,8 +89,10 @@ MVP 自动处理：
   但维护者以后可能需要关注扩展同步。
 
 用户预览正确而后端导出报错或 DOCX 结构错误时属于后端缺陷，允许只修改后端。
-导出 Word 把 Mermaid、流程图等源码保留为普通文本也按后端 `docx_structure` 分类；
-具体修复若最终需要新增依赖或部署变更，仍由后续 Policy 转人工，不得误归为扩展问题。
+导出 Word 把 Mermaid、流程图等源码保留为普通文本也按后端 `docx_structure` 分类。
+维护者已审核并在生产/Sandbox 镜像预装的 Mermaid 渲染能力可以用于自动修复；模型仍
+不能自行安装依赖或修改部署文件。需要新的、尚未审核的平台能力时才由后续 Policy 转
+人工，不得误归为扩展问题。
 Agent 始终不得修改 `extension/`。
 
 ## 4. 正确性标准

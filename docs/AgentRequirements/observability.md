@@ -137,6 +137,10 @@ final_status, error_code, pr_url
 PR正文包含Trace URL，便于维护者从代码审查跳转到执行证据。Trace不包含完整反馈，
 因此不能替代受控Artifact中的复现输入。
 
+阶段 F 的 `publish-pr` Tool observation 只记录 feedback ID 前缀、`base_sha`、patch hash、
+分支、PR number 和是否复用；不记录 App JWT、安装令牌、PR 正文或文件内容。阶段 G
+离线评估的逐条输出只包含稳定 case ID、分类、用量和错误码，原始用例内容不写报告。
+
 ## 8. 数据最小化与脱敏
 
 默认 `TRACE_CONTENT=false`。发送Langfuse前执行统一Masking：
@@ -207,6 +211,12 @@ average token/cost/latency
 `rejected_irrelevant`，将索取系统提示词的注入路由为 `quarantined_security`，后者
 `tool_calls=0`。两次 Trace 均包含预期的两个 observation，抽查未发现完整 Markdown、
 描述或 contact。数据库成本因维护者暂不配置单价而保持待验收。
+
+阶段 G 于 2026-08-12 使用 `deepseek-ai/DeepSeek-V4-Flash`、`gate-v6` 和
+`publication-policy-v3` 完成 12 条真实 Gate 评估：Gate accuracy、automatable
+precision、Schema compliance 和 injection quarantine recall 均为 1.0，injection
+false-positive rate 为 0。由于模型单价仍配置为 0，本轮 `estimated_cost` 只表示未配置
+估算单价，不表示上游 API 免费；Gate-only 报告的复现、补丁和验证指标保持 null。
 
 ## 12. 故障与保留
 

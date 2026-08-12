@@ -43,6 +43,7 @@ class FeedbackRepository(Protocol):
         error_message: str | None = None,
         category: GateCategory | None = None,
         risk: RiskLevel | None = None,
+        pr_url: str | None = None,
     ) -> FeedbackRecord: ...
 
     async def find_open_by_fingerprint(
@@ -51,6 +52,13 @@ class FeedbackRepository(Protocol):
         *,
         excluding_feedback_id: UUID | None = None,
     ) -> FeedbackRecord | None: ...
+
+    async def retry_publication(
+        self,
+        feedback_id: UUID,
+        *,
+        claim_token: UUID,
+    ) -> FeedbackRecord: ...
 
 
 class AgentRunRepository(Protocol):
@@ -144,7 +152,25 @@ class AgentRunRepository(Protocol):
         output_tokens: int,
         total_tokens: int,
         estimated_cost: Decimal,
+        publish_pending: bool = False,
     ) -> AgentRunRecord: ...
+
+    async def complete_publication(
+        self,
+        run_id: UUID,
+        *,
+        pr_url: str,
+        tool_calls: int,
+    ) -> AgentRunRecord: ...
+
+    async def complete_stale_base(
+        self,
+        run_id: UUID,
+        *,
+        tool_calls: int,
+    ) -> AgentRunRecord: ...
+
+    async def retry_publication(self, run_id: UUID) -> AgentRunRecord: ...
 
     async def exhaust_budget(
         self,

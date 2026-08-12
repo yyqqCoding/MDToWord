@@ -219,6 +219,9 @@ __marimo__/
 .streamlit/secrets.toml
 /AGENTS.md
 
+# Agent 本地评估输出可能包含模型/运行元数据，不进入版本库。
+/tmp*.txt
+
 # Project docs (local only)
 docs/*
 !docs/AgentRequirements/

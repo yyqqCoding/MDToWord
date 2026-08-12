@@ -126,3 +126,17 @@ class CheckpointConfigurationError(AgentError):
 
 class BudgetExceededError(AgentError):
     error_code = "budget_exhausted"
+
+
+class PublicationError(AgentError):
+    """GitHub 发布失败的稳定边界；消息不得包含令牌、响应正文或用户内容。"""
+
+    error_code = "publication_failed"
+
+
+class PublicationAuthenticationError(PublicationError):
+    error_code = "publication_auth_error"
+
+
+class PublicationConflictError(PublicationError):
+    error_code = "publication_conflict"

@@ -43,6 +43,9 @@ GitHub 发布、数据库更新、Trace 写入和状态转换不作为模型工�
 约束：路径必须是仓库相对路径且通过读取白名单；拒绝绝对路径、`..`、符号链接、
 隐藏密钥文件和超限范围。
 
+`backend/app/mermaid_renderer.py` 是只读平台能力说明，不在任何写入白名单中。模型不能
+把可执行程序、浏览器参数、环境变量或配置路径作为工具参数。
+
 ### 2.3 `submit_test_edits`
 
 用途：提交回归测试结构化编辑，由 Workspace 生成 `test.patch`。
@@ -252,6 +255,25 @@ failure_summary: string?
 `passed=true` 必须由 Controller 根据所有子结果计算，不能由模型或 Worker 直接提供。
 执行完成后生成的 workspace diff 必须与 test/fix patch 的授权组合一致，否则结果为
 `security_rejected`。
+
+## 8.1 发布契约
+
+Publisher 输入由 Controller 从 `ValidationResult`、`validated.patch` 和固定源码快照
+重新构造，结构上不包含原始 Markdown、description 或 contact：
+
+```text
+PublicationRequest
+  feedback_id
+  validation
+  validated_patch
+  files(path, content|null)
+  evidence(category, risk, versions, usage, trace_url)
+```
+
+进入 GitHub 前必须同时满足：`validation.passed=true`、补丁内容 SHA-256 与
+`validated_patch_sha256` 一致、重新应用后文件集合与 `changed_files` 一致、所有路径仍
+通过 Patch Policy。输出仅有 `pr_opened` 或 `stale_base`；前者必须含 branch、commit SHA、
+PR number/URL，后者不得含任何 GitHub 写入结果。Publisher 不暴露 merge 方法。
 
 ## 9. 复现判定
 

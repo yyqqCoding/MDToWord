@@ -13,6 +13,7 @@ from agent.domain.reproduction import (
     ReproductionPlan,
 )
 from agent.domain.repair import RepairAttemptArtifact, ValidationResult
+from agent.publishing.contracts import PublicationResult
 
 
 _SAFE_SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -32,6 +33,7 @@ _KNOWN_ARTIFACTS = frozenset(
         "reproduction-junit.xml",
         "validation-junit.xml",
         "validation.json",
+        "publication.json",
         "result.json",
     }
 )
@@ -161,6 +163,16 @@ class ArtifactStore:
 
     def read_validation(self, reference: str) -> ValidationResult:
         return ValidationResult.model_validate_json(self._read_reference(reference))
+
+    def write_publication_ref(
+        self,
+        run_id: UUID | str,
+        result: PublicationResult,
+    ) -> str:
+        return self._write_model_ref(run_id, "publication.json", result)
+
+    def read_publication(self, reference: str) -> PublicationResult:
+        return PublicationResult.model_validate_json(self._read_reference(reference))
 
     def ref_for(self, run_id: UUID | str, filename: str) -> str:
         # 先通过 path_for 完成同一套白名单校验，再生成不暴露主机路径的稳定引用。
