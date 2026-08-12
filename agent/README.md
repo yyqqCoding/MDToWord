@@ -233,7 +233,9 @@ Trace 或日志。首次发布前可只校验 App 安装和权限，不创建 Gi
 成功后 feedback 为 `pr_opened`，run 为 `completed`，二者保存相同 `pr_url`，Artifact
 新增 `publication.json`。固定分支为 `agent/feedback-<short-id>-<category>`；PR 正文只含
 结构化验证证据和 Trace URL，不含联系方式、完整 Markdown 或用户描述。Publisher 没有
-自动合并接口。
+自动合并接口。CLI 的 `completed` 只表示 Graph 已到终态；真实发布成功必须同时满足
+`published=true`、`error_code=null` 且 `pr_url` 非空，失败终态会在 `status` 和
+`error_code` 中明确返回。
 
 ## 8. 阶段 G 评估与生产 Scheduler
 
@@ -271,7 +273,7 @@ Scheduler 每次优先恢复 checkpoint，再领取一条反馈，进程内并�
   `needs_human/external_dependency_required` 终态；
 - 阶段 F/G 本地实现覆盖验证失败/哈希不符/过期基线拒绝、合法 PR、幂等复用、最小 App
   权限、发布失败保留 Artifact、同 run 发布重试、12 条 Fake 评估和默认关闭的生产
-  Scheduler；当前 Agent 全量（含 4 项 Docker 集成）249 passed，后端只读固定镜像
+  Scheduler；当前 Agent 全量（含 4 项 Docker 集成）256 passed，后端只读固定镜像
   52 passed；
   `deepseek-ai/DeepSeek-V4-Flash` 使用 `gate-v6/publication-policy-v3` 的 12 条真实评估达到
   Gate accuracy、automatable precision、Schema compliance、注入召回均 100%，注入误报
@@ -322,6 +324,18 @@ Scheduler 每次优先恢复 checkpoint，再领取一条反馈，进程内并�
   已预装固定 Mermaid CLI + Chromium + 中文字体，删除 Mermaid 提前终止，并在无网络、
   非 root、只读 Sandbox 中用中文流程图验证“旧基线 drawing 失败、接入后通过”。历史 run
   不重开；平台变更合并部署后需提交新 feedback 执行真实 PR 验收；
+- 第一条平台合并后的真实发布 run `878a75c3-...` 正确复现 drawing 缺失，但修复模型只
+  读取 `pandoc_runner.py` 前 50 行，两轮结构化 Edit 均未通过本地应用，以
+  `invalid_fix_edit` 安全终止且未创建 GitHub 资源；旧 Artifact 没有保存 Edit，不能据此
+  推断更具体的失败类型。`agent-graph-v7/publication-policy-v5/fix-generation-v3` 因此在
+  修复阶段读取完整可编辑源文件、允许同一修复文件按序执行多个 `search_replace`，并把
+  受信本地编辑失败原因交给下一轮；CLI 同时显式输出终态、错误码和是否已发布；
+- 后续 run `f11032d7-...` 已生成并独立验证 Mermaid 修复，但 PR 正文隐私扫描把补丁
+  SHA `04024526609...` 的纯数字前缀误判为电话号码，导致固定分支创建后以
+  `publication_failed` 终止。Publisher 现仅对不含 contact/原始反馈的结构化元数据关闭
+  电话规则，邮箱、Bearer 和 Secret 赋值扫描继续生效；同 run 幂等恢复后已成功创建
+  [PR #1](https://github.com/yyqqCoding/MDToWord/pull/1)，数据库 feedback=`pr_opened`、
+  run=`completed`，二者保存相同 PR URL，Artifact 包含 `publication.json`；
 - 阶段 D 模型单次请求超时默认 180 秒（可在 30～300 秒内配置）；模型传输错误仍最多
   重试两次，退避为 1 秒和 4 秒；`/models` 返回 200 只代表网关
   在线，不能替代真实 Chat Completions 验收；

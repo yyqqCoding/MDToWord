@@ -11,7 +11,8 @@ from pathlib import Path
 
 MAX_DIAGRAMS = 5
 MAX_SOURCE_BYTES = 20_000
-RENDER_TIMEOUT_SECONDS = 20
+# Render 的低 CPU 实例首次启动 Chromium 波动较大；保留明确上限并为完整转换链路留出余量。
+RENDER_TIMEOUT_SECONDS = 120
 PUPPETEER_CONFIG_PATH = Path("/opt/mdtoword/puppeteer-config.json")
 MERMAID_CONFIG_PATH = Path("/opt/mdtoword/mermaid-config.json")
 

@@ -148,6 +148,9 @@ async def _execute(args: argparse.Namespace) -> int:
                     if outcome is not None and outcome.route is not None
                     else None
                 ),
+                "run_status": outcome.status.value if outcome is not None else None,
+                "error_code": outcome.error_code if outcome is not None else None,
+                "published": outcome.pr_url is not None if outcome is not None else False,
                 "pr_url": outcome.pr_url if outcome is not None else None,
             }
         )
@@ -169,6 +172,9 @@ async def _execute(args: argparse.Namespace) -> int:
             "feedback_id": str(result.feedback_id),
             "route": result.route.value if result.route else None,
             "completed": result.completed,
+            "status": result.status.value,
+            "error_code": result.error_code,
+            "published": result.pr_url is not None,
             "dry_run": not args.publish,
             "provider": args.provider,
             "pr_url": result.pr_url,

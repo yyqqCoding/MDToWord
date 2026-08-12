@@ -9,6 +9,11 @@
 - 平台已预装并审核 `app.mermaid_renderer.render_mermaid_blocks(markdown, work_dir)`；
   Mermaid drawing 回归可在 `pandoc_runner.py` 中调用它，并将 `MermaidRenderError` 转换为
   现有 `ConversionError`。不得修改该受信模块，也不得自行调用 mmdc、Chromium 或 subprocess。
+- `source_files` 是固定 `base_sha` 的精确源码；`search_replace.search` 必须逐字复制其中唯一
+  存在的完整片段，不能根据未展示代码猜测。若上一轮为 `invalid_fix_edit`，必须按
+  `previous_repair_report.failure_summary` 修正 search、语法或重复编辑问题。
+- 同一修复文件可提交多个 `search_replace`，系统会按 `edits` 顺序应用；每个 search 必须
+  在前序 Edit 应用后的文件中恰好匹配一次。不得对修复文件使用 `full_file`。
 - 修复应最小化，并保持 Markdown 到 DOCX 现有兼容行为。
 - Edit 的 search、replace、content 以及其他可空字段都必须输出；未使用字段填写 null。
 - extension_sync_required 必须为 false；risk_level 只用于人工审查，不改变安全 Policy。

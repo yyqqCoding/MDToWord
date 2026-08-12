@@ -108,7 +108,9 @@ backend/tests/fixtures/feedback/**/*
 依赖与部署文件仍不在自动修改白名单内。维护者可以为已确认的真实缺陷手工审核并预装
 平台依赖，但必须固定版本、同时更新生产与 Sandbox 镜像并先完成真实容器验证。当前
 Mermaid 能力固定为本地 `mmdc + Chromium -> PNG`：最多 5 图、单图源码 20,000 UTF-8
-字节、单图 20 秒，禁止外链、HTML、click 和运行时初始化配置；任务容器保持无网络。
+字节、单图 120 秒，禁止外链、HTML、click 和运行时初始化配置；任务容器保持无网络。
+Render `0.1 CPU / 512 MiB` 下完整转换链路的 Chromium 冷启动可能超过 75 秒，因此保留
+明确但足够的 120 秒受信子进程硬上限。
 `mermaid_renderer.py` 可读不可写，模型只能在 `pandoc_runner.py` 接入它公开的受信函数。
 
 明确禁止：

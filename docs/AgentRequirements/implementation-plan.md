@@ -795,19 +795,32 @@ Cloud，使真实 Gate 调用具备严格结构化输出、有限重试、真实
   但模型不能自行修改依赖或部署。平台现固定 `@mermaid-js/mermaid-cli 11.16.0`、
   `puppeteer 24.43.1`、系统 Chromium 和中文字体，并用同一锁文件构建生产/Sandbox。
   `app.mermaid_renderer` 只接受源码与工作目录，使用固定 argv/配置和去 Secret 环境，限制
-  5 图、单图 20,000 UTF-8 字节及 20 秒，拒绝外链、HTML、click 和 init 配置；Sandbox
+  5 图、单图 20,000 UTF-8 字节及 120 秒，拒绝外链、HTML、click 和 init 配置；Sandbox
   仍无网络、非 root、只读根文件系统。旧 run 继续保留历史终态，不回写数据库。
 - `publication-policy-v4/patch-policy-v2/fix-generation-v2` 删除 Mermaid 的确定性人工终止，
   改为向修复模型额外提供只读受信 API；渲染器、依赖清单和 Dockerfile 仍不可编辑，
   未预装的新依赖仍按 `external_dependency_required` 转人工。真实 Docker 已用中文流程图
   证明旧基线 drawing 断言失败、最小 `pandoc_runner.py` 接入后同一断言通过；第一条真实
   Agent PR 仍需在平台变更合并部署后用新 feedback 执行，不能复用历史终态 run。
+- 平台合并后的真实 run `878a75c3-...` 已证明 Gate 与 drawing 复现有效，但模型只取得
+  `pandoc_runner.py` 的 1～50 行片段，两轮结构化 Edit 均未通过本地应用，终态为
+  `failed/invalid_fix_edit` 且没有 PR；旧 Artifact 未保存 Edit，不能进一步断定具体原因。
+  `agent-graph-v7/publication-policy-v5/fix-generation-v3` 改为读取完整可编辑固定快照，
+  允许同一修复文件按序执行多个 `search_replace`，并仅将受信校验器的稳定失败原因传给
+  第二轮；不回显模型 Edit、用户内容或源码到 CLI/日志。
+- 新 run `f11032d7-...` 已产生 `validation.passed=true` 的 Mermaid 补丁；首次发布成功创建
+  固定分支，但通用电话脱敏规则把合法补丁 SHA 的数字前缀误判为联系方式，在 PR 请求前
+  以 `publication_failed` 终止。PR 正文输入契约本身不含 contact、description 或 Markdown，
+  因此 Publisher 对该结构化机器元数据关闭电话匹配，继续拦截邮箱、Bearer 与 Secret
+  赋值，并保留同 run 幂等恢复。修复后同 run 已创建
+  [PR #1](https://github.com/yyqqCoding/MDToWord/pull/1)；feedback=`pr_opened`、
+  run=`completed`、`error_code=null`，数据库、GitHub 分支和 `publication.json` 一致。
 
 ### 阶段 F 实施检查点
 
-**状态：实现完成；真实 GitHub App/PR 验收待执行（2026-08-11）**
+**状态：实现与真实 GitHub App/PR 验收完成（2026-08-12）**
 
-- `agent-graph-v6/publication-policy-v3` 只在 `ValidationResult.passed=true` 后进入
+- `agent-graph-v7/publication-policy-v5` 只在 `ValidationResult.passed=true` 后进入
   `publishing`；Publisher 重新应用 `validated.patch` 并核对内容哈希、变更文件集合和
   Patch Policy，不接受模型提供的发布凭据；
 - GitHub App 使用 `PyJWT[crypto]` 在进程内签发 App JWT，再申请只限当前仓库、只含
@@ -826,7 +839,8 @@ Cloud，使真实 Gate 调用具备严格结构化输出、有限重试、真实
   Bearer 和 Secret/Token 赋值模式，不拼接 description、Markdown 或 contact；
 - `005_publication_runtime.sql` 仅重建可恢复索引并加入 `publishing`，不自动执行数据库
   迁移。CLI 只有显式 `--publish --provider configured` 才允许真实 GitHub 写入，且禁止
-  与 `--dry-run` 同用。
+  与 `--dry-run` 同用；输出中的 `completed` 只表示 Graph 终结，必须以
+  `published=true/error_code=null/pr_url!=null` 判断 PR 发布成功。
 
 ### 阶段 G 实施检查点
 
@@ -858,7 +872,7 @@ Cloud，使真实 Gate 调用具备严格结构化输出、有限重试、真实
 | C 源码工具与Docker Worker | Implemented | 2026-08-11 | Agent 135 passed；Docker 集成 1 passed；Backend 42 passed |
 | D 自动复现 | Implemented | 2026-08-11 | Agent 178 passed；Docker 2 passed；Backend 44 passed；真实 Mermaid 反馈在固定 SHA 上产生目标断言失败并进入 `repairing/reproduced` |
 | E 修复与独立验证 | Implemented | 2026-08-11；Mermaid 平台能力更新 2026-08-12 | 历史 Agent 217 passed/Docker 4 passed/Backend 44 passed；真实旧 run 安全转人工；当前固定本地渲染器已通过中文流程图 Docker 的“基线失败 -> 修复通过”验证，待新 feedback 生成真实 PR |
-| F GitHub PR | 进行中（App 预检完成，真实 PR 待执行） | - | 当前 Agent 全量 249 passed（Docker 4 项、无 skipped）、Backend 52 passed；真实 App JWT/单仓库安装/最小权限令牌通过；固定分支/提交/PR、幂等与同 run 重试均有自动回归；待真实可修复反馈 PR |
-| G 评估与投产 | 进行中（真实模型评估完成，投产验收待执行） | - | 同一 Agent 249 passed；12 条真实 Gate 评估核心路由/安全指标通过，Fake 发布 E2E、生产开关与单并发 Scheduler 已覆盖；待 Review、部署回放及连续运行 |
+| F GitHub PR | Implemented（真实 PR 待人工 Review） | 2026-08-12 | 当前 Agent 全量 256 passed（Docker 4 项、无 skipped）、Backend 52 passed；真实 App 最小权限预检通过；run `f11032d7-...` 的 validated patch 经幂等恢复创建 PR #1，数据库与 Artifact 一致；待人工 Review |
+| G 评估与投产 | 进行中（真实模型评估完成，投产验收待执行） | - | 同一 Agent 256 passed；12 条真实 Gate 评估核心路由/安全指标通过，Fake 发布 E2E、生产开关与单并发 Scheduler 已覆盖；待 Review、部署回放及连续运行 |
 
 状态只在完成对应验收后更新。已有代码不因存在文件或历史提交自动视为通过。

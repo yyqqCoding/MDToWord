@@ -79,6 +79,55 @@ def test_fix_edit_can_only_change_registered_backend_source(tmp_path: Path):
     assert result.changed_files == ("backend/app/normalizer.py",)
 
 
+def test_fix_allows_ordered_search_replacements_in_the_same_file(tmp_path: Path):
+    result = PatchBuilder(PatchPolicy.load_default()).build(
+        _snapshot(tmp_path),
+        (
+            Edit(
+                path="backend/app/pandoc_runner.py",
+                mode=EditMode.SEARCH_REPLACE,
+                search="def convert(text):\n",
+                replace="def convert_markdown(text):\n",
+            ),
+            Edit(
+                path="backend/app/pandoc_runner.py",
+                mode=EditMode.SEARCH_REPLACE,
+                search="    return text\n",
+                replace="    return text.strip()\n",
+            ),
+        ),
+        EditPhase.FIX,
+    )
+
+    assert result.changed_files == ("backend/app/pandoc_runner.py",)
+    assert b"def convert_markdown" in result.content
+    assert b"return text.strip()" in result.content
+
+
+def test_multiple_edits_cannot_mix_full_file_replacement(tmp_path: Path):
+    with pytest.raises(InvalidEditError):
+        PatchBuilder(PatchPolicy.load_default()).build(
+            _snapshot(tmp_path),
+            (
+                Edit(
+                    path="backend/tests/test_feedback_regressions.py",
+                    mode=EditMode.FULL_FILE,
+                    content=(
+                        "def test_existing():\n    assert True\n\n"
+                        "def test_feedback_ab12cd_table():\n    assert False\n"
+                    ),
+                ),
+                Edit(
+                    path="backend/tests/test_feedback_regressions.py",
+                    mode=EditMode.SEARCH_REPLACE,
+                    search="assert False",
+                    replace="assert 1 == 0",
+                ),
+            ),
+            EditPhase.TEST,
+        )
+
+
 def test_trusted_mermaid_renderer_is_readable_but_not_editable(tmp_path: Path):
     policy = PatchPolicy.load_default()
 

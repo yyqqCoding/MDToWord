@@ -85,8 +85,24 @@ class PatchBuilder:
         if not edits:
             raise InvalidEditError("at least one edit is required")
         paths = [self._policy.authorize_write(edit.path, phase.value) for edit in edits]
-        if len(set(paths)) != len(paths):
-            raise InvalidEditError("multiple edits for the same file are not allowed")
+        duplicate_paths = {
+            path for path, count in Counter(paths).items() if count > 1
+        }
+        if duplicate_paths:
+            # 修复常需在同一模块分别改 import 与调用点；按模型给定顺序应用，并继续对最终
+            # diff 做语法、能力和规模校验。测试编辑及 full-file 混用仍保持单文件单编辑。
+            duplicate_edits = [
+                edit
+                for edit, path in zip(edits, paths, strict=True)
+                if path in duplicate_paths
+            ]
+            if phase is not EditPhase.FIX or any(
+                edit.mode is not EditMode.SEARCH_REPLACE
+                for edit in duplicate_edits
+            ):
+                raise InvalidEditError(
+                    "multiple edits for one file require ordered fix search_replace"
+                )
 
         root = snapshot_root.resolve(strict=True)
         _reject_symlinks(root)

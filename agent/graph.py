@@ -72,12 +72,13 @@ from agent.domain.reproduction import (
     ReproductionAttemptArtifact,
     ReproductionDisposition,
     ReproductionReport,
+    SourceReadRequest,
     classify_reproduction_result,
 )
 
 
-GRAPH_VERSION = "agent-graph-v6"
-POLICY_VERSION = "publication-policy-v4"
+GRAPH_VERSION = "agent-graph-v7"
+POLICY_VERSION = "publication-policy-v5"
 
 _ROUTE_TO_FEEDBACK_STATUS = {
     GateRoute.ACCEPTED_BACKEND_BUG: FeedbackStatus.REPRODUCING,
@@ -724,8 +725,7 @@ def build_gate_graph(
             source_files = []
             for path in requested_paths:
                 request = ranges.get(path)
-                start_line = request.start_line if request else 1
-                end_line = request.end_line if request else 1000
+                start_line, end_line = _fix_source_line_range(path, request)
                 with repair.telemetry.start_tool(
                     ToolTrace(
                         operation="read-fix-source-file",
@@ -862,10 +862,10 @@ def build_gate_graph(
                             else "invalid_fix_edit"
                         )
                     ),
-                    failure_summary=(
-                        "generated fix requires an external dependency or deployment change"
-                        if needs_human
-                        else "generated fix edit was rejected by local policy"
+                    failure_summary=_fix_edit_failure_summary(
+                        edit_error,
+                        needs_human=needs_human,
+                        security=security,
                     ),
                 )
                 attempt = _synthetic_repair_attempt(
@@ -1687,6 +1687,40 @@ def _sandbox_summary(result: SandboxResult) -> dict[str, object]:
             else None
         ),
     }
+
+
+def _fix_source_line_range(
+    path: str,
+    request: SourceReadRequest | None,
+) -> tuple[int, int]:
+    """修复编辑必须看到固定快照中的完整目标，避免依据文件头猜测 search 文本。"""
+
+    if path in {
+        "backend/app/normalizer.py",
+        "backend/app/pandoc_runner.py",
+        "backend/app/mermaid_renderer.py",
+    }:
+        return 1, 1000
+    if request is None:
+        return 1, 1000
+    return request.start_line, request.end_line
+
+
+def _fix_edit_failure_summary(
+    error: Exception,
+    *,
+    needs_human: bool,
+    security: bool,
+) -> str:
+    """仅把受信本地校验器的稳定原因交给下一轮，不回显模型编辑或源码。"""
+
+    if needs_human:
+        return "generated fix requires an external dependency or deployment change"
+    if security:
+        return "generated fix edit violates patch policy"
+    if isinstance(error, InvalidEditError):
+        return f"generated fix edit was rejected: {error}"
+    return "generated fix edit was rejected by local policy"
 
 
 def _synthetic_repair_attempt(

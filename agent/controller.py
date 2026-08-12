@@ -41,6 +41,8 @@ class GateRunOutcome:
     feedback_id: UUID
     route: GateRoute | None
     completed: bool
+    status: AgentRunStatus
+    error_code: str | None = None
     pr_url: str | None = None
 
 
@@ -432,6 +434,8 @@ def _outcome_from_state(state: AgentState) -> GateRunOutcome:
         feedback_id=state.feedback_id,
         route=GateRoute(state.route) if state.route else None,
         completed=state.status is AgentRunStatus.COMPLETED,
+        status=state.status,
+        error_code=state.last_error_code,
         pr_url=state.pr_url,
     )
 
@@ -442,5 +446,7 @@ def _outcome_from_run(run: AgentRunRecord) -> GateRunOutcome:
         feedback_id=run.feedback_id,
         route=run.route,
         completed=run.status is AgentRunStatus.COMPLETED,
+        status=run.status,
+        error_code=run.error_code,
         pr_url=run.pr_url,
     )

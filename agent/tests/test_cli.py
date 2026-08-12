@@ -2,7 +2,8 @@ import json
 from uuid import uuid4
 
 from agent.cli import fake_classification_for_route, main
-from agent.domain.enums import GateRoute
+from agent.controller import GateRunOutcome
+from agent.domain.enums import AgentRunStatus, GateRoute
 
 
 def test_b2_cli_rejects_non_dry_run_before_loading_configuration(capsys):
@@ -152,3 +153,47 @@ def test_configured_provider_validates_secrets_before_claiming_feedback(
     assert "supabase-secret" not in output
     assert "database-secret" not in output
     assert "model-secret" not in output
+
+
+def test_publish_cli_reports_terminal_failure_instead_of_implying_success(
+    monkeypatch,
+    capsys,
+):
+    feedback_id = uuid4()
+    run_id = uuid4()
+
+    async def fake_run(*args, **kwargs):
+        del args, kwargs
+        return GateRunOutcome(
+            run_id=run_id,
+            feedback_id=feedback_id,
+            route=GateRoute.ACCEPTED_BACKEND_BUG,
+            completed=True,
+            pr_url=None,
+            status=AgentRunStatus.COMPLETED,
+            error_code="invalid_fix_edit",
+        )
+
+    monkeypatch.setattr(
+        "agent.cli.AgentConfig.from_env",
+        lambda: object(),
+    )
+    monkeypatch.setattr("agent.cli._run_dry_gate", fake_run)
+
+    exit_code = main(
+        [
+            "run",
+            "--feedback-id",
+            str(feedback_id),
+            "--provider",
+            "configured",
+            "--publish",
+        ]
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert output["completed"] is True
+    assert output["status"] == "completed"
+    assert output["error_code"] == "invalid_fix_edit"
+    assert output["published"] is False

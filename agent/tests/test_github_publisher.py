@@ -13,7 +13,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from pydantic import ValidationError
 
 from agent.domain.enums import GateCategory, RiskLevel
-from agent.domain.errors import PublicationAuthenticationError
+from agent.domain.errors import PublicationAuthenticationError, PublicationError
 from agent.domain.repair import (
     BaselineReproductionValidation,
     DocxValidation,
@@ -27,7 +27,11 @@ from agent.publishing.contracts import (
     PublicationFile,
     PublicationRequest,
 )
-from agent.publishing.github import GitHubAppTokenProvider, GitHubPullRequestPublisher
+from agent.publishing.github import (
+    GitHubAppTokenProvider,
+    GitHubPullRequestPublisher,
+    build_pull_request_body,
+)
 from agent.publishing import check as check_module
 
 
@@ -233,6 +237,38 @@ def test_publisher_reuses_matching_pull_request_before_stale_check():
 def test_publication_request_rejects_hash_mismatch_before_github():
     with pytest.raises(ValidationError, match="patch hash"):
         make_request(patch=b"different")
+
+
+def test_pull_request_body_accepts_numeric_sha_prefix_without_phone_false_positive():
+    request = make_request()
+    numeric_prefix_sha = (
+        "04024526609e28a6fd56c401bc2e50381e126a647c1cda00c962093f9b06485b"
+    )
+    request = request.model_copy(
+        update={
+            "validation": request.validation.model_copy(
+                update={"validated_patch_sha256": numeric_prefix_sha}
+            )
+        }
+    )
+
+    body = build_pull_request_body(request)
+
+    assert numeric_prefix_sha in body
+
+
+def test_pull_request_body_still_rejects_secret_assignment_in_metadata():
+    request = make_request()
+    request = request.model_copy(
+        update={
+            "evidence": request.evidence.model_copy(
+                update={"model": "token=must-not-publish"}
+            )
+        }
+    )
+
+    with pytest.raises(PublicationError, match="sensitive pattern"):
+        build_pull_request_body(request)
 
 
 def test_github_app_provider_signs_and_caches_short_lived_installation_token():

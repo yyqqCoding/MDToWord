@@ -58,6 +58,8 @@ from agent.workspace.source_repository import SourceSnapshot
 FEEDBACK_ID = UUID("a257a846-1728-4d39-81bf-75a388041215")
 SELECTOR = "test_feedback_a257a846_table_structure"
 BASE_SHA = "a" * 40
+PANDOC_IMPORT_MARKER = "from app.normalizer import normalize_markdown\n"
+PANDOC_FIX_MARKER = "    normalized = normalize_markdown(markdown)\n"
 
 
 class _SourceWorkspace:
@@ -71,6 +73,14 @@ class _SourceWorkspace:
         )
         (root / "backend/app/mermaid_renderer.py").write_text(
             "def render_mermaid_blocks(markdown: str, work_dir):\n    return markdown\n",
+            encoding="utf-8",
+        )
+        (root / "backend/app/pandoc_runner.py").write_text(
+            PANDOC_IMPORT_MARKER
+            + "".join(f"# retained context {line}\n" for line in range(1, 61))
+            + "def convert(markdown):\n"
+            + PANDOC_FIX_MARKER
+            + "    return normalized\n",
             encoding="utf-8",
         )
         self.archive = root.parent / "source.tar.gz"
@@ -962,6 +972,117 @@ def test_stage_e_reproduced_mermaid_uses_preinstalled_renderer_fix_path(
     assert len(sandbox.jobs) == 5
     repair_context = fix_provider.requests[0].messages[-1].content
     assert "backend/app/mermaid_renderer.py" in repair_context
+
+
+def test_stage_e_invalid_mermaid_fix_gets_full_source_and_exact_retry_reason(
+    tmp_path: Path,
+) -> None:
+    selector = "test_feedback_a257a846_mermaid_drawing"
+    plan = ReproductionPlan(
+        hypothesis="Mermaid source is not rendered as a drawing",
+        oracle=OracleSpec(
+            kind=OracleKind.DOCX_XPATH,
+            parameters={"validator": "minimum_drawing_count", "minimum": 1},
+        ),
+        target_test_selector=selector,
+        expected_failure_kind=ExpectedFailureKind.ASSERTION,
+        # 真实失败中的模型只请求了文件头；修复阶段仍需读取完整可编辑源文件。
+        files_to_read=(
+            SourceReadRequest(
+                path="backend/app/pandoc_runner.py",
+                start_line=1,
+                end_line=50,
+            ),
+        ),
+    )
+    generated = GeneratedTestResult(
+        edits=(
+            Edit(
+                path="backend/tests/test_feedback_regressions.py",
+                mode=EditMode.FULL_FILE,
+                content=(
+                    "from docx_assertions import assert_minimum_drawing_count\n\n\n"
+                    f"def {selector}():\n"
+                    "    assert_minimum_drawing_count(b'docx', 1)\n"
+                ),
+            ),
+        ),
+        target_test_selector=selector,
+        oracle=plan.oracle,
+        expected_failure_kind=plan.expected_failure_kind,
+        reason="assert that Mermaid produces a Word drawing",
+        files_needed_for_fix=("backend/app/pandoc_runner.py",),
+    )
+    invalid_fix = FixGenerationResult(
+        edits=(
+            Edit(
+                path="backend/app/pandoc_runner.py",
+                mode=EditMode.SEARCH_REPLACE,
+                search="    missing_integration_line(markdown)\n",
+                replace=PANDOC_FIX_MARKER,
+            ),
+        ),
+        summary="connect the trusted Mermaid renderer",
+        risk_level=RiskLevel.MEDIUM,
+    )
+    corrected_fix = FixGenerationResult(
+        edits=(
+            Edit(
+                path="backend/app/pandoc_runner.py",
+                mode=EditMode.SEARCH_REPLACE,
+                search=PANDOC_IMPORT_MARKER,
+                replace=(
+                    "from app.mermaid_renderer import render_mermaid_blocks\n"
+                    + PANDOC_IMPORT_MARKER
+                ),
+            ),
+            Edit(
+                path="backend/app/pandoc_runner.py",
+                mode=EditMode.SEARCH_REPLACE,
+                search=PANDOC_FIX_MARKER,
+                replace=(
+                    PANDOC_FIX_MARKER
+                    + "    normalized = render_mermaid_blocks(normalized, None)\n"
+                ),
+            ),
+        ),
+        summary="use the exact fixed-snapshot integration point",
+        risk_level=RiskLevel.LOW,
+    )
+
+    _, feedback, _, _, fix_provider, _ = asyncio.run(
+        _run_stage_e(
+            tmp_path,
+            [
+                TargetTestOutcome.FAILED,
+                TargetTestOutcome.PASSED,
+                TargetTestOutcome.FAILED,
+                TargetTestOutcome.PASSED,
+                TargetTestOutcome.PASSED,
+            ],
+            fixes=[invalid_fix, corrected_fix],
+            markdown="graph TD\nA([开始]) --> B([结束])",
+            description="Word only contains Mermaid source instead of a drawing",
+            gate_classification=GateClassification(
+                intent=GateIntent.BUG_REPORT,
+                category=GateCategory.DOCX_STRUCTURE,
+                relevance=0.99,
+                sufficient_information=True,
+                injection_suspected=False,
+                requires_extension_change=False,
+                reason="backend Mermaid drawing regression",
+            ),
+            reproduction_plan=plan,
+            generated_test=generated,
+        )
+    )
+
+    assert feedback is not None and feedback.status is FeedbackStatus.VALIDATED
+    assert len(fix_provider.requests) == 2
+    first_context = fix_provider.requests[0].messages[-1].content
+    second_context = fix_provider.requests[1].messages[-1].content
+    assert PANDOC_FIX_MARKER.strip() in first_context
+    assert "search text must match exactly once" in second_context
 
 
 def test_stage_e_budget_exhaustion_blocks_model_and_sandbox_calls(tmp_path: Path) -> None:

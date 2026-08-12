@@ -152,7 +152,6 @@ async def open_configured_runtime(
         feedback_repository = SupabaseFeedbackRepository(
             config.supabase_url,
             config.supabase_agent_key.get_secret_value(),
-            config.supabase_agent_key.get_secret_value(),
             client=shared_client,
         )
         run_repository = SupabaseAgentRunRepository(

@@ -68,7 +68,9 @@ start_gate -> classify_gate -> route_feedback
 Fake Provider 默认只执行 Gate；`--reproduce --provider configured` 执行到阶段 D，
 `--repair --provider configured` 执行完整 D+E，且两者强制 `--dry-run`。只有显式
 `--publish --provider configured` 不使用 dry-run 并执行完整 D+E+F。生产 Scheduler
-另外受默认关闭的投产开关保护。
+另外受默认关闭的投产开关保护。CLI 的 `completed` 表示 Graph 已到终态，不等同业务
+成功；`status`、`error_code`、`published` 与 `pr_url` 共同表达最终结果，只有
+`published=true`、`error_code=null` 且 `pr_url` 非空才代表阶段 F 发布成功。
 
 ### 3.2 确定性节点
 

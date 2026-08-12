@@ -36,13 +36,19 @@ def mask_sensitive(data: Any) -> Any:
     return data
 
 
-def mask_text(data: str, *, max_length: int = _MAX_TEXT) -> str:
+def mask_text(
+    data: str,
+    *,
+    max_length: int = _MAX_TEXT,
+    redact_phone: bool = True,
+) -> str:
     """按调用边界需要的长度清理文本；日志与 Sandbox 复用同一脱敏规则。"""
 
     text = _BEARER.sub("Bearer [REDACTED]", data)
     text = _SECRET_ASSIGNMENT.sub(r"\1=[REDACTED]", text)
     text = _EMAIL.sub("[REDACTED_EMAIL]", text)
-    text = _PHONE.sub("[REDACTED_PHONE]", text)
+    if redact_phone:
+        text = _PHONE.sub("[REDACTED_PHONE]", text)
     return text[:max_length]
 
 

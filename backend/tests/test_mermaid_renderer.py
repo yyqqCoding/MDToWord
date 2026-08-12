@@ -43,7 +43,7 @@ def test_fenced_mermaid_blocks_are_replaced_with_local_png_references(
     assert "--puppeteerConfigFile" in command
     assert "--configFile" in command
     assert run.call_args.kwargs["cwd"] == tmp_path
-    assert run.call_args.kwargs["timeout"] == 20
+    assert run.call_args.kwargs["timeout"] == 120
     assert "MODEL_API_KEY" not in run.call_args.kwargs["env"]
 
 
@@ -119,3 +119,19 @@ def test_renderer_failure_exposes_only_bounded_stderr(
         render_mermaid_blocks("graph TD\nA --> B", tmp_path)
 
     assert exc_info.value.details == [f"line {index}" for index in range(10, 20)]
+
+
+def test_renderer_timeout_is_bounded_for_low_cpu_production_instances(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _fake_runtime(monkeypatch, tmp_path)
+
+    def timeout(*args, **kwargs):
+        assert kwargs["timeout"] == 120
+        raise mermaid_renderer.subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+
+    monkeypatch.setattr(mermaid_renderer.subprocess, "run", timeout)
+
+    with pytest.raises(MermaidRenderError, match="timed out"):
+        render_mermaid_blocks("graph TD\nA --> B", tmp_path)

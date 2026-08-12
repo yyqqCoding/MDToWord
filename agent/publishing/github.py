@@ -496,9 +496,16 @@ def build_pull_request_body(request: PublicationRequest, *, marker: str | None =
             f"- Validated patch SHA-256: `{validation.validated_patch_sha256}`",
         )
     )
-    # marker 只含代码生成的 UUID 与 SHA；通用手机号规则会把某些 UUID 数字段误判为
-    # 电话，因此先扫描全部可见正文，再附加不可由用户控制的幂等标记。
-    if mask_text(visible_body, max_length=len(visible_body)) != visible_body:
+    # PublicationRequest 从结构上不含 contact/原始反馈；这里仍拦截邮箱、Bearer 与 Secret
+    # 赋值。手机号规则不适用于 SHA/Token 计数等机器元数据，会把合法数字前缀误报为电话。
+    if (
+        mask_text(
+            visible_body,
+            max_length=len(visible_body),
+            redact_phone=False,
+        )
+        != visible_body
+    ):
         raise PublicationError("pull request body contains a sensitive pattern")
     body = f"{visible_body}\n\n{marker or _publication_marker(request)}"
     if len(body.encode("utf-8")) > 20_000:
