@@ -124,7 +124,8 @@ sudo bash deploy/agent/install.sh
 
 安装脚本不会创建、复制或输出 Secret，也不会覆盖两份环境文件。它会安装最新 systemd
 单元与管理命令、启动并启用 Worker、明确停止并禁用 Scheduler，然后执行只读审计。审计
-只输出活动状态数量，不读取反馈正文、联系方式或 Artifact。
+会等待 Worker 最多 30 秒完成端口绑定，并只输出活动状态数量，不读取反馈正文、联系方式
+或 Artifact；Worker 超时未就绪时会直接附带 systemd 状态和最近日志。
 
 常用命令：
 

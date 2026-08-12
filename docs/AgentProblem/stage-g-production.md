@@ -96,3 +96,14 @@ SSH 终端换行会把 `python -c` 的 import 拆开，前导空格又会触发 
 把预检 Python、两个 systemd 单元、安装脚本和管理命令全部纳入版本控制。服务器只需
 `git pull` 后运行 `deploy/agent/install.sh`。脚本不包含 Secret，读取既有隔离配置；每次
 安装都保持 Scheduler 关闭，并通过 `mdtoword-agentctl enable` 的审计与二次确认单独启用。
+
+## 问题 10：安装脚本偶发报告 Worker 端口拒绝连接
+
+systemd 将 Worker 标记为 `active` 时，Python 进程可能仍在导入模块，尚未监听 8090
+端口。安装脚本紧接着执行审计会产生一次假的健康检查失败；稍后查看服务时又已经正常。
+
+### 解决方案
+
+Worker 审计在确认 systemd 服务处于活动状态后，最多等待 30 秒并重复探测本机 HTTP
+端点。就绪后继续镜像、监听地址及 Controller 预检；超时则自动输出服务状态和最近日志，
+避免仅返回无法定位原因的 `connection refused`。

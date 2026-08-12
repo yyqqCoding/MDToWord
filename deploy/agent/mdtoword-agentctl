@@ -55,12 +55,22 @@ check_files() {
 check_worker() {
     systemctl is-active --quiet "${WORKER_SERVICE}"
 
-    local http_code
-    http_code="$(curl -sS --connect-timeout 3 --max-time 10 \
-        -o /dev/null -w '%{http_code}' -X POST \
-        http://127.0.0.1:8090/v1/jobs)"
+    local attempt
+    local http_code=""
+    for ((attempt = 1; attempt <= 30; attempt++)); do
+        http_code="$(curl -s --connect-timeout 1 --max-time 2 \
+            -o /dev/null -w '%{http_code}' -X POST \
+            http://127.0.0.1:8090/v1/jobs || true)"
+        if [[ "${http_code}" == "400" ]]; then
+            break
+        fi
+        # systemd 进入 active 后，Python 仍可能尚未完成导入和端口绑定。
+        sleep 1
+    done
     if [[ "${http_code}" != "400" ]]; then
-        echo "Worker HTTP 状态异常：${http_code}" >&2
+        echo "Worker 在 30 秒内未就绪，最后一次 HTTP 状态：${http_code:-连接失败}" >&2
+        systemctl status "${WORKER_SERVICE}" --no-pager -l >&2 || true
+        journalctl -u "${WORKER_SERVICE}" -n 50 --no-pager >&2 || true
         exit 1
     fi
 
