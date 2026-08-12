@@ -6,7 +6,7 @@ import pytest
 from agent.domain.errors import PatchPolicyError
 from agent.workspace.edits import Edit, EditMode, EditPhase, PatchBuilder
 from agent.workspace.patch_policy import PatchPolicy
-from agent.workspace.validation import compose_validated_patch
+from agent.workspace.validation import compose_validated_patch, materialize_validated_files
 
 
 def _snapshot(root: Path) -> Path:
@@ -77,3 +77,22 @@ def test_combiner_rejects_fix_patch_touching_test_patch_file(tmp_path: Path) -> 
 
     with pytest.raises(PatchPolicyError, match="disjoint"):
         compose_validated_patch(root, test_patch, test_patch)
+
+
+def test_materialized_publication_files_match_validated_patch(tmp_path: Path) -> None:
+    root = _snapshot(tmp_path / "snapshot")
+    test_patch, fix_patch = _patches(root)
+    validated = compose_validated_patch(root, test_patch, fix_patch)
+
+    files = materialize_validated_files(
+        root,
+        validated.content,
+        expected_sha256=validated.sha256,
+        expected_files=validated.changed_files,
+    )
+
+    assert tuple(item.path for item in files) == validated.changed_files
+    by_path = {item.path: item.content for item in files}
+    assert by_path["backend/app/normalizer.py"] == (
+        b"def normalize(value: str) -> str:\n    return value.strip()\n"
+    )

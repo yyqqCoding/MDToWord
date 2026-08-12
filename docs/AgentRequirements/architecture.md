@@ -20,11 +20,11 @@ Edge 插件
 GitHub 负责源码、分支、PR 和人工协作，不负责调度、执行、沙箱或 Agent 密钥。
 Agent Controller 是常驻自托管服务；Sandbox Worker 是执行不可信代码的隔离边界。
 
-截至阶段 E，已实现 Supabase 领取、Gate、最多两轮自动复现与修复、独立验证、模型
+截至阶段 G 本地实现，已实现 Supabase 领取、Gate、最多两轮自动复现与修复、独立验证、模型
 Provider、运行持久化、Langfuse Trace、Source Workspace、受控结构化编辑和独立 Docker
 Sandbox Worker。CLI 默认仍只执行 Gate；维护者显式使用 `--reproduce` 执行到复现，使用
-`--repair` 执行完整 D+E。阶段 E 只生成验证 Artifact；GitHub Publisher 由阶段 F 接入，
-当前流程不会创建 PR。
+`--repair` 执行完整 D+E，使用 `--publish` 才允许 GitHub App 执行完整 D+E+F。
+生产 Scheduler 另受默认关闭的投产开关保护；系统始终不自动合并或部署。
 
 ## 2. 部署单元
 
@@ -45,7 +45,7 @@ Sandbox Worker。CLI 默认仍只执行 Gate；维护者显式使用 `--reproduc
 
 Controller 不直接执行模型生成的测试或修改后的源码。GitHub 发布是 Controller 中的
 受信模块，不作为模型工具暴露；只有确定性状态达到 `validated` 才能调用。
-源码读取使用 Controller-only、指定仓库 `Contents: Read-only` 的凭据；该凭据与未来
+源码读取使用 Controller-only、指定仓库 `Contents: Read-only` 的凭据；该凭据与
 发布用 GitHub App 分离，也不得进入 Graph State、模型上下文、Worker 或任务容器。
 
 ### 2.2 Docker Sandbox Worker
@@ -65,8 +65,11 @@ Supabase、GitHub 或 Langfuse 凭证。
 | Langfuse | Agent/LLM Trace、用量与评估 | `Telemetry` |
 | GitHub | 读取源码、推送分支、创建 PR | `SourceRepository` / `PullRequestPublisher` |
 | Docker Worker | 不可信代码执行 | `SandboxClient` |
+| Mermaid CLI + Chromium | 在本地把受限 Mermaid 源码渲染为 PNG | `app.mermaid_renderer` |
 
 领域状态、Policy 和验证器不依赖这些供应商的 SDK 类型。
+Mermaid 运行时由维护者固定版本，并同时构建进生产与 Sandbox 镜像；它不是模型工具，
+也不允许模型传入命令、浏览器参数、配置文件或环境变量。
 
 ## 3. 依赖方向
 
@@ -188,6 +191,7 @@ MVP 使用 Controller 管理的本地运行目录：
   reproduction-junit.xml
   validation-junit.xml
   validation.json
+  publication.json
   result.json
 ```
 

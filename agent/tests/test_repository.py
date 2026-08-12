@@ -342,3 +342,46 @@ def test_stale_base_can_only_be_requeued_once():
 
     assert requeued.stale_requeue_count == 1
     assert requeued.claim_token is None
+
+
+def test_supabase_pr_opened_persists_public_url_and_resolution_time():
+    feedback = make_feedback().model_copy(
+        update={"status": FeedbackStatus.PUBLISHING, "claim_token": uuid4()}
+    )
+    pr_url = "https://github.com/yyqqCoding/MDToWord/pull/123"
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json=[feedback.model_dump(mode="json")])
+        payload = json.loads(request.content)
+        assert payload["status"] == "pr_opened"
+        assert payload["pr_url"] == pr_url
+        assert payload["resolved_at"] is not None
+        completed = feedback.model_copy(
+            update={
+                "status": FeedbackStatus.PR_OPENED,
+                "pr_url": pr_url,
+                "resolved_at": datetime.now(UTC),
+            }
+        )
+        return httpx.Response(200, json=[completed.model_dump(mode="json")])
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            repository = SupabaseFeedbackRepository(
+                "https://example.supabase.co",
+                "agent-secret",
+                client=client,
+            )
+            return await repository.transition(
+                feedback.id,
+                claim_token=feedback.claim_token,
+                target=FeedbackStatus.PR_OPENED,
+                pr_url=pr_url,
+            )
+
+    completed = asyncio.run(scenario())
+
+    assert completed.status is FeedbackStatus.PR_OPENED
+    assert completed.pr_url == pr_url
+    assert completed.resolved_at is not None

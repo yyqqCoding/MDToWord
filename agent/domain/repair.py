@@ -5,7 +5,6 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from agent.domain.content import contains_mermaid_diagram
 from agent.domain.enums import RiskLevel
 from agent.domain.models import TaskArtifact
 from agent.domain.reproduction import (
@@ -33,19 +32,6 @@ class FixGenerationResult(BaseModel):
         Annotated[str, Field(min_length=1, max_length=500)], ...
     ] = Field(default=(), max_length=10)
     extension_sync_required: bool = False
-
-
-def requires_mermaid_external_dependency(
-    task: TaskArtifact,
-    plan: ReproductionPlan,
-) -> bool:
-    """当前固定镜像没有 Mermaid 渲染器，drawing 修复需要依赖与部署评估。"""
-
-    # 同时要求内容证据和受信 drawing Oracle，避免仅凭“Mermaid”字样提前终止普通修复。
-    return (
-        contains_mermaid_diagram(task.markdown_content)
-        and plan.oracle.trusted_assertion_name() == "assert_minimum_drawing_count"
-    )
 
 
 class RepairDisposition(StrEnum):

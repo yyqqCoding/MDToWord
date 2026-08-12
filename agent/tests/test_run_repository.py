@@ -226,3 +226,71 @@ def test_supabase_failure_persists_latest_usage_totals():
 
     assert failed.status is AgentRunStatus.FAILED
     assert failed.total_tokens == 150
+
+
+def test_supabase_finds_publishing_run_as_resumable():
+    run = make_run(status=AgentRunStatus.PUBLISHING)
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert "publishing" in request.url.params["status"]
+        return httpx.Response(200, json=[run.model_dump(mode="json")])
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            repository = SupabaseAgentRunRepository(
+                "https://example.supabase.co",
+                "agent-secret",
+                client=client,
+            )
+            return await repository.find_resumable()
+
+    resumable = asyncio.run(scenario())
+
+    assert resumable is not None
+    assert resumable.status is AgentRunStatus.PUBLISHING
+
+
+def test_supabase_retries_only_validated_publication_failure():
+    failed = make_run(status=AgentRunStatus.FAILED).model_copy(
+        update={
+            "validation": {"passed": True},
+            "validated_patch_sha256": "a" * 64,
+            "error_code": "publication_failed",
+            "error_message": "PublicationError",
+            "finished_at": datetime.now(UTC),
+        }
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json=[failed.model_dump(mode="json")])
+        payload = json.loads(request.content)
+        assert payload == {
+            "status": "publishing",
+            "error_code": None,
+            "error_message": None,
+            "finished_at": None,
+        }
+        publishing = failed.model_copy(
+            update={
+                "status": AgentRunStatus.PUBLISHING,
+                "error_code": None,
+                "error_message": None,
+                "finished_at": None,
+            }
+        )
+        return httpx.Response(200, json=[publishing.model_dump(mode="json")])
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            repository = SupabaseAgentRunRepository(
+                "https://example.supabase.co",
+                "agent-secret",
+                client=client,
+            )
+            return await repository.retry_publication(failed.id)
+
+    publishing = asyncio.run(scenario())
+
+    assert publishing.status is AgentRunStatus.PUBLISHING
+    assert publishing.error_code is None

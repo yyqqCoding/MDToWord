@@ -1,0 +1,10 @@
+{
+  "name": "mdtoword-mermaid-runtime",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Pinned local Mermaid renderer used by production and the Agent sandbox",
+  "dependencies": {
+    "@mermaid-js/mermaid-cli": "11.16.0",
+    "puppeteer": "24.43.1"
+  }
+}

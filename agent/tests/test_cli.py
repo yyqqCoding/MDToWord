@@ -42,6 +42,31 @@ def test_reproduction_cli_rejects_fake_provider_before_loading_configuration(cap
     assert "configured" in output["message"]
 
 
+def test_publish_cli_requires_real_mode_and_configured_provider(capsys):
+    feedback_id = str(uuid4())
+
+    dry_exit = main(
+        [
+            "run",
+            "--feedback-id",
+            feedback_id,
+            "--dry-run",
+            "--publish",
+            "--provider",
+            "configured",
+        ]
+    )
+    dry_output = json.loads(capsys.readouterr().out)
+    assert dry_exit == 2
+    assert dry_output["error"] == "cli_usage_error"
+
+    fake_exit = main(["run", "--feedback-id", feedback_id, "--publish"])
+    fake_output = json.loads(capsys.readouterr().out)
+    assert fake_exit == 2
+    assert fake_output["error"] == "cli_usage_error"
+    assert "configured" in fake_output["message"]
+
+
 def test_resume_cli_requires_reproduction_mode_before_loading_configuration(capsys):
     exit_code = main(
         [
@@ -77,6 +102,22 @@ def test_cli_error_never_echoes_environment_secret(monkeypatch, capsys):
     assert exit_code == 2
     assert "SUPABASE_URL" in output
     assert "must-not-print" not in output
+
+
+def test_scheduler_refuses_to_claim_when_production_switch_is_off(
+    monkeypatch,
+    capsys,
+):
+    monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
+    monkeypatch.setenv("SUPABASE_AGENT_KEY", "supabase-secret")
+    monkeypatch.setenv("PRODUCTION_SCHEDULER_ENABLED", "false")
+
+    exit_code = main(["scheduler", "--once"])
+    output = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 2
+    assert output["error"] == "configuration_error"
+    assert "PRODUCTION_SCHEDULER_ENABLED" in output["message"]
 
 
 def test_configured_provider_validates_secrets_before_claiming_feedback(

@@ -25,6 +25,10 @@ def _snapshot(tmp_path: Path) -> Path:
         "def convert(text):\n    return text\n",
         encoding="utf-8",
     )
+    (root / "backend/app/mermaid_renderer.py").write_text(
+        "def render_mermaid_blocks(text, work_dir):\n    return text\n",
+        encoding="utf-8",
+    )
     (root / "backend/tests/test_feedback_regressions.py").write_text(
         "def test_existing():\n    assert True\n",
         encoding="utf-8",
@@ -73,6 +77,14 @@ def test_fix_edit_can_only_change_registered_backend_source(tmp_path: Path):
     )
 
     assert result.changed_files == ("backend/app/normalizer.py",)
+
+
+def test_trusted_mermaid_renderer_is_readable_but_not_editable(tmp_path: Path):
+    policy = PatchPolicy.load_default()
+
+    assert policy.can_read("backend/app/mermaid_renderer.py") is True
+    with pytest.raises(PatchPolicyError):
+        policy.authorize_write("backend/app/mermaid_renderer.py", "fix")
 
 
 @pytest.mark.parametrize(

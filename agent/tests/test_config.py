@@ -237,3 +237,65 @@ def test_stage_c_settings_are_optional_until_requested_and_secret(tmp_path: Path
     rendered = repr(configured)
     assert "github-read-secret" not in rendered
     assert "worker-secret" not in rendered
+
+
+def test_stage_f_github_app_settings_are_lazy_and_private(tmp_path: Path):
+    base = {
+        "SUPABASE_URL": "https://example.supabase.co",
+        "SUPABASE_AGENT_KEY": "supabase-secret",
+    }
+    config = AgentConfig.from_env(base, project_root=tmp_path)
+    with pytest.raises(ConfigurationError) as exc_info:
+        config.require_stage_f_publisher_settings()
+    assert "GITHUB_APP_ID" in str(exc_info.value)
+    assert "GITHUB_APP_PRIVATE_KEY" in str(exc_info.value)
+
+    configured = AgentConfig.from_env(
+        {
+            **base,
+            "GITHUB_APP_ID": "12345",
+            "GITHUB_APP_PRIVATE_KEY": (
+                "-----BEGIN PRIVATE KEY-----\\nprivate-material\\n"
+                "-----END PRIVATE KEY-----"
+            ),
+            "GITHUB_API_URL": "https://github.example/api/v3",
+            "GITHUB_MAIN_BRANCH": "main",
+            "LANGFUSE_TRACE_URL_TEMPLATE": (
+                "https://cloud.langfuse.com/project/example/traces/{trace_id}"
+            ),
+        },
+        project_root=tmp_path,
+    )
+
+    settings = configured.require_stage_f_publisher_settings()
+    assert settings[0] == "12345"
+    assert "\n" in settings[1]
+    assert settings[2:] == (
+        "https://github.example/api/v3",
+        "main",
+        "https://cloud.langfuse.com/project/example/traces/{trace_id}",
+    )
+    assert "private-material" not in repr(configured)
+
+
+def test_production_scheduler_is_disabled_by_default(tmp_path: Path):
+    config = AgentConfig.from_env(
+        {
+            "SUPABASE_URL": "https://example.supabase.co",
+            "SUPABASE_AGENT_KEY": "secret",
+        },
+        project_root=tmp_path,
+    )
+
+    with pytest.raises(ConfigurationError, match="PRODUCTION_SCHEDULER_ENABLED"):
+        config.require_production_scheduler_enabled()
+
+    enabled = AgentConfig.from_env(
+        {
+            "SUPABASE_URL": "https://example.supabase.co",
+            "SUPABASE_AGENT_KEY": "secret",
+            "PRODUCTION_SCHEDULER_ENABLED": "true",
+        },
+        project_root=tmp_path,
+    )
+    enabled.require_production_scheduler_enabled()

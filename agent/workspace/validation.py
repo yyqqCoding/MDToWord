@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -18,6 +19,13 @@ class ValidatedPatch(BaseModel):
     content: bytes
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     changed_files: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class MaterializedPatchFile:
+    path: str
+    # None 表示补丁删除该文件；GitHub Tree API 使用 null sha 表达删除。
+    content: bytes | None
 
 
 def compose_validated_patch(
@@ -44,6 +52,39 @@ def normalize_authorized_patch(
     """把单个授权 patch 规范化为 Worker workspace 使用的确定性 diff。"""
 
     return _materialize_patch_set(snapshot_root, (("authorized.patch", patch),))
+
+
+def materialize_validated_files(
+    snapshot_root: Path,
+    patch: bytes,
+    *,
+    expected_sha256: str,
+    expected_files: tuple[str, ...],
+) -> tuple[MaterializedPatchFile, ...]:
+    """重新应用最终补丁，并只返回验证结果登记的发布文件内容。"""
+
+    normalized = normalize_authorized_patch(snapshot_root, patch)
+    if normalized.sha256 != expected_sha256:
+        raise PatchPolicyError("validated patch hash changed before publication")
+    if tuple(sorted(expected_files)) != normalized.changed_files:
+        raise PatchPolicyError("validated patch files changed before publication")
+
+    root = snapshot_root.resolve(strict=True)
+    with tempfile.TemporaryDirectory(prefix="mdtoword-publication-") as temporary:
+        temporary_root = Path(temporary)
+        worktree = temporary_root / "worktree"
+        environment = _prepare_worktree(root, worktree, temporary_root)
+        patch_path = temporary_root / "validated.patch"
+        patch_path.write_bytes(patch)
+        _git(worktree, environment, "apply", "--check", str(patch_path))
+        _git(worktree, environment, "apply", str(patch_path))
+
+        files: list[MaterializedPatchFile] = []
+        for relative in normalized.changed_files:
+            target = worktree / relative
+            content = target.read_bytes() if target.is_file() else None
+            files.append(MaterializedPatchFile(path=relative, content=content))
+        return tuple(files)
 
 
 def _declared_patch_files(

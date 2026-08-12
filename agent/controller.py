@@ -9,6 +9,7 @@ from agent.domain.enums import AgentRunStatus, FeedbackStatus, GateRoute
 from agent.domain.errors import (
     InvalidModelResponseError,
     ModelProviderError,
+    PublicationError,
     SourceAccessError,
 )
 from agent.domain.models import AgentRunRecord, FeedbackRecord, TaskArtifact
@@ -18,6 +19,7 @@ from agent.graph import (
     POLICY_VERSION,
     RepairDependencies,
     ReproductionDependencies,
+    PublishingDependencies,
     build_gate_graph,
 )
 from agent.providers.base import ModelProvider
@@ -39,6 +41,7 @@ class GateRunOutcome:
     feedback_id: UUID
     route: GateRoute | None
     completed: bool
+    pr_url: str | None = None
 
 
 class GateController:
@@ -57,14 +60,17 @@ class GateController:
         interrupt_after: Sequence[str] | None = None,
         telemetry: Telemetry | None = None,
         environment: str = "development",
+        dry_run: bool = True,
         reproduction: ReproductionDependencies | None = None,
         repair: RepairDependencies | None = None,
+        publishing: PublishingDependencies | None = None,
     ) -> None:
         self._feedback_repository = feedback_repository
         self._run_repository = run_repository
         self._provider = provider
         self._telemetry = telemetry or NoopTelemetry()
         self._environment = environment
+        self._dry_run = dry_run
         self._artifact_store = artifact_store
         self._checkpointer = checkpointer
         self._min_confidence = min_confidence
@@ -101,6 +107,12 @@ class GateController:
                 telemetry=self._telemetry,
             )
         self._repair_enabled = observed_repair is not None
+        observed_publishing = (
+            replace(publishing, telemetry=self._telemetry)
+            if publishing is not None
+            else None
+        )
+        self._publishing_enabled = observed_publishing is not None
         self.graph = build_gate_graph(
             feedback_repository=feedback_repository,
             run_repository=run_repository,
@@ -115,6 +127,7 @@ class GateController:
             min_confidence=min_confidence,
             reproduction=observed_reproduction,
             repair=observed_repair,
+            publishing=observed_publishing,
             interrupt_after=interrupt_after,
         )
 
@@ -156,6 +169,7 @@ class GateController:
                 ),
             },
             policy_version=POLICY_VERSION,
+            dry_run=self._dry_run,
             artifact_path=self._artifact_store.run_ref(run_id),
             task_artifact_ref=task_ref,
         )
@@ -166,6 +180,7 @@ class GateController:
             claim_token=feedback.claim_token,
             trace_id=trace_id,
             status=AgentRunStatus.CREATED,
+            dry_run=self._dry_run,
             extension_version=self._extension_version,
             task_artifact_ref=task_ref,
         )
@@ -181,14 +196,28 @@ class GateController:
         run = await self._run_repository.get(run_id)
         if run is None:
             raise ValueError(f"agent run {run_id} does not exist")
+        if (
+            self._publishing_enabled
+            and run.status is AgentRunStatus.FAILED
+            and _is_publication_error(run.error_code)
+        ):
+            # 只重开 GitHub 发布节点；checkpoint 已固定验证结果，不重跑模型或 Sandbox。
+            await self._feedback_repository.retry_publication(
+                run.feedback_id,
+                claim_token=run.claim_token,
+            )
+            run = await self._run_repository.retry_publication(run.id)
         if run.status in {
             AgentRunStatus.COMPLETED,
             AgentRunStatus.SECURITY_REJECTED,
             AgentRunStatus.FAILED,
             AgentRunStatus.BUDGET_EXHAUSTED,
+            AgentRunStatus.STALE_BASE,
         }:
             return _outcome_from_run(run)
         if run.status is AgentRunStatus.REPAIRING and not self._repair_enabled:
+            return _outcome_from_run(run)
+        if run.status is AgentRunStatus.PUBLISHING and not self._publishing_enabled:
             return _outcome_from_run(run)
 
         feedback = await self._feedback_repository.get(run.feedback_id)
@@ -287,7 +316,12 @@ class GateController:
         with self._telemetry.start_run(trace) as observation:
             try:
                 output = await self.graph.ainvoke(state, _thread_config(run_id))
-            except (ModelProviderError, InvalidModelResponseError, SourceAccessError) as exc:
+            except (
+                ModelProviderError,
+                InvalidModelResponseError,
+                PublicationError,
+                SourceAccessError,
+            ) as exc:
                 await self._finalize_run_failure(run_id, exc)
                 observation.finish(route=None, status="failed")
                 raise
@@ -302,7 +336,12 @@ class GateController:
     async def _finalize_run_failure(
         self,
         run_id: UUID,
-        error: ModelProviderError | InvalidModelResponseError | SourceAccessError,
+        error: (
+            ModelProviderError
+            | InvalidModelResponseError
+            | PublicationError
+            | SourceAccessError
+        ),
     ) -> None:
         """终结确定性或已耗尽重试的失败，避免 Scheduler 无限恢复同一节点。"""
 
@@ -347,6 +386,7 @@ class GateController:
                 FeedbackStatus.REPRODUCING,
                 FeedbackStatus.REPAIRING,
                 FeedbackStatus.VALIDATING,
+                FeedbackStatus.PUBLISHING,
             }
         ):
             await self._feedback_repository.transition(
@@ -378,12 +418,21 @@ def _session_id_for_feedback(feedback_hash: str) -> str:
     return sha256(f"feedback:{feedback_hash}".encode()).hexdigest()
 
 
+def _is_publication_error(error_code: str | None) -> bool:
+    return error_code in {
+        "publication_failed",
+        "publication_auth_error",
+        "publication_conflict",
+    }
+
+
 def _outcome_from_state(state: AgentState) -> GateRunOutcome:
     return GateRunOutcome(
         run_id=state.run_id,
         feedback_id=state.feedback_id,
         route=GateRoute(state.route) if state.route else None,
         completed=state.status is AgentRunStatus.COMPLETED,
+        pr_url=state.pr_url,
     )
 
 
@@ -393,4 +442,5 @@ def _outcome_from_run(run: AgentRunRecord) -> GateRunOutcome:
         feedback_id=run.feedback_id,
         route=run.route,
         completed=run.status is AgentRunStatus.COMPLETED,
+        pr_url=run.pr_url,
     )

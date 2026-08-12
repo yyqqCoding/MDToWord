@@ -365,7 +365,7 @@ def {selector}():
     assert result.passed is True
 
 
-def test_mermaid_trusted_fallback_reproduces_in_real_docker(tmp_path: Path):
+def test_mermaid_renderer_reproduces_and_validates_real_fix_in_docker(tmp_path: Path):
     image_digest = os.environ.get("SANDBOX_IMAGE_DIGEST", "")
     if not image_digest or shutil.which("docker") is None:
         pytest.skip("SANDBOX_IMAGE_DIGEST and Docker are required")
@@ -456,6 +456,60 @@ def test_mermaid_trusted_fallback_reproduces_in_real_docker(tmp_path: Path):
     assert result.junit_summary.target_failure_type == "AssertionError"
     assert result.junit_summary.target_outcome is TargetTestOutcome.FAILED
     assert report.disposition is ReproductionDisposition.REPRODUCED
+
+    runner_path = snapshot / "backend/app/pandoc_runner.py"
+    original_runner = runner_path.read_text(encoding="utf-8")
+    fixed_runner = original_runner.replace(
+        "from app.normalizer import normalize_markdown\n",
+        (
+            "from app.mermaid_renderer import "
+            "MermaidRenderError, render_mermaid_blocks\n"
+            "from app.normalizer import normalize_markdown\n"
+        ),
+        1,
+    ).replace(
+        '    input_path.write_text(normalize_markdown(markdown), encoding="utf-8")\n',
+        (
+            "    normalized = normalize_markdown(markdown)\n"
+            "    try:\n"
+            "        normalized = render_mermaid_blocks(normalized, work_dir)\n"
+            "    except MermaidRenderError as exc:\n"
+            "        raise ConversionError(exc.message, exc.details) from exc\n"
+            '    input_path.write_text(normalized, encoding="utf-8")\n'
+        ),
+        1,
+    )
+    assert fixed_runner != original_runner
+    fix_patch = _patch_for(
+        "backend/app/pandoc_runner.py",
+        original_runner,
+        fixed_runner,
+    )
+    validation_job = job.model_copy(
+        update={
+            "job_id": uuid4(),
+            "job_type": JobType.VALIDATE_TARGET,
+            "fix_patch_sha256": hashlib.sha256(fix_patch).hexdigest(),
+        }
+    )
+    validated = DockerRunner(
+        image_digest=image_digest,
+        work_root=tmp_path / "mermaid-validation-work",
+    ).execute(
+        validation_job,
+        SandboxArtifacts(
+            job=validation_job,
+            source_archive=source_archive,
+            test_patch=test_patch,
+            fix_patch=fix_patch,
+        ),
+    )
+
+    assert validated.junit_summary is not None
+    assert validated.junit_summary.tests == 1
+    assert validated.junit_summary.target_outcome is TargetTestOutcome.PASSED
+    assert validated.status is SandboxStatus.COMPLETED
+
 
 def _archive_snapshot(snapshot: Path) -> bytes:
     output = io.BytesIO()

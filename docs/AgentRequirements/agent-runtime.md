@@ -56,18 +56,19 @@ START
 
 ### 3.1 当前实现边界
 
-截至阶段 E，实际 Graph 已实现 Gate、复现、修复和独立验证：
+截至阶段 F/G 本地实现，实际 Graph 已实现 Gate、复现、修复、独立验证和发布：
 
 ```text
 start_gate -> classify_gate -> route_feedback
   -> prepare_source -> reproduce_subgraph
-  -> repair_subgraph -> validate_final -> finalize -> END
+  -> repair_subgraph -> validate_final
+  -> publish_pull_request -> finish_publication -> END
 ```
 
-CLI 仍强制要求 `--dry-run`，Fake Provider 默认只执行 Gate；`--reproduce --provider
-configured` 执行到阶段 D，`--repair --provider configured` 执行完整 D+E。阶段 E 只在
-临时 workspace 和沙箱中生成/验证 Artifact，不修改共享源码仓库，也不创建 PR；发布
-节点仍属于阶段 F。
+Fake Provider 默认只执行 Gate；`--reproduce --provider configured` 执行到阶段 D，
+`--repair --provider configured` 执行完整 D+E，且两者强制 `--dry-run`。只有显式
+`--publish --provider configured` 不使用 dry-run 并执行完整 D+E+F。生产 Scheduler
+另外受默认关闭的投产开关保护。
 
 ### 3.2 确定性节点
 
@@ -173,10 +174,9 @@ Sandbox 中发生的无效测试不会触发此回退。
 
 ```text
 repair_scope_policy
-  |- reproduced Mermaid drawing -> needs_human（external dependency）
-  `- generate_fix_edit
+  -> generate_fix_edit
   -> policy_check_fix_edit
-       `- external dependency / deployment change -> needs_human -> END
+       `- 未预装的 external dependency / deployment change -> needs_human -> END
   -> run_target_validation_in_sandbox
        |- passed -> final_validation
        |- failed -> summarize_failure -> fresh workspace -> revise_fix_edit
@@ -186,12 +186,13 @@ repair_scope_policy
 最多两轮。每轮模型上下文只包含：脱敏反馈摘要、复现计划、目标失败摘要、当前允许
 源码、测试补丁摘要、上一轮修复摘要和剩余预算；不累积完整历史。
 
-当前固定 Sandbox/部署镜像不包含 Mermaid 渲染器。Mermaid drawing Oracle 已确认复现
-时，修复范围 Policy 直接输出 `external_dependency_required -> needs_human`，不读取修复
-源码也不调用修复模型；其他后端类别仍进入最多两轮的修复生成。
+生产与 Sandbox 镜像包含同版本的受信 Mermaid CLI、Chromium 和中文字体。Mermaid
+drawing Oracle 已确认复现时，Controller 额外向修复模型提供只读
+`backend/app/mermaid_renderer.py`，允许模型在 `pandoc_runner.py` 接入固定 API，并继续
+进入相同的目标、基线、全量和 DOCX drawing 验证。模型不能修改渲染器或依赖清单。
 
 模型不能修改测试补丁。每轮使用从 `base_sha` 新建的工作区，不在上一轮修改上继续
-叠加。修复若新增外部可执行程序、Pandoc filter 或需要部署变更，由本地 Policy 直接
+叠加。修复若新增未预装的外部可执行程序、Pandoc filter 或需要部署变更，由本地 Policy 直接
 转为 `needs_human`，不启动 Sandbox、也不消耗第二轮模型请求。失败摘要最多 4 KB，并将
 工具输出继续标记为不可信数据。
 
@@ -263,6 +264,7 @@ LangGraph 节点可能因恢复而重新执行。所有副作用使用稳定的
 - Sandbox Client 重复提交返回同一 Job 或已完成结果；
 - Artifact 使用原子临时文件加 rename；
 - PR 创建前按 feedback、branch 和 patch hash 查重；
+- 发布失败只允许同 run 恢复 `publication_*` checkpoint，不重新执行模型或 Sandbox；
 - finalize 使用目标状态条件更新。
 
 运行恢复时先从外部系统查询 operation 状态，不能无条件重复副作用。Graph、Prompt、

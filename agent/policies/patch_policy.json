@@ -1,9 +1,10 @@
 {
-  "version": "patch-policy-v1",
+  "version": "patch-policy-v2",
   "read": {
     "exact": [
       "backend/app/normalizer.py",
       "backend/app/pandoc_runner.py",
+      "backend/app/mermaid_renderer.py",
       "backend/pyproject.toml",
       "AGENTS.md",
       "README.md"

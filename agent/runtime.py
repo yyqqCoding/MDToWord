@@ -1,0 +1,194 @@
+"""统一装配真实 D→E→F Controller，CLI 与生产 Scheduler 共享同一配置边界。"""
+
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from typing import AsyncIterator, Literal
+
+import httpx
+
+from agent.checkpoint import open_postgres_checkpointer
+from agent.config import AgentConfig
+from agent.controller import GateController
+from agent.graph import (
+    PublishingDependencies,
+    RepairDependencies,
+    ReproductionDependencies,
+)
+from agent.providers.openai_compatible import OpenAICompatibleProvider
+from agent.publishing.github import GitHubAppTokenProvider, GitHubPullRequestPublisher
+from agent.repositories.supabase import (
+    SupabaseAgentRunRepository,
+    SupabaseFeedbackRepository,
+)
+from agent.sandbox.client import HttpSandboxClient
+from agent.telemetry.langfuse import LangfuseTelemetry
+from agent.tools.edits import StructuredEditTools
+from agent.workspace.artifacts import ArtifactStore
+from agent.workspace.edits import PatchBuilder
+from agent.workspace.patch_policy import PatchPolicy
+from agent.workspace.preparation import GitHubSourceWorkspace
+from agent.workspace.source_repository import GitHubSourceRepository
+from agent.workspace.versioning import GitHubMainRevisionReader, read_extension_version
+
+
+RuntimeStage = Literal["gate", "reproduction", "repair", "publication"]
+
+
+@dataclass(frozen=True)
+class ConfiguredRuntime:
+    controller: GateController
+    feedback_repository: SupabaseFeedbackRepository
+    run_repository: SupabaseAgentRunRepository
+
+
+@asynccontextmanager
+async def open_configured_runtime(
+    config: AgentConfig,
+    *,
+    stage: RuntimeStage,
+    dry_run: bool,
+) -> AsyncIterator[ConfiguredRuntime]:
+    """在领取反馈前校验并隔离所有真实凭据，退出时统一 flush/close。"""
+
+    database_url = config.require_database_url()
+    model_name, model_api_key, model_base_url = config.require_model_settings()
+    langfuse_host, langfuse_public_key, langfuse_secret_key = (
+        config.require_langfuse_settings()
+    )
+    shared_client = httpx.AsyncClient(timeout=30)
+    source_client: httpx.AsyncClient | None = None
+    publisher_client: httpx.AsyncClient | None = None
+    telemetry = LangfuseTelemetry(
+        public_key=langfuse_public_key,
+        secret_key=langfuse_secret_key,
+        host=langfuse_host,
+        environment=config.agent_environment,
+    )
+    try:
+        provider = OpenAICompatibleProvider(
+            api_key=model_api_key,
+            model=model_name,
+            base_url=model_base_url,
+            client=shared_client,
+            input_cost_per_million=config.model_input_cost_per_million,
+            output_cost_per_million=config.model_output_cost_per_million,
+        )
+        artifacts = ArtifactStore(config.artifact_root)
+        reproduction = None
+        repair = None
+        publishing = None
+
+        if stage in {"reproduction", "repair", "publication"}:
+            repository, read_token, worker_url, worker_credential = (
+                config.require_stage_c_controller_settings()
+            )
+            # Read token 与 App 私钥分属不同 Client，避免默认 Header 跨边界传播。
+            source_client = httpx.AsyncClient(
+                timeout=30,
+                headers={"Authorization": f"Bearer {read_token}"},
+            )
+            reproduction = ReproductionDependencies(
+                plan_provider=provider,
+                test_provider=provider,
+                source_workspace=GitHubSourceWorkspace(
+                    config.source_workspace_root,
+                    GitHubMainRevisionReader(repository, client=source_client),
+                    GitHubSourceRepository(repository, client=source_client),
+                ),
+                edit_tools=StructuredEditTools(
+                    PatchBuilder(PatchPolicy.load_default()),
+                    artifacts,
+                ),
+                sandbox_client=HttpSandboxClient(
+                    worker_url,
+                    credential=worker_credential,
+                    client=shared_client,
+                ),
+                telemetry=telemetry,
+                model_timeout_seconds=config.reproduction_model_timeout_seconds,
+            )
+
+        if stage in {"repair", "publication"}:
+            repair = RepairDependencies(
+                fix_provider=provider,
+                telemetry=telemetry,
+                model_timeout_seconds=config.reproduction_model_timeout_seconds,
+                max_model_calls=config.max_model_calls_per_run,
+                max_tool_calls=config.max_tool_calls_per_run,
+                max_total_tokens=config.max_total_tokens_per_run,
+                max_sandbox_seconds=config.max_sandbox_seconds_per_run,
+                baseline_skipped=config.backend_baseline_skipped,
+            )
+
+        if stage == "publication":
+            assert config.github_repository is not None
+            (
+                app_id,
+                private_key,
+                api_url,
+                main_branch,
+                trace_url_template,
+            ) = config.require_stage_f_publisher_settings()
+            publisher_client = httpx.AsyncClient(timeout=30)
+            token_provider = GitHubAppTokenProvider(
+                config.github_repository,
+                app_id=app_id,
+                private_key=private_key,
+                client=publisher_client,
+                api_url=api_url,
+            )
+            publishing = PublishingDependencies(
+                publisher=GitHubPullRequestPublisher(
+                    config.github_repository,
+                    token_provider=token_provider,
+                    client=publisher_client,
+                    api_url=api_url,
+                    main_branch=main_branch,
+                ),
+                trace_url_template=trace_url_template,
+                telemetry=telemetry,
+            )
+
+        feedback_repository = SupabaseFeedbackRepository(
+            config.supabase_url,
+            config.supabase_agent_key.get_secret_value(),
+            config.supabase_agent_key.get_secret_value(),
+            client=shared_client,
+        )
+        run_repository = SupabaseAgentRunRepository(
+            config.supabase_url,
+            config.supabase_agent_key.get_secret_value(),
+            client=shared_client,
+        )
+        async with open_postgres_checkpointer(
+            database_url,
+            config.checkpoint_schema,
+        ) as checkpointer:
+            yield ConfiguredRuntime(
+                controller=GateController(
+                    feedback_repository=feedback_repository,
+                    run_repository=run_repository,
+                    provider=provider,
+                    artifact_store=artifacts,
+                    checkpointer=checkpointer,
+                    min_confidence=config.min_gate_confidence,
+                    extension_version=read_extension_version(
+                        config.extension_manifest_path
+                    ),
+                    telemetry=telemetry,
+                    environment=config.agent_environment,
+                    dry_run=dry_run,
+                    reproduction=reproduction,
+                    repair=repair,
+                    publishing=publishing,
+                ),
+                feedback_repository=feedback_repository,
+                run_repository=run_repository,
+            )
+    finally:
+        telemetry.flush()
+        await shared_client.aclose()
+        if source_client is not None:
+            await source_client.aclose()
+        if publisher_client is not None:
+            await publisher_client.aclose()

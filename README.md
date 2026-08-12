@@ -34,6 +34,7 @@ AI 网页端给出的内容看着是 Markdown，但**复制到 Word 里往往一
 | 📋 **直接复制即用** | 从 AI 网页复制内容，粘进侧边栏，点一下就能导出 `.docx`，无需手动整理格式 |
 | 📊 **表格 → 三线表** | Markdown 表格自动转成学术规范的**三线表**（上下粗线 + 表头下细线、无内部网格），可直接用于论文/报告 |
 | 🧮 **公式可编辑** | 行内/块级公式转成 **Word 原生公式（OMML）**，不是图片，能在 Word 里继续编辑 |
+| 🔀 **Mermaid 流程图** | Mermaid 源码在后端本地渲染为 PNG 后嵌入 Word（图像不可继续编辑） |
 | 🔠 **标题映射** | `#` → Word 一级标题、`##` → 二级…… `######` → 六级；超过六级自动降为正文 |
 | 🇨🇳 **中文排版** | 正文宋体、标题黑体、1.5 倍行距等中文论文常用样式（基于 `reference.docx`） |
 | 🛡️ **脏 Markdown 兜底** | 自动修复网页 AI 输出的非标准写法（见下） |
@@ -94,7 +95,10 @@ AI 网页内容
 后端 normalize_markdown()  🛡️ 修复脏 Markdown
    │
    ▼
-Pandoc（math + tables 扩展 + reference.docx 中文样式）
+本地 Mermaid CLI + Chromium（仅流程图，输出 PNG）
+   │
+   ▼
+Pandoc（math + tables + 图片 + reference.docx 中文样式）
    │
    ▼
 三线表后处理 + 导出自检  🩺
@@ -117,7 +121,9 @@ uv pip install -e ".[dev]"
 .venv/bin/python -m pytest -v                 # 运行测试
 ```
 
-> Pandoc 用于 `.docx` 转换。开发依赖含 `pypandoc_binary`，本地测试无需单独安装 Pandoc。
+> Pandoc 用于 `.docx` 转换。开发依赖含 `pypandoc_binary`，本地非 Mermaid 测试无需单独
+> 安装 Pandoc。Mermaid 真实转换请使用后端 Docker 镜像，以确保 CLI、Chromium 和中文
+> 字体版本与生产一致。
 
 ### 扩展 🧩
 
@@ -144,6 +150,7 @@ docker build -t md-to-word-backend .
 - [ ] 📝 正文文字可读、样式正常
 - [ ] 📊 表格是 Word 原生表格，且为三线表样式
 - [ ] 🧮 公式是可编辑的 Word 公式（不是图片）
+- [ ] 🔀 Mermaid 流程图显示为清晰图片（流程图本身不可编辑）
 - [ ] 🔠 标题层级映射正确（`#` → 一级标题……）
 
 ---

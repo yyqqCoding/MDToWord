@@ -73,6 +73,7 @@ Controller 的源码读取凭据只授予指定仓库 `Contents: Read-only`；�
 ```text
 backend/app/normalizer.py
 backend/app/pandoc_runner.py
+backend/app/mermaid_renderer.py         # 只读受信平台 API
 backend/tests/**/*.py
 backend/pyproject.toml               # 只读
 AGENTS.md                            # 只读规则
@@ -103,6 +104,12 @@ backend/tests/fixtures/feedback/**/*
 ```
 
 测试生成阶段只能修改后两项；修复生成阶段只能修改前两项。
+
+依赖与部署文件仍不在自动修改白名单内。维护者可以为已确认的真实缺陷手工审核并预装
+平台依赖，但必须固定版本、同时更新生产与 Sandbox 镜像并先完成真实容器验证。当前
+Mermaid 能力固定为本地 `mmdc + Chromium -> PNG`：最多 5 图、单图源码 20,000 UTF-8
+字节、单图 20 秒，禁止外链、HTML、click 和运行时初始化配置；任务容器保持无网络。
+`mermaid_renderer.py` 可读不可写，模型只能在 `pandoc_runner.py` 接入它公开的受信函数。
 
 明确禁止：
 
@@ -209,6 +216,8 @@ Langfuse 或 GitHub 凭据注入 Worker 进程。Controller 与 Worker 共享的
 - Feedback API不使用Agent数据库密钥；
 - Controller按Provider只加载当前模型Key；
 - GitHub使用只安装到本仓库的GitHub App，授予源码与PR所需最小权限；
+- 每次发布用 App JWT 换取短期安装令牌时再次限定当前仓库，并只请求
+  `contents:write` 与 `pull_requests:write`；令牌响应若包含额外权限则拒绝发布；
 - GitHub App禁止Actions、Administration、Secrets和自动合并权限；
 - 安装令牌短期生成，不保存到Artifact或Trace；
 - Langfuse仅使用项目写入Key，Trace查看由维护者账号控制；

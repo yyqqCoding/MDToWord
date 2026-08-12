@@ -7,13 +7,21 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 
-from agent.domain.enums import AgentRunStatus, FeedbackStatus, GateRoute, RiskLevel
+from agent.domain.enums import (
+    AgentRunStatus,
+    FeedbackStatus,
+    GateCategory,
+    GateRoute,
+    RiskLevel,
+)
+from agent.domain.content import contains_mermaid_diagram
 from agent.domain.errors import (
     ClaimTokenMismatchError,
     FeedbackNotFoundError,
     InvalidEditError,
     ExternalDependencyError,
     PatchPolicyError,
+    PublicationError,
     SourceAccessError,
 )
 from agent.domain.repair import (
@@ -22,10 +30,16 @@ from agent.domain.repair import (
     RepairReport,
     build_validation_result,
     classify_target_validation,
-    requires_mermaid_external_dependency,
 )
 from agent.gate import execute_feedback_gate
 from agent.providers.base import ModelProvider
+from agent.publishing.contracts import (
+    PublicationDisposition,
+    PublicationEvidence,
+    PublicationFile,
+    PublicationRequest,
+    PullRequestPublisher,
+)
 from agent.reproduction import (
     ReproductionModelExecution,
     build_mermaid_test_fallback,
@@ -48,7 +62,11 @@ from agent.tools.edits import StructuredEditTools
 from agent.tools.source import SourceReader
 from agent.workspace.artifacts import ArtifactStore
 from agent.workspace.paths import resolve_snapshot_path
-from agent.workspace.validation import compose_validated_patch, normalize_authorized_patch
+from agent.workspace.validation import (
+    compose_validated_patch,
+    materialize_validated_files,
+    normalize_authorized_patch,
+)
 from agent.workspace.preparation import SourceWorkspace
 from agent.domain.reproduction import (
     ReproductionAttemptArtifact,
@@ -58,8 +76,8 @@ from agent.domain.reproduction import (
 )
 
 
-GRAPH_VERSION = "agent-graph-v5"
-POLICY_VERSION = "repair-policy-v4"
+GRAPH_VERSION = "agent-graph-v6"
+POLICY_VERSION = "publication-policy-v4"
 
 _ROUTE_TO_FEEDBACK_STATUS = {
     GateRoute.ACCEPTED_BACKEND_BUG: FeedbackStatus.REPRODUCING,
@@ -95,6 +113,17 @@ class RepairDependencies:
     baseline_skipped: int = 0
 
 
+@dataclass(frozen=True)
+class PublishingDependencies:
+    publisher: PullRequestPublisher
+    trace_url_template: str
+    telemetry: Telemetry = field(default_factory=NoopTelemetry)
+
+    def __post_init__(self) -> None:
+        if "{trace_id}" not in self.trace_url_template:
+            raise ValueError("trace URL template must contain {trace_id}")
+
+
 def build_gate_graph(
     *,
     feedback_repository: FeedbackRepository,
@@ -105,12 +134,15 @@ def build_gate_graph(
     min_confidence: float,
     reproduction: ReproductionDependencies | None = None,
     repair: RepairDependencies | None = None,
+    publishing: PublishingDependencies | None = None,
     interrupt_after: Sequence[str] | None = None,
 ):
-    """构建 Gate Graph；阶段 E 依赖只在阶段 D 确认复现后启用修复。"""
+    """构建可恢复 Graph；后续阶段依赖必须按 D -> E -> F 顺序启用。"""
 
     if repair is not None and reproduction is None:
         raise ValueError("repair graph requires reproduction dependencies")
+    if publishing is not None and repair is None:
+        raise ValueError("publishing graph requires repair dependencies")
 
     async def start_gate(state: AgentState) -> dict[str, object]:
         feedback = await feedback_repository.get(state.feedback_id)
@@ -660,40 +692,6 @@ def build_gate_graph(
             )
             if reproduction_attempt.report is None:
                 raise ValueError("repair requires a classified reproduction")
-            if (
-                reproduction_attempt.report.disposition
-                is ReproductionDisposition.REPRODUCED
-                and requires_mermaid_external_dependency(task, plan)
-            ):
-                # Mermaid drawing 需要当前固定镜像之外的渲染器；该部署决策不交给模型。
-                next_round = state.repair_round + 1
-                report = RepairReport(
-                    disposition=RepairDisposition.NEEDS_HUMAN,
-                    round=next_round,
-                    failure_code="external_dependency_required",
-                    failure_summary=(
-                        "Mermaid drawing repair requires a renderer dependency "
-                        "and deployment review"
-                    ),
-                )
-                summary = "Mermaid rendering requires a deployment dependency"
-                attempt = _synthetic_repair_attempt(
-                    state,
-                    round_number=next_round,
-                    report=report,
-                    summary=summary,
-                    risk=RiskLevel.MEDIUM,
-                )
-                return {
-                    "repair_round": next_round,
-                    "fix_summary": summary,
-                    "risk": RiskLevel.MEDIUM,
-                    "repair_result_ref": artifact_store.write_repair_result_ref(
-                        state.run_id,
-                        attempt,
-                    ),
-                    "last_error_code": report.failure_code,
-                }
             if not _budget_allows(state, repair, model_calls=1):
                 return {"last_error_code": "budget_exhausted"}
             snapshot = reproduction.source_workspace.resolve(state.source_snapshot_ref)
@@ -705,6 +703,15 @@ def build_gate_graph(
             )
             if not requested_paths:
                 requested_paths = ("backend/app/normalizer.py",)
+            if (
+                contains_mermaid_diagram(task.markdown_content)
+                and plan.oracle.trusted_assertion_name()
+                == "assert_minimum_drawing_count"
+            ):
+                # Mermaid 是预装的平台能力：模型可读取其受信 API，但仍不能修改实现或依赖。
+                requested_paths = tuple(
+                    dict.fromkeys((*requested_paths, "backend/app/mermaid_renderer.py"))
+                )
             if not _budget_allows(
                 state,
                 repair,
@@ -1239,21 +1246,239 @@ def build_gate_graph(
             )
             target = FeedbackStatus.VALIDATED if validation.passed else FeedbackStatus.FAILED
             if feedback.status is FeedbackStatus.VALIDATING:
-                await feedback_repository.transition(
+                feedback = await feedback_repository.transition(
                     feedback.id,
                     claim_token=state.claim_token,
                     target=target,
                     error_code=validation.failure_code,
                     error_message=validation.failure_summary,
                 )
-            elif feedback.status is not target:
+            elif feedback.status not in {target, FeedbackStatus.PUBLISHING}:
                 raise ClaimTokenMismatchError("feedback validation was finalized elsewhere")
+            if publishing is not None and validation.passed:
+                if feedback.status is FeedbackStatus.VALIDATED:
+                    await feedback_repository.transition(
+                        feedback.id,
+                        claim_token=state.claim_token,
+                        target=FeedbackStatus.PUBLISHING,
+                    )
+                elif feedback.status is not FeedbackStatus.PUBLISHING:
+                    raise ClaimTokenMismatchError(
+                        "feedback publication was started elsewhere"
+                    )
             await run_repository.complete_validation(
                 state.run_id,
                 validation,
+                publish_pending=publishing is not None,
                 **_usage_arguments(state),
             )
-            return {"status": AgentRunStatus.COMPLETED}
+            return {
+                "status": (
+                    AgentRunStatus.PUBLISHING
+                    if publishing is not None and validation.passed
+                    else AgentRunStatus.COMPLETED
+                )
+            }
+
+        def route_after_validation_finish(state: AgentState) -> str:
+            return "publish" if state.status is AgentRunStatus.PUBLISHING else "end"
+
+        async def publish_pull_request(state: AgentState) -> dict[str, object]:
+            assert publishing is not None
+            if (
+                state.validation_result_ref is None
+                or state.source_snapshot_ref is None
+                or state.repair_result_ref is None
+            ):
+                raise ValueError("publication state is missing validated artifacts")
+            validation = artifact_store.read_validation(state.validation_result_ref)
+            if not validation.passed:
+                raise PublicationError("publisher received failed validation")
+            patch = artifact_store.read_patch(validation.validated_patch_ref)
+            snapshot = reproduction.source_workspace.resolve(state.source_snapshot_ref)
+            try:
+                # 发布前重新物化并校验已通过测试的补丁，防止 Artifact 被替换或文件集合漂移。
+                materialized = materialize_validated_files(
+                    snapshot.root,
+                    patch,
+                    expected_sha256=validation.validated_patch_sha256,
+                    expected_files=validation.changed_files,
+                )
+            except PatchPolicyError as exc:
+                raise PublicationError(
+                    "validated patch failed publication integrity checks"
+                ) from exc
+
+            run = await run_repository.get(state.run_id)
+            if run is None or run.category is None:
+                raise PublicationError("publication run summary is incomplete")
+            repair_attempt = artifact_store.read_repair_result(
+                state.repair_result_ref
+            )
+            request = PublicationRequest(
+                feedback_id=state.feedback_id,
+                validation=validation,
+                validated_patch=patch,
+                files=tuple(
+                    PublicationFile(path=item.path, content=item.content)
+                    for item in materialized
+                ),
+                evidence=PublicationEvidence(
+                    category=GateCategory(run.category),
+                    risk=state.risk,
+                    graph_version=run.graph_version,
+                    policy_version=run.policy_version,
+                    prompt_versions=run.prompt_versions,
+                    provider=run.provider or "unknown",
+                    model=run.model or "unknown",
+                    model_calls=state.model_calls,
+                    tool_calls=state.tool_calls,
+                    input_tokens=state.usage.input_tokens,
+                    output_tokens=state.usage.output_tokens,
+                    total_tokens=state.usage.total_tokens,
+                    estimated_cost=str(state.usage.estimated_cost),
+                    extension_sync_required=repair_attempt.extension_sync_required,
+                    trace_id=state.trace_id,
+                    trace_url=publishing.trace_url_template.format(
+                        trace_id=state.trace_id
+                    ),
+                ),
+            )
+            with publishing.telemetry.start_tool(
+                ToolTrace(
+                    operation="publish-pr",
+                    round=None,
+                    input_summary={
+                        "feedback_id_prefix": str(state.feedback_id)[:8],
+                        "base_sha": validation.base_sha,
+                        "validated_patch_sha256": validation.validated_patch_sha256,
+                    },
+                )
+            ) as observation:
+                try:
+                    result = await publishing.publisher.publish(request)
+                except Exception as exc:
+                    observation.fail(
+                        error_code=getattr(exc, "error_code", "publication_failed"),
+                        error_type=type(exc).__name__,
+                    )
+                    raise
+                observation.succeed(
+                    {
+                        "disposition": result.disposition.value,
+                        "branch": result.branch,
+                        "pr_number": result.pr_number,
+                        "reused": result.reused,
+                    }
+                )
+            return {
+                "publication_result_ref": artifact_store.write_publication_ref(
+                    state.run_id,
+                    result,
+                ),
+                "pr_url": result.pr_url,
+                "tool_calls": state.tool_calls + 1,
+                "last_error_code": (
+                    "stale_base"
+                    if result.disposition is PublicationDisposition.STALE_BASE
+                    else None
+                ),
+            }
+
+        async def finish_publication(state: AgentState) -> dict[str, object]:
+            if state.publication_result_ref is None:
+                raise ValueError("publication result is missing")
+            result = artifact_store.read_publication(state.publication_result_ref)
+            if result.disposition is PublicationDisposition.STALE_BASE:
+                feedback = await feedback_repository.get(state.feedback_id)
+                if feedback is None:
+                    raise FeedbackNotFoundError(
+                        f"feedback {state.feedback_id} does not exist"
+                    )
+                if (
+                    feedback.claim_token != state.claim_token
+                    and feedback.status is not FeedbackStatus.PENDING
+                ):
+                    raise ClaimTokenMismatchError(
+                        "stale publication is owned by another run"
+                    )
+                if feedback.status is FeedbackStatus.PUBLISHING:
+                    feedback = await feedback_repository.transition(
+                        feedback.id,
+                        claim_token=state.claim_token,
+                        target=FeedbackStatus.STALE_BASE,
+                        error_code="stale_base",
+                        error_message="repository main changed before publication",
+                    )
+                if feedback.status is FeedbackStatus.STALE_BASE:
+                    # 主分支漂移只自动重排一次，连续漂移交给人工处理以避免无限重试。
+                    requeue_target = (
+                        FeedbackStatus.PENDING
+                        if feedback.stale_requeue_count == 0
+                        else FeedbackStatus.NEEDS_HUMAN
+                    )
+                    feedback = await feedback_repository.transition(
+                        feedback.id,
+                        claim_token=state.claim_token,
+                        target=requeue_target,
+                        error_code=(
+                            None
+                            if requeue_target is FeedbackStatus.PENDING
+                            else "stale_base_repeated"
+                        ),
+                        error_message=(
+                            None
+                            if requeue_target is FeedbackStatus.PENDING
+                            else "repository main changed twice before publication"
+                        ),
+                    )
+                elif feedback.status not in {
+                    FeedbackStatus.PENDING,
+                    FeedbackStatus.NEEDS_HUMAN,
+                }:
+                    raise ClaimTokenMismatchError(
+                        "stale publication was finalized elsewhere"
+                    )
+                await run_repository.complete_stale_base(
+                    state.run_id,
+                    tool_calls=state.tool_calls,
+                )
+                return {
+                    "status": AgentRunStatus.STALE_BASE,
+                    "route": (
+                        GateRoute.NEEDS_HUMAN.value
+                        if feedback.status is FeedbackStatus.NEEDS_HUMAN
+                        else state.route
+                    ),
+                    "last_error_code": "stale_base",
+                }
+
+            feedback = await _owned_feedback(
+                feedback_repository,
+                state.feedback_id,
+                state.claim_token,
+            )
+            if result.pr_url is None:
+                raise PublicationError("opened publication is missing pull request URL")
+            if feedback.status is FeedbackStatus.PUBLISHING:
+                await feedback_repository.transition(
+                    feedback.id,
+                    claim_token=state.claim_token,
+                    target=FeedbackStatus.PR_OPENED,
+                    pr_url=result.pr_url,
+                )
+            elif feedback.status is not FeedbackStatus.PR_OPENED:
+                raise ClaimTokenMismatchError("publication was finalized elsewhere")
+            await run_repository.complete_publication(
+                state.run_id,
+                pr_url=result.pr_url,
+                tool_calls=state.tool_calls,
+            )
+            return {
+                "status": AgentRunStatus.COMPLETED,
+                "pr_url": result.pr_url,
+                "last_error_code": None,
+            }
 
         async def finish_budget_exhausted(state: AgentState) -> dict[str, object]:
             feedback = await _owned_feedback(
@@ -1319,6 +1544,9 @@ def build_gate_graph(
             builder.add_node("validate_final", validate_final)
             builder.add_node("finish_validation", finish_validation)
             builder.add_node("finish_budget_exhausted", finish_budget_exhausted)
+            if publishing is not None:
+                builder.add_node("publish_pull_request", publish_pull_request)
+                builder.add_node("finish_publication", finish_publication)
             builder.add_conditional_edges(
                 "finish_reproduction",
                 route_after_reproduction_finish,
@@ -1366,7 +1594,16 @@ def build_gate_graph(
                 },
             )
             builder.add_edge("finish_repair_failure", END)
-            builder.add_edge("finish_validation", END)
+            if publishing is None:
+                builder.add_edge("finish_validation", END)
+            else:
+                builder.add_conditional_edges(
+                    "finish_validation",
+                    route_after_validation_finish,
+                    {"publish": "publish_pull_request", "end": END},
+                )
+                builder.add_edge("publish_pull_request", "finish_publication")
+                builder.add_edge("finish_publication", END)
             builder.add_edge("finish_budget_exhausted", END)
     return builder.compile(
         checkpointer=checkpointer,

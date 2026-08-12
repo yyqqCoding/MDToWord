@@ -14,23 +14,15 @@ from agent.controller import GateController, GateRunOutcome
 from agent.domain.enums import GateCategory, GateIntent, GateRoute
 from agent.domain.errors import AgentError, ConfigurationError
 from agent.domain.gate import GateClassification
-from agent.graph import RepairDependencies, ReproductionDependencies
 from agent.providers.fake import FakeModelProvider
-from agent.providers.openai_compatible import OpenAICompatibleProvider
 from agent.repositories.supabase import (
     SupabaseAgentRunRepository,
     SupabaseFeedbackRepository,
 )
-from agent.sandbox.client import HttpSandboxClient
-from agent.tools.edits import StructuredEditTools
+from agent.scheduler import FeedbackScheduler
 from agent.workspace.artifacts import ArtifactStore
-from agent.workspace.edits import PatchBuilder
-from agent.workspace.patch_policy import PatchPolicy
-from agent.workspace.preparation import GitHubSourceWorkspace
-from agent.workspace.source_repository import GitHubSourceRepository
-from agent.workspace.versioning import GitHubMainRevisionReader, read_extension_version
+from agent.workspace.versioning import read_extension_version
 from agent.telemetry.base import NoopTelemetry
-from agent.telemetry.langfuse import LangfuseTelemetry
 
 
 _FAKE_ROUTES = (
@@ -66,6 +58,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="continue a reproduced backend defect through Stage E repair and validation",
     )
     run_parser.add_argument(
+        "--publish",
+        action="store_true",
+        help="publish a passed Stage E validation through the Stage F GitHub App",
+    )
+    run_parser.add_argument(
         "--provider",
         choices=("fake", "configured"),
         default="fake",
@@ -79,25 +76,37 @@ def build_parser() -> argparse.ArgumentParser:
 
     checkpoint_parser = commands.add_parser("checkpoint")
     checkpoint_parser.add_argument("action", choices=("setup",))
+
+    scheduler_parser = commands.add_parser("scheduler")
+    scheduler_mode = scheduler_parser.add_mutually_exclusive_group(required=True)
+    scheduler_mode.add_argument("--once", action="store_true")
+    scheduler_mode.add_argument("--forever", action="store_true")
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        if args.command == "run" and not args.dry_run:
+        if args.command == "run" and args.publish and args.dry_run:
+            raise CliUsageError("--publish cannot be combined with --dry-run")
+        if args.command == "run" and not args.dry_run and not args.publish:
             _print_json({"error": "dry_run_required"})
             return 2
         if (
             args.command == "run"
-            and (args.reproduce or args.repair or args.resume_run_id is not None)
+            and (
+                args.reproduce
+                or args.repair
+                or args.publish
+                or args.resume_run_id is not None
+            )
             and (
                 args.provider != "configured"
-                or (not args.reproduce and not args.repair)
+                or (not args.reproduce and not args.repair and not args.publish)
             )
         ):
             raise CliUsageError(
-                "reproduction and resume require --reproduce or --repair with "
+                "reproduction and resume require --reproduce, --repair or --publish with "
                 "--provider configured"
             )
         return asyncio.run(_execute(args))
@@ -115,8 +124,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 async def _execute(args: argparse.Namespace) -> int:
     config = AgentConfig.from_env()
-    database_url = config.require_database_url()
     if args.command == "checkpoint":
+        database_url = config.require_database_url()
         async with open_postgres_checkpointer(
             database_url,
             config.checkpoint_schema,
@@ -124,6 +133,24 @@ async def _execute(args: argparse.Namespace) -> int:
         ):
             pass
         _print_json({"status": "checkpoint_ready", "schema": config.checkpoint_schema})
+        return 0
+    if args.command == "scheduler":
+        outcome = await _run_production_scheduler(config, once=args.once)
+        _print_json(
+            {
+                "status": "idle" if outcome is None else "processed",
+                "run_id": str(outcome.run_id) if outcome is not None else None,
+                "feedback_id": (
+                    str(outcome.feedback_id) if outcome is not None else None
+                ),
+                "route": (
+                    outcome.route.value
+                    if outcome is not None and outcome.route is not None
+                    else None
+                ),
+                "pr_url": outcome.pr_url if outcome is not None else None,
+            }
+        )
         return 0
 
     result = await _run_dry_gate(
@@ -133,6 +160,7 @@ async def _execute(args: argparse.Namespace) -> int:
         provider_mode=args.provider,
         reproduce=args.reproduce,
         repair=args.repair,
+        publish=args.publish,
         resume_run_id=args.resume_run_id,
     )
     _print_json(
@@ -141,10 +169,17 @@ async def _execute(args: argparse.Namespace) -> int:
             "feedback_id": str(result.feedback_id),
             "route": result.route.value if result.route else None,
             "completed": result.completed,
-            "dry_run": True,
+            "dry_run": not args.publish,
             "provider": args.provider,
+            "pr_url": result.pr_url,
             "stage": (
-                "repair" if args.repair else ("reproduction" if args.reproduce else "gate")
+                "publication"
+                if args.publish
+                else (
+                    "repair"
+                    if args.repair
+                    else ("reproduction" if args.reproduce else "gate")
+                )
             ),
         }
     )
@@ -159,82 +194,37 @@ async def _run_dry_gate(
     provider_mode: str = "fake",
     reproduce: bool = False,
     repair: bool = False,
+    publish: bool = False,
     resume_run_id: UUID | None = None,
 ) -> GateRunOutcome:
     # 所有外部依赖配置在领取反馈前完成校验，避免配置错误留下无主租约。
     database_url = config.require_database_url()
+    repair = repair or publish
     reproduce = reproduce or repair
     if reproduce and provider_mode != "configured":
         raise CliUsageError("--reproduce/--repair requires --provider configured")
+    if provider_mode == "configured":
+        from agent.runtime import open_configured_runtime
+
+        stage = (
+            "publication"
+            if publish
+            else ("repair" if repair else ("reproduction" if reproduce else "gate"))
+        )
+        async with open_configured_runtime(
+            config,
+            stage=stage,
+            dry_run=not publish,
+        ) as runtime:
+            return await _start_or_resume(
+                runtime.controller,
+                runtime.feedback_repository,
+                feedback_id=feedback_id,
+                resume_run_id=resume_run_id,
+                config=config,
+            )
+
     async with httpx.AsyncClient(timeout=30) as client:
-        telemetry = NoopTelemetry()
-        if provider_mode == "configured":
-            model_name, model_api_key, model_base_url = config.require_model_settings()
-            langfuse_host, langfuse_public_key, langfuse_secret_key = (
-                config.require_langfuse_settings()
-            )
-            provider = OpenAICompatibleProvider(
-                api_key=model_api_key,
-                model=model_name,
-                base_url=model_base_url,
-                client=client,
-                input_cost_per_million=config.model_input_cost_per_million,
-                output_cost_per_million=config.model_output_cost_per_million,
-            )
-            telemetry = LangfuseTelemetry(
-                public_key=langfuse_public_key,
-                secret_key=langfuse_secret_key,
-                host=langfuse_host,
-                environment=config.agent_environment,
-            )
-        else:
-            provider = FakeModelProvider([fake_classification_for_route(fake_route)])
-
-        artifacts = ArtifactStore(config.artifact_root)
-        reproduction = None
-        repair_dependencies = None
-        github_client: httpx.AsyncClient | None = None
-        if reproduce:
-            repository, github_read_token, worker_url, worker_credential = (
-                config.require_stage_c_controller_settings()
-            )
-            # GitHub 凭据只进入专用 Client，不能随共享 Client 请求到其他外部服务。
-            github_client = httpx.AsyncClient(
-                timeout=30,
-                headers={"Authorization": f"Bearer {github_read_token}"},
-            )
-            reproduction = ReproductionDependencies(
-                plan_provider=provider,
-                test_provider=provider,
-                source_workspace=GitHubSourceWorkspace(
-                    config.source_workspace_root,
-                    GitHubMainRevisionReader(repository, client=github_client),
-                    GitHubSourceRepository(repository, client=github_client),
-                ),
-                edit_tools=StructuredEditTools(
-                    PatchBuilder(PatchPolicy.load_default()),
-                    artifacts,
-                ),
-                sandbox_client=HttpSandboxClient(
-                    worker_url,
-                    credential=worker_credential,
-                    client=client,
-                ),
-                telemetry=telemetry,
-                model_timeout_seconds=config.reproduction_model_timeout_seconds,
-            )
-            if repair:
-                repair_dependencies = RepairDependencies(
-                    fix_provider=provider,
-                    telemetry=telemetry,
-                    model_timeout_seconds=config.reproduction_model_timeout_seconds,
-                    max_model_calls=config.max_model_calls_per_run,
-                    max_tool_calls=config.max_tool_calls_per_run,
-                    max_total_tokens=config.max_total_tokens_per_run,
-                    max_sandbox_seconds=config.max_sandbox_seconds_per_run,
-                    baseline_skipped=config.backend_baseline_skipped,
-                )
-
         feedback_repository = SupabaseFeedbackRepository(
             config.supabase_url,
             config.supabase_agent_key.get_secret_value(),
@@ -245,43 +235,84 @@ async def _run_dry_gate(
             config.supabase_agent_key.get_secret_value(),
             client=client,
         )
-        try:
-            async with open_postgres_checkpointer(
-                database_url,
-                config.checkpoint_schema,
-            ) as checkpointer:
-                controller = GateController(
-                    feedback_repository=feedback_repository,
-                    run_repository=run_repository,
-                    provider=provider,
-                    artifact_store=artifacts,
-                    checkpointer=checkpointer,
-                    min_confidence=config.min_gate_confidence,
-                    extension_version=read_extension_version(
-                        config.extension_manifest_path
-                    ),
-                    telemetry=telemetry,
-                    environment=config.agent_environment,
-                    reproduction=reproduction,
-                    repair=repair_dependencies,
-                )
-                if resume_run_id is not None:
-                    return await controller.resume(resume_run_id)
-                if feedback_id is None:
-                    raise CliUsageError("feedback id is required for a new run")
-                claimed = await feedback_repository.claim_by_id(
-                    feedback_id,
-                    now=_utc_now(),
-                    lease_seconds=config.claim_lease_seconds,
-                    max_attempts=config.max_claim_attempts,
-                )
-                if claimed is None:
-                    raise CliUsageError("feedback is not claimable")
-                return await controller.start(claimed)
-        finally:
-            if github_client is not None:
-                await github_client.aclose()
-            telemetry.flush()
+        async with open_postgres_checkpointer(
+            database_url,
+            config.checkpoint_schema,
+        ) as checkpointer:
+            controller = GateController(
+                feedback_repository=feedback_repository,
+                run_repository=run_repository,
+                provider=FakeModelProvider(
+                    [fake_classification_for_route(fake_route)]
+                ),
+                artifact_store=ArtifactStore(config.artifact_root),
+                checkpointer=checkpointer,
+                min_confidence=config.min_gate_confidence,
+                extension_version=read_extension_version(
+                    config.extension_manifest_path
+                ),
+                telemetry=NoopTelemetry(),
+                environment=config.agent_environment,
+            )
+            return await _start_or_resume(
+                controller,
+                feedback_repository,
+                feedback_id=feedback_id,
+                resume_run_id=resume_run_id,
+                config=config,
+            )
+
+
+async def _start_or_resume(
+    controller,
+    feedback_repository,
+    *,
+    feedback_id: UUID | None,
+    resume_run_id: UUID | None,
+    config: AgentConfig,
+) -> GateRunOutcome:
+    if resume_run_id is not None:
+        return await controller.resume(resume_run_id)
+    if feedback_id is None:
+        raise CliUsageError("feedback id is required for a new run")
+    claimed = await feedback_repository.claim_by_id(
+        feedback_id,
+        now=_utc_now(),
+        lease_seconds=config.claim_lease_seconds,
+        max_attempts=config.max_claim_attempts,
+    )
+    if claimed is None:
+        raise CliUsageError("feedback is not claimable")
+    return await controller.start(claimed)
+
+
+async def _run_production_scheduler(
+    config: AgentConfig,
+    *,
+    once: bool,
+) -> GateRunOutcome | None:
+    """生产开关只控制是否领取反馈，Graph 内仍保持全自动 D→E→F。"""
+
+    config.require_production_scheduler_enabled()
+    from agent.runtime import open_configured_runtime
+
+    async with open_configured_runtime(
+        config,
+        stage="publication",
+        dry_run=False,
+    ) as runtime:
+        scheduler = FeedbackScheduler(
+            feedback_repository=runtime.feedback_repository,
+            run_repository=runtime.run_repository,
+            controller=runtime.controller,
+            lease_seconds=config.claim_lease_seconds,
+            max_attempts=config.max_claim_attempts,
+            poll_interval_seconds=config.poll_interval_seconds,
+        )
+        if once:
+            return await scheduler.run_once()
+        await scheduler.run_forever(asyncio.Event())
+        return None
 
 
 def fake_classification_for_route(route: GateRoute) -> GateClassification:

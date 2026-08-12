@@ -52,10 +52,15 @@ GitHub 创建 Pull Request，由维护者人工审核和合并。
   `--reproduce --provider configured` 时才读取固定 GitHub 快照并启动沙箱；
 - 阶段 E 修复循环、预算、独立验证和 `validated.patch` 已实现并通过自动测试与真实
   Docker 验收；`--repair --provider configured` 可执行完整 D+E，也可续跑阶段 D 的
-  `repairing` checkpoint。真实 Supabase/模型/Langfuse/GitHub/Sandbox 运行已确认
-  Mermaid 缺陷复现，并按固定依赖 Policy 终结为
-  `needs_human/external_dependency_required`；阶段 E 已完成；
-- 阶段 F 和 G 尚未开始，当前不会创建 PR。
+  `repairing` checkpoint。历史真实运行已确认 Mermaid 缺陷复现和当时无渲染器时的
+  `needs_human/external_dependency_required` 安全终态；2026-08-12 经维护者确认后，
+  已新增生产/Sandbox 同版本的本地 Mermaid CLI + Chromium 平台能力，Mermaid 可继续
+  进入自动修复和 drawing 验证，模型仍不能修改依赖或部署文件；
+- 阶段 F GitHub App Publisher、固定分支/提交/PR、基线过期与幂等恢复已实现；阶段 G
+  的 12 条离线评估、Fake E2E 发布场景和默认关闭的生产 Scheduler 已实现；真实 Provider
+  使用 `gate-v6/publication-policy-v3` 完成 12 条评估，Gate/自动化精确率/Schema/注入召回
+  均为 100%，注入误报为 0。当前仍需完成真实 GitHub App PR、人工 Review/部署回放和
+  连续生产反馈验收，因此 F/G 尚未标记最终完成。
 
 可直接执行的配置和命令见 [agent/README.md](../../agent/README.md)。阶段划分、历史检查点
 和验收证据以 [implementation-plan.md](implementation-plan.md) 为准；本文档中的目标
