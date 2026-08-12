@@ -107,3 +107,27 @@ systemd 将 Worker 标记为 `active` 时，Python 进程可能仍在导入模�
 Worker 审计在确认 systemd 服务处于活动状态后，最多等待 30 秒并重复探测本机 HTTP
 端点。就绪后继续镜像、监听地址及 Controller 预检；超时则自动输出服务状态和最近日志，
 避免仅返回无法定位原因的 `connection refused`。
+
+## 问题 11：模型列表接口正常，但生产任务仍失败
+
+`/models` 返回 200 只说明 Base URL、网络和 API Key 可用。真实任务仍可能在 Chat
+Completions 遇到上游 5xx/断开，或返回不符合复杂严格 Schema 的内容；把两类问题都当成
+“API 不通”会误导排障。
+
+### 解决方案
+
+按稳定错误码和 Langfuse 节点定位：`provider_unavailable` 是传输或上游服务在有限重试
+后仍失败；`invalid_response` 是收到内容后严格 Schema/本地 Policy 校验失败。单条 Gate
+评测用于验证基础结构化生成，复杂阶段继续查看 `plan-reproduction`、`generate-test` 或
+`generate-fix` 节点。终态失败不重新领取；部署修复后用新 feedback 验证。
+
+## 问题 12：常驻 Agent 上线后，如何证明不会为已修复问题创建空 PR
+
+仅验证 Worker/Scheduler 为 `active` 不能证明业务路由、沙箱和终态策略正确。
+
+### 解决方案
+
+生产小流量验收使用两类安全反馈：无关内容应进入 `rejected_irrelevant`；描述历史
+Mermaid 缺陷、但当前代码已修复的反馈应走完整复现并进入 `cannot_reproduce`。2026-08-13
+两条路径均已通过，后者实际执行受信测试回退和 Docker 复现，未生成补丁或 PR。Worker、
+Scheduler 同时保持 `active/enabled`，确认 systemd 常驻链路正常。

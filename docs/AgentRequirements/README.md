@@ -17,8 +17,8 @@ GitHub 创建 Pull Request，由维护者人工审核和合并。
 - 用户只提交原 Markdown 和问题描述，不采集 `expected_behavior`；
 - 插件版本从 `extension/dist/manifest.json` 读取，不逐条向用户采集版本；
 - 每次运行固定一个 `base_sha`，最终产物记录一个 `validated_patch_sha256`；
-- MVP 通常使用一个模型完成门禁、复现规划、测试生成和修复生成；Mermaid 第一轮测试
-  编辑无效时，Controller 可用固定受信 drawing 模板完成第二轮，不再调用模型。
+- MVP 通常使用一个模型完成门禁、复现规划、测试生成和修复生成；Mermaid 测试生成耗尽
+  格式修正，或第一轮测试编辑无效时，Controller 可用固定受信 drawing 模板继续复现。
 
 ## 文档结构
 
@@ -39,7 +39,7 @@ GitHub 创建 Pull Request，由维护者人工审核和合并。
 
 ## 当前实现状态
 
-截至 2026-08-12：
+截至 2026-08-13：
 
 - 阶段 A、B1 和 B2 已完成；
 - 阶段 B3 的真实模型分类、Prompt Injection 隔离、Langfuse Trace、Token 统计和默认
@@ -61,8 +61,10 @@ GitHub 创建 Pull Request，由维护者人工审核和合并。
   run 已创建 PR #1，维护者已人工审核并合并；
 - 阶段 G 的 12 条离线评估、Fake E2E 发布场景和默认关闭的生产 Scheduler 已实现；真实
   Provider 的 Gate/自动化精确率/Schema/注入召回均为 100%，注入误报为 0；合并后的
-  Render 部署与原 Mermaid 反馈回放已成功完成。阶段 A～G 的开发与首条生产闭环验收
-  完成，是否部署 7×24 小时 Scheduler 作为后续独立运维选择。
+  Render 部署与原 Mermaid 反馈回放已成功完成；独立 Linux ECS 上的 Worker 与 Scheduler
+  已通过一键安装、审计和 systemd 常驻验收。生产反馈已验证无关内容进入
+  `rejected_irrelevant`，已修复的 Mermaid 问题经受信回退和 Docker 复现后进入
+  `cannot_reproduce`，未创建无效 PR。阶段 A～G 的开发、生产部署与小流量验收完成。
 
 可直接执行的配置和命令见 [agent/README.md](../../agent/README.md)。阶段划分、历史检查点
 和验收证据以 [implementation-plan.md](implementation-plan.md) 为准；本文档中的目标

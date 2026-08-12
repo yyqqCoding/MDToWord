@@ -57,7 +57,7 @@ Agent 只自动修改后端白名单文件，不修改扩展、不自动合并�
 ## Docker 结论
 
 - 插件使用的是 Render 后端 Docker；本地 Docker 关闭不影响线上 Word 转换。
-- Agent Sandbox 当前运行在本地 Docker Desktop/WSL；只有本地复现、修复、发布和 Docker
-  集成测试需要开启。
-- 需要 7×24 小时自动处理反馈时，应在独立私有服务器部署 Controller、Worker 和 Docker
-  Engine。不要把 Worker 或 Docker Socket 暴露到公开 Render 转换服务。
+- 本地复现、修复、发布和 Docker 集成测试仍可使用 Docker Desktop/WSL；本地电脑关闭不
+  影响线上插件或生产 Agent。
+- 7×24 小时 Controller、Worker 和 Docker Engine 已部署在独立 Linux ECS。Worker 只监听
+  `127.0.0.1:8090`，不把 Worker 或 Docker Socket 暴露到公开 Render 转换服务。

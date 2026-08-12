@@ -90,16 +90,18 @@ Controller 与 Worker 通过内网通信。Worker 端口不得暴露到公网，
 
 - `git push main` 触发 Render 构建和部署转换后端；
 - 浏览器扩展由维护者构建 `extension/dist` 并在浏览器中刷新，不部署到 Render；
-- Agent Controller/Sandbox 当前没有随 Render 后端自动部署；是否部署独立常驻主机属于
-  运维选择，不影响插件转换功能；
+- Agent Controller/Sandbox 不随 Render 后端部署；当前独立部署在受控 Linux ECS，由
+  systemd 管理 Scheduler 与 Worker，不影响插件转换服务的独立运行；
 - 后端部署完成后必须用原始失败 Markdown 再次导出并用 Word 打开确认；自动化 DOCX
   结构断言不能完全替代视觉验收。
 
 ## 5. 当前完成状态
 
-截至 2026-08-12，阶段 A～G 的开发、自动测试、真实模型评估、真实 GitHub App PR、
-人工合并、Render 部署和 Mermaid 原样例回放均已完成。常驻 Scheduler 是否上线是独立的
-运维决策；未部署常驻 Agent 不代表转换后端或本轮开发未完成。
+截至 2026-08-13，阶段 A～G 的开发、自动测试、真实模型评估、真实 GitHub App PR、
+人工合并、Render 部署和 Mermaid 原样例回放均已完成。常驻 Agent 已在独立 Linux ECS
+上线：Worker 与 Scheduler 均为 `active/enabled`，Worker 仅监听本机 8090。无关反馈已在
+生产环境路由为 `rejected_irrelevant`；已修复 Mermaid 反馈经受信测试回退与 Docker
+复现后路由为 `cannot_reproduce`，没有生成补丁或 PR。
 
 ## 6. Linux 常驻 Agent 一键安装
 
@@ -141,3 +143,27 @@ sudo mdtoword-agentctl logs
 `PRODUCTION_SCHEDULER_ENABLED=true`。Scheduler 启动后优先恢复审计中列出的活动 run，随后
 领取 `pending` 反馈；因此首次启用前必须人工核对两个状态计数对象。运行代码更新时重新
 执行安装脚本是有意的 fail-safe：它会关闭 Scheduler，完成审计后再由维护者重新启用。
+
+## 7. 生产巡检与 Provider 排障
+
+日常状态和最近日志：
+
+```bash
+sudo mdtoword-agentctl status
+sudo mdtoword-agentctl logs
+```
+
+预期 Worker、Scheduler 均为 `active/enabled`。需要停止自动领取时执行
+`sudo mdtoword-agentctl disable`；该操作不停止公开 Render 转换后端。
+
+模型失败必须按稳定错误码区分：
+
+- `provider_unavailable`：连接、远端断开或上游 5xx 在有限重试后仍失败；
+- `invalid_response`：接口已经返回内容，但严格 JSON Schema 或本地 Policy 在一次格式
+  修正后仍未通过；
+- `/models` 返回 200 只验证 Base URL、网络和认证，复杂 `generate-test` 仍可能失败；
+- 可用 `agent.evals.runner --provider configured --case-id <id>` 验证单条 Gate，但阶段 D
+  仍应以 Langfuse 的具体 generation 节点和数据库阶段字段定位。
+
+历史 `failed` feedback/run 保留用于审计，不重新打开。修复部署后使用新的 `pending`
+反馈验证；如果当前代码已经解决问题，正确终态是 `cannot_reproduce`，不是创建空修复 PR。

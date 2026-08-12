@@ -255,16 +255,20 @@ Gate-only Dry Run 会产生模型费用并写 Langfuse，需显式执行：
 .venv/bin/python -m agent.evals.runner --provider configured
 ```
 
-生产 Scheduler 默认由 `PRODUCTION_SCHEDULER_ENABLED=false` 硬关闭。只有维护者完成真实
-PR 审核后，才把私有部署 Secret 改为 `true` 并使用：
+生产 Scheduler 默认由 `PRODUCTION_SCHEDULER_ENABLED=false` 硬关闭。本地诊断可以直接
+运行 CLI；生产环境统一使用受版本控制的 systemd 单元和管理命令：
 
 ```bash
-.venv/bin/python -m agent.cli scheduler --once
-.venv/bin/python -m agent.cli scheduler --forever
+sudo mdtoword-agentctl audit
+sudo mdtoword-agentctl enable
+sudo mdtoword-agentctl status
+sudo mdtoword-agentctl logs
 ```
 
 Scheduler 每次优先恢复 checkpoint，再领取一条反馈，进程内并发固定为 1。开关只控制
 是否领取生产反馈；领取后仍自动执行 D→E→F，不增加逐条人工批准，也不自动合并或部署。
+`enable` 必须在审计后输入 `ENABLE`，部署脚本每次更新都会重新关闭 Scheduler，防止未审计
+的新代码直接领取任务。
 
 ## 9. 当前验收结果
 
@@ -279,9 +283,13 @@ Scheduler 每次优先恢复 checkpoint，再领取一条反馈，进程内并�
   `deepseek-ai/DeepSeek-V4-Flash` 使用 `gate-v6/publication-policy-v3` 的 12 条真实评估达到
   Gate accuracy、automatable precision、Schema compliance、注入召回均 100%，注入误报
   0%；GitHub App 真实 JWT、单仓库安装和最小权限令牌预检已通过；真实 PR #1 已人工合并，
-  Render 部署和插件 Mermaid 原样例回放成功。常驻 Scheduler 部署为后续可选运维事项；
+  Render 部署和插件 Mermaid 原样例回放成功；独立 Linux ECS 上的 Worker/Scheduler 已
+  通过一键安装、审计、开机自启和小流量生产验收；
 - `gate-v2` 真实复测将“仅测试、不需要修复”路由为 `rejected_irrelevant`；
 - Prompt Injection 真实复测路由为 `quarantined_security`，`tool_calls=0`；
+- 生产 Scheduler 已自动把无关测试反馈路由为 `rejected_irrelevant`；已修复 Mermaid
+  反馈在 `generate-test` 严格 Schema 失败后使用受信 drawing 模板继续执行，Docker 中
+  无法复现旧缺陷，最终为 `cannot_reproduce`，未生成补丁或 PR；
 - Langfuse 每次真实 Gate 包含 root Agent 和 `classify-intent` Generation，且抽查未发现
   完整 Markdown、描述或 contact；
 - 阶段 D 真实 Docker 已验证隔离边界和已知表格缺陷的目标失败分类：2 passed；

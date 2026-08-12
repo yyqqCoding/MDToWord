@@ -41,6 +41,9 @@ MD To Word converts AI-generated Markdown into editable Word `.docx`.
   生产与 Sandbox 镜像。Agent 生成的补丁仍不得修改依赖、Dockerfile 或受信平台模块。
 - 历史故障与排障结论写入 `docs/AgentProblem/`；稳定行为或接口变化仍必须同步更新
   `docs/AgentRequirements/`，避免从复盘文档反推当前契约。
+- Provider 排障必须区分传输失败与结构失败：`provider_unavailable` 表示传输/上游服务在
+  有限重试后仍不可用，`invalid_response` 表示已收到响应但严格 Schema/本地 Policy 校验
+  失败。`/models` 返回 200 只证明基础连通与认证，不能替代代表性的结构化生成验证。
 
 Agent 代码或权威设计文档变更后至少运行：
 
@@ -134,6 +137,22 @@ Docker 有两个互相独立的用途：
 主机需要 Docker Engine。不要把 Worker 合并进公开 Render 转换服务，也不要公开暴露
 Docker Socket 或 Worker 端口。完整拓扑与启停说明见
 `docs/AgentRequirements/deployment-and-operations.md`。
+
+生产 Agent 的标准部署形态是独立 Linux ECS：Controller/Scheduler 与 Worker 由 systemd
+管理，Worker 只监听 `127.0.0.1:8090`，本地电脑和 Docker Desktop 无需常驻。更新生产
+Agent 前先停止自动领取，更新后用仓库脚本重新安装并审计，再由维护者显式启用 Scheduler：
+
+```bash
+sudo mdtoword-agentctl disable
+cd /opt/mdtoword
+sudo git pull --ff-only origin main
+sudo bash deploy/agent/install.sh
+sudo mdtoword-agentctl enable
+sudo mdtoword-agentctl status
+```
+
+`install.sh` 有意让 Scheduler 保持关闭；只有审计结果正确并输入 `ENABLE` 后才恢复自动
+领取。不要绕过该顺序直接编辑 systemd 单元或在公开安全组中开放 8090/Docker Socket。
 
 After backend changes:
 

@@ -97,3 +97,7 @@ Worker 或 CLI。不要在已经失效的 Docker bind mount 目录中继续运�
 受信的 `assert_minimum_drawing_count` 时，Controller 使用已有固定测试与 fixture。模板仍
 经过 Patch Policy 和 Docker Sandbox；普通反馈继续保持严格失败，不放宽 Schema，也不
 增加模型重试或外部依赖。
+
+2026-08-13 生产复测确认该路径生效：已修复的裸 `graph TD` 反馈不再因
+`generate-test/invalid_response` 提前终结，受信模板进入 Docker 后无法复现旧缺陷，最终
+状态为 `cannot_reproduce`，没有进入修复或发布。

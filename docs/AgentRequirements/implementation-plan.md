@@ -861,7 +861,7 @@ Cloud，使真实 Gate 调用具备严格结构化输出、有限重试、真实
 
 ### 阶段 G 实施检查点
 
-**状态：开发与首条生产闭环验收完成（2026-08-12）**
+**状态：开发、独立主机部署与生产小流量验收完成（2026-08-13）**
 
 - `agent/evals/cases.json` 保存 12 条脱敏/构造用例，覆盖表格、公式、标题、崩溃、后端
   规范化、前端、功能建议、无关、信息不足、Prompt Injection 和缺失输入；数据模型没有
@@ -885,9 +885,14 @@ Cloud，使真实 Gate 调用具备严格结构化输出、有限重试、真实
   源码当作故障基线，因目标直接通过而缺少 `AssertionError`。测试现从当前实现确定性
   构造临时旧基线，再验证“drawing 失败 -> 应用当前实现后通过”；复测为非 Docker
   252 passed、真实 Docker 4 passed，生产代码未改变；
-- 生产 Scheduler 继续默认关闭。是否把 Controller、Worker 与 Docker Engine 部署为
-  7×24 小时服务属于运维选择，不阻塞阶段 G 的开发完成状态；启用前仍必须完成配置预检，
-  并按小流量持续核对重复 PR、权限、成本和失败原因。
+- Controller、Worker 与 Docker Engine 已部署到独立 Linux ECS；Worker 与 Scheduler 由
+  systemd 管理并保持 `active/enabled`，Worker 仅监听 `127.0.0.1:8090`。安装脚本每次
+  更新后仍默认关闭 Scheduler，只有 `mdtoword-agentctl audit` 通过并显式确认才恢复领取；
+- 生产小流量验证覆盖两条不会产生 GitHub 写入的路径：无关内容自动进入
+  `rejected_irrelevant`；已修复 Mermaid 反馈在 `generate-test` 的复杂严格 Schema 失败后
+  由受信 drawing 模板接管，Docker 无法复现旧缺陷并进入 `cannot_reproduce`，没有补丁或
+  PR。`/models=200` 只作为连通/认证证据，Provider 故障继续按 Langfuse generation 节点与
+  `provider_unavailable`/`invalid_response` 分开诊断。
 
 | 阶段 | 状态 | 验收日期 | 证据 |
 |---|---|---|---|
@@ -897,6 +902,6 @@ Cloud，使真实 Gate 调用具备严格结构化输出、有限重试、真实
 | D 自动复现 | Implemented | 2026-08-11 | Agent 178 passed；Docker 2 passed；Backend 44 passed；真实 Mermaid 反馈在固定 SHA 上产生目标断言失败并进入 `repairing/reproduced` |
 | E 修复与独立验证 | Completed | 2026-08-11；Mermaid 平台能力更新 2026-08-12 | 历史 Agent 217 passed/Docker 4 passed/Backend 44 passed；固定渲染器完成中文流程图“基线失败 -> 修复通过”，真实 run 最终生成 validated patch |
 | F GitHub PR | Completed | 2026-08-12 | Agent 全量回归通过；真实 App 最小权限预检通过；run `f11032d7-...` 幂等创建 PR #1，数据库与 Artifact 一致，维护者已人工合并 |
-| G 评估与投产 | Completed（常驻 Scheduler 部署为可选运维项） | 2026-08-12 | 12 条真实 Gate 评估指标通过；Fake 发布 E2E、生产开关与单并发 Scheduler 已覆盖；PR 合并、Render 部署及 Mermaid 插件回放成功 |
+| G 评估与投产 | Completed | 2026-08-13 | 12 条真实 Gate 评估、Fake 发布 E2E、PR/Render/插件回放通过；独立 ECS Worker/Scheduler 常驻；生产 `rejected_irrelevant` 与 Mermaid `cannot_reproduce` 小流量验收通过 |
 
 状态只在完成对应验收后更新。已有代码不因存在文件或历史提交自动视为通过。
