@@ -138,10 +138,12 @@ injection_suspected == false
 requires_extension_change == false
 ```
 
-模型给出的“允许自动化”结论没有授权效力。安全、相关性、前端和未知类别只允许本地
-规则降级；唯一的充分性校正是：模型已判定高相关 `bug_report/docx_structure`、无注入
-和前端依赖，同时 Markdown 含完整 Mermaid 图时，本地确定性证据可把单一
-`sufficient_information=false` 校正为继续复现。
+模型给出的“允许自动化”结论没有授权效力。注入、无关内容和前端范围外判定始终优先。
+在这些高优先级规则通过后，非空 Bug Markdown 的描述若包含明确后端转换报错或 Pandoc
+失败签名，本地确定性证据可将模型不稳定的类别或低 `relevance` 校正为
+`conversion_crash` 并进入有界复现；没有明确错误证据时仍按阈值转人工。唯一的充分性
+校正是：模型已判定高相关 `bug_report/docx_structure`、无注入和前端依赖，同时 Markdown
+含完整 Mermaid 图时，可把单一 `sufficient_information=false` 校正为继续复现。
 
 ## 5. 复现子图
 

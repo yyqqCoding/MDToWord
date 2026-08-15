@@ -201,7 +201,7 @@ def test_conversion_crash_with_markdown_has_minimum_reproduction_evidence():
     )
 
     assert result.route is GateRoute.ACCEPTED_BACKEND_BUG
-    assert result.policy_reason == "backend_bug_accepted"
+    assert result.policy_reason == "explicit_conversion_crash"
 
 
 def test_explicit_conversion_crash_overrides_unstable_unknown_category():
@@ -222,6 +222,51 @@ def test_explicit_conversion_crash_overrides_unstable_unknown_category():
     assert result.route is GateRoute.ACCEPTED_BACKEND_BUG
     assert result.category is GateCategory.CONVERSION_CRASH
     assert result.policy_reason == "explicit_conversion_crash"
+
+
+def test_explicit_pandoc_error_overrides_contradictory_zero_relevance():
+    task = make_task(
+        markdown=(
+            "$$\n"
+            "\\begin{aligned}\n"
+            "a &= b + c \\notag \\\\\n"
+            "b &= d + e\n"
+            "\\end{aligned}\n"
+            "$$"
+        ),
+        description=(
+            "插件预览正常，但导出 Word 时提示 Pandoc 无法将公式转换为可编辑 Word 方程。"
+        ),
+    )
+    classified = classification(
+        category=GateCategory.CONVERSION_CRASH,
+        relevance=0.0,
+        sufficient_information=True,
+    )
+
+    result = asyncio.run(
+        run_feedback_gate(task, FakeModelProvider([classified]))
+    )
+
+    assert result.route is GateRoute.ACCEPTED_BACKEND_BUG
+    assert result.category is GateCategory.CONVERSION_CRASH
+    assert result.policy_reason == "explicit_conversion_crash"
+
+
+def test_low_relevance_conversion_category_without_error_evidence_needs_human():
+    task = make_task(description="这个内容可能有点问题")
+    classified = classification(
+        category=GateCategory.CONVERSION_CRASH,
+        relevance=0.0,
+        sufficient_information=True,
+    )
+
+    result = asyncio.run(
+        run_feedback_gate(task, FakeModelProvider([classified]))
+    )
+
+    assert result.route is GateRoute.NEEDS_HUMAN
+    assert result.policy_reason == "confidence_below_threshold"
 
 
 def test_negated_conversion_error_is_not_promoted_to_crash():
@@ -379,4 +424,6 @@ def test_gate_prompt_does_not_confuse_out_of_scope_or_incomplete_with_irrelevant
     assert "category=visual_quality" in prompt
     assert "backend_normalization" in prompt
     assert "只有 Word 中的公式结构" in prompt
+    assert "`relevance` 表示与产品的相关程度" in prompt
+    assert "必须不低于 `0.8`" in prompt
     assert prompt.count("分类为 `unrelated`") >= 2

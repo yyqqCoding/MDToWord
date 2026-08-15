@@ -131,3 +131,34 @@ Completions 遇到上游 5xx/断开，或返回不符合复杂严格 Schema 的�
 Mermaid 缺陷、但当前代码已修复的反馈应走完整复现并进入 `cannot_reproduce`。2026-08-13
 两条路径均已通过，后者实际执行受信测试回退和 Docker 复现，未生成补丁或 PR。Worker、
 Scheduler 同时保持 `active/enabled`，确认 systemd 常驻链路正常。
+
+## 问题 13：Gate 已确认后端转换缺陷，却因相关度为零转人工
+
+2026-08-16 的真实 feedback `4b42428e-...` 包含会触发 Pandoc 公式转换失败的完整
+Markdown，插件也能稳定得到 `Could not convert TeX math`。Gate 模型将其判断为
+`bug_report/conversion_crash`，同时给出“信息充足、不依赖扩展、属于后端转换缺陷”的
+理由，却又输出 `relevance=0.0`。旧 Policy 因 `confidence_below_threshold` 直接终结为
+`needs_human`；该 run 没有生成 reproduction plan，也没有调用 Sandbox 或修复模型，不能
+把它描述为“Sandbox 无法复现”。
+
+### 根因
+
+直接诱因是 `gate-v6` 只要求产品内问题保持高相关，没有明确 `relevance` 表示产品相关度、
+不表示修复难度或模型信心，也没有点明已识别产品缺陷时字段必须一致。模型因此生成了
+Schema 合法但跨字段矛盾的结果。第二层缺口在本地 Policy：已有“明确转换报错”证据只在
+模型类别漂移时校正类别，没有覆盖类别正确但相关度异常的情况；用户描述中的
+“Pandoc 无法转换”也不在原有报错短语集合内。
+
+### 解决方案
+
+`gate-v7` 明确相关度的跨字段口径：已判断为产品 Bug、功能、扩展或视觉问题时必须使用
+不低于 `0.8` 的相关度，不能在理由中确认产品缺陷却输出低相关度。由于提示词不能作为
+唯一正确性边界，`publication-policy-v6` 同时增加窄范围确定性兜底：在注入、无关内容和
+前端范围外规则之后，非空 Bug Markdown 的描述若含明确后端转换报错或 Pandoc 失败签名，
+即使模型类别或相关度不稳定，也按 `conversion_crash` 进入有界复现。没有明确错误证据的
+低相关反馈仍转人工，安全与范围优先级不变。
+
+回归测试固定本次真实矛盾形态，并另测“只有低相关 conversion_crash 类别、没有错误证据”
+仍为 `needs_human`。Agent 全量结果为 300 passed、4 个 Docker 条件测试 skipped，编译检查
+通过。历史 `needs_human` run 不重新打开；部署后使用新 feedback 验证完整复现、修复和
+发布链路。

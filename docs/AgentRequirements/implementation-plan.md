@@ -783,6 +783,14 @@ Cloud，使真实 Gate 调用具备严格结构化输出、有限重试、真实
   终结为 `needs_human`。`repair-policy-v2` 增加窄范围确定性校正：仅在上述后端分类与
   Mermaid 内容证据同时成立时忽略单一 `sufficient_information=false`；其他安全与范围
   路由不变。该历史 run 不重新打开，后续 Stage E 路由已由下述最终真实 run 验证。
+- 2026-08-16 真实 feedback `4b42428e-...` / run `4a3fd6c9-...` 的模型同时输出
+  `bug_report/conversion_crash`、信息充足、不依赖扩展和 `relevance=0.0`，`reason` 又明确
+  判定为后端 Pandoc 转换缺陷；旧 Policy 因 `confidence_below_threshold` 在 Gate 终结为
+  `needs_human`，没有生成复现计划或调用 Sandbox。`gate-v7` 明确相关度字段的跨字段口径，
+  `publication-policy-v6` 在注入、无关和前端规则之后识别窄范围 Pandoc 失败签名，即使
+  模型类别或相关度不稳定也进入 `conversion_crash` 有界复现；缺少明确错误证据的低相关
+  反馈仍转人工。历史 run 不重新打开，部署后必须使用新 feedback 验证完整复现/修复/发布
+  链路。
 - `repair-policy-v2` 的真实 run `4aee5378-...` 已通过 Gate 并生成合规 Mermaid drawing
   复现计划，证明上述校正真实生效；第一轮结构化测试编辑未通过本地文本/Python 校验，
   有界第二轮生成又在 Provider 格式修正后仍不符合严格 Schema，run 以

@@ -95,7 +95,6 @@ def apply_gate_policy(
         )
     if (
         classification.intent is GateIntent.BUG_REPORT
-        and classification.category is not GateCategory.CONVERSION_CRASH
         and _has_explicit_conversion_crash_evidence(task)
     ):
         # 明确的后端/转换报错已有非空输入即可交给 Sandbox 复现，不依赖模型是否稳定地
@@ -197,6 +196,10 @@ def _classified_terminal(
 _CONVERSION_CRASH_PATTERNS = (
     re.compile(r"(?:后端|服务端).{0,12}(?:报错|崩溃|异常)"),
     re.compile(r"(?:转换|导出).{0,8}(?:直接)?(?:报错|崩溃)"),
+    re.compile(
+        r"pandoc.{0,80}(?:无法|失败|报错|错误|could not|failed|error)",
+        re.IGNORECASE,
+    ),
     re.compile(r"(?:backend|server).{0,20}(?:error|crash|exception)", re.IGNORECASE),
     re.compile(r"conversion.{0,20}(?:error|crash|exception)", re.IGNORECASE),
 )
