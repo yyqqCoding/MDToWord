@@ -20,7 +20,7 @@ from agent.workspace.edits import Edit, EditMode
 
 
 REPRODUCTION_PLAN_PROMPT_VERSION = "reproduction-plan-v3"
-TEST_GENERATION_PROMPT_VERSION = "test-generation-v2"
+TEST_GENERATION_PROMPT_VERSION = "test-generation-v3"
 DEFAULT_REPRODUCTION_TIMEOUT_SECONDS = 180.0
 
 
