@@ -210,7 +210,11 @@ class TestGenerationResult(BaseModel):
                 or len(raw) > 240
                 or raw not in allowed
             ):
-                raise ValueError("fix source path is invalid")
+                # 直接列出白名单：该消息会进入格式修正提示，只说「invalid」模型无从改起。
+                # mermaid_renderer.py 可读不可写，是模型最常猜错的一项。
+                raise ValueError(
+                    "fix source path must be one of: " + ", ".join(sorted(allowed))
+                )
         return value
 
     def validate_against(self, feedback_id: UUID, plan: ReproductionPlan) -> None:

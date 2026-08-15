@@ -1,5 +1,6 @@
 import asyncio
 from datetime import UTC, datetime
+from importlib.resources import files
 from uuid import UUID, uuid4
 
 import pytest
@@ -160,7 +161,8 @@ def test_mermaid_plan_requires_drawing_oracle_and_gets_one_correction() -> None:
 
 def test_generated_fix_hints_only_reference_backend_fix_allowlist() -> None:
     plan = _plan()
-    with pytest.raises(ValidationError, match="fix source path is invalid"):
+    # 消息必须点名白名单：它会进入格式修正提示，模型据此改正
+    with pytest.raises(ValidationError, match="backend/app/pandoc_runner.py"):
         GeneratedTestResult(
             edits=(
                 Edit(
@@ -396,3 +398,20 @@ def test_edit_rejection_names_the_offending_field(
 )
 def test_edit_accepts_well_formed_modes(fields: dict[str, str]) -> None:
     assert Edit(path="backend/tests/test_feedback_regressions.py", **fields)
+
+
+def test_generate_test_prompt_states_edit_mode_and_fix_allowlist_rules() -> None:
+    """这两条规则缺失曾让生产 run 连续两轮以 invalid_response 终结。
+
+    严格 Structured Outputs 把所有属性都写进 required，模型既无法从 Schema 推断
+    「新建文件必须用 full_file」，也无法推断 files_needed_for_fix 的白名单。
+    """
+
+    prompt = files("agent.prompts").joinpath("generate_test.md").read_text("utf-8")
+
+    assert "新建文件" in prompt and "full_file" in prompt
+    assert "search 必须非空" in prompt
+    assert "backend/app/normalizer.py" in prompt
+    assert "backend/app/pandoc_runner.py" in prompt
+    # 可读不可写，是模型最常猜错的一项
+    assert "mermaid_renderer.py" in prompt

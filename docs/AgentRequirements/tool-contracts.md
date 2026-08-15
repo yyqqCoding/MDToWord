@@ -139,6 +139,15 @@ extension_sync_required: bool
 `extension_sync_required` 只是审查元数据；当前修复若必须修改扩展才能成立，应在 Gate
 阶段以 `requires_extension_change=true` 路由为 `out_of_scope`，不得生成测试或补丁。
 
+`files_needed_for_fix` 只接受 Policy `write.fix_exact` 中的路径，即
+`backend/app/normalizer.py` 与 `backend/app/pandoc_runner.py`；不确定时填空数组。
+`backend/app/mermaid_renderer.py` 可读不可写，是模型最常猜错的一项，拒绝消息因此直接
+列出白名单 —— 该消息会进入格式修正提示，只说「invalid」模型无从改起。
+
+新建文件（含 `backend/tests/fixtures/feedback/` 下的固件）必须用 `full_file`；
+`search_replace` 的 `search` 必须非空。这两条同样写进 `generate_test.md`：严格
+Structured Outputs 要求所有字段都出现，模型无法从 Schema 推断模式选择规则。
+
 ## 5. 生成修复契约
 
 `FixGenerationResult`：
