@@ -14,6 +14,7 @@ from agent.graph import (
     RepairDependencies,
     ReproductionDependencies,
 )
+from agent.operations.site_notify import TraceSiteNotifier, build_trace_site_notifier
 from agent.providers.openai_compatible import OpenAICompatibleProvider
 from agent.publishing.github import GitHubAppTokenProvider, GitHubPullRequestPublisher
 from agent.repositories.supabase import (
@@ -39,6 +40,8 @@ class ConfiguredRuntime:
     controller: GateController
     feedback_repository: SupabaseFeedbackRepository
     run_repository: SupabaseAgentRunRepository
+    # 未配置展示站点回调时为 None，Scheduler 据此完全跳过推送。
+    trace_site_notifier: TraceSiteNotifier | None = None
 
 
 @asynccontextmanager
@@ -58,6 +61,7 @@ async def open_configured_runtime(
     shared_client = httpx.AsyncClient(timeout=30)
     source_client: httpx.AsyncClient | None = None
     publisher_client: httpx.AsyncClient | None = None
+    notifier_client: httpx.AsyncClient | None = None
     telemetry = LangfuseTelemetry(
         public_key=langfuse_public_key,
         secret_key=langfuse_secret_key,
@@ -159,6 +163,15 @@ async def open_configured_runtime(
             config.supabase_agent_key.get_secret_value(),
             client=shared_client,
         )
+        # 展示站点是又一个凭据边界，沿用「一凭据一 Client」的既有约定单独建连接。
+        webhook_settings = config.trace_site_webhook_settings()
+        if webhook_settings is not None:
+            notifier_client = httpx.AsyncClient(timeout=30)
+        trace_site_notifier = build_trace_site_notifier(
+            webhook_settings,
+            client=notifier_client or shared_client,
+            telemetry=telemetry,
+        )
         async with open_postgres_checkpointer(
             database_url,
             config.checkpoint_schema,
@@ -183,6 +196,7 @@ async def open_configured_runtime(
                 ),
                 feedback_repository=feedback_repository,
                 run_repository=run_repository,
+                trace_site_notifier=trace_site_notifier,
             )
     finally:
         telemetry.flush()
@@ -191,3 +205,5 @@ async def open_configured_runtime(
             await source_client.aclose()
         if publisher_client is not None:
             await publisher_client.aclose()
+        if notifier_client is not None:
+            await notifier_client.aclose()

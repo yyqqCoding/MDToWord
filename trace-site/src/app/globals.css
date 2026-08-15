@@ -1,0 +1,180 @@
+@import "tailwindcss";
+
+@theme {
+  /* 表面层级：深色 observability console 基调 */
+  --color-canvas: #0b0e14;
+  --color-surface: #121721;
+  --color-raised: #1a2130;
+  --color-line: #222a3a;
+  --color-line-strong: #33405a;
+
+  /* 文本：数值与标签一律使用文本色，不使用状态色 */
+  --color-ink: #e6eaf2;
+  --color-ink-muted: #9fabc2;
+  --color-ink-faint: #7b8599;
+
+  /* 主色：承载"正常执行"，不参与状态表达 */
+  --color-accent: #5b9cff;
+  --color-accent-dim: #2c4a7d;
+
+  /* 状态色：保留槽位，不得复用为图表系列色 */
+  --color-good: #3fb950;
+  --color-warn: #d29922;
+  --color-serious: #db6d28;
+  --color-critical: #f85149;
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: ui-monospace, "JetBrains Mono", "SFMono-Regular", Consolas,
+    "Liberation Mono", monospace;
+}
+
+/*
+ * 字号阶梯 —— text-xs (12px) 是硬性下限，不再使用 10px / 11px。
+ *   text-2xl  页面标题
+ *   text-xl   KPI 数字
+ *   text-base 卡片标题、重要数值
+ *   text-sm   正文、表格、标签（主力字号）
+ *   text-xs   仅用于密集等宽内容：瀑布节点名、diff 行、哈希
+ */
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  background-color: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  -webkit-font-smoothing: antialiased;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* ------------------------------------------------------------------ */
+/* 动效                                                                */
+/* ------------------------------------------------------------------ */
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes grow-x {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+@keyframes slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* 统一缓动：起步快、收尾稳，接近原生控件的手感 */
+.anim-rise {
+  animation: rise 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.anim-fade {
+  animation: fade 0.35s ease both;
+}
+
+.anim-grow-x {
+  animation: grow-x 0.7s cubic-bezier(0.16, 1, 0.3, 1) both;
+  transform-origin: left center;
+}
+
+.anim-slide-in {
+  animation: slide-in 0.35s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* ------------------------------------------------------------------ */
+/* 交互语汇                                                            */
+/* ------------------------------------------------------------------ */
+/*
+ * 三档，全站统一，不允许各处各写一套：
+ *   .lift        可点击的块：上浮 + 边框提亮 + 主色辉光
+ *   .glow-strong 当前选中的块：常驻辉光，与 hover 区分开
+ *   .row-hover   信息行/表格行：只提亮背景，不上浮（不是独立可点块）
+ */
+
+.lift {
+  transition:
+    transform 0.2s cubic-bezier(0.16, 1, 0.3, 1),
+    border-color 0.2s ease,
+    background-color 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+.lift:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 24px -12px rgba(91, 156, 255, 0.55);
+}
+
+.lift:active {
+  transform: translateY(0);
+  transition-duration: 0.08s;
+}
+
+.glow-strong {
+  box-shadow:
+    0 0 0 1px rgba(91, 156, 255, 0.45),
+    0 10px 28px -12px rgba(91, 156, 255, 0.6);
+}
+
+.row-hover {
+  transition:
+    background-color 0.18s ease,
+    color 0.18s ease;
+}
+
+/* 标签页下划线滑动 */
+.tab-underline {
+  transition:
+    color 0.2s ease,
+    background-color 0.2s ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .lift:hover {
+    transform: none;
+  }
+}

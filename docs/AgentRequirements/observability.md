@@ -221,7 +221,9 @@ false-positive rate 为 0。由于模型单价仍配置为 0，本轮 `estimated
 ## 12. 故障与保留
 
 - Telemetry采用异步发送；Langfuse失败只记warning，不回滚业务状态；
-- 长期Controller定期flush，进程优雅退出时显式flush；
+- 长期Controller定期flush，进程优雅退出时显式flush；配置了展示站点完成回调时，
+  每次运行落终态、推送之前还会额外 flush 一次 —— 根节点是最后关闭的，
+  不 flush 就通知，站点会拿到不完整的树；
 - Trace与Artifact默认保留14天，数据库保留脱敏汇总；
 - Langfuse Cloud或自托管通过配置选择，领域代码不分支；
 - 无论Trace是否完整，最终Token、成本、状态、patch hash和PR URL必须写入数据库；
