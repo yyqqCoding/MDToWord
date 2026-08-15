@@ -116,11 +116,13 @@ class OpenAICompatibleProvider:
                 # 这是不合规字段唯一的留痕点：下面用 from None 切断异常链，
                 # controller 只持久化异常类名，cli 只打印 error_code。
                 # 两次尝试都记，便于判断修正提示是否起了作用。
+                # detail 带校验器文案，只进本机日志；上 Trace 和展示站的是 errors。
                 _LOGGER.warning(
-                    "structured output rejected: schema=%s attempt=%s errors=%s",
+                    "structured output rejected: schema=%s attempt=%s errors=%s detail=%s",
                     _schema_name(response_schema),
                     format_attempt,
                     schema_errors,
+                    _validation_error_hint(exc),
                 )
                 if format_attempt >= self._max_format_retries:
                     raise InvalidModelResponseError(
@@ -356,7 +358,11 @@ def _strict_response_schema(
 
 
 def _validation_error_hint(error: Exception) -> str:
-    """只返回字段路径与规则，不包含模型原始输出或 Pydantic input/context。"""
+    """只返回字段路径与规则，不包含模型原始输出或 Pydantic input/context。
+
+    两个消费方：回传给模型的修正提示，以及只有维护者能看的本机 WARNING 日志。
+    含校验器文案，因此不上 Langfuse 与公开展示站 —— 那边用 `_schema_error_paths`。
+    """
 
     if not isinstance(error, ValidationError):
         return json.dumps(
@@ -382,8 +388,8 @@ def _schema_error_paths(error: Exception) -> str:
     """给日志与 Trace 用的不合规字段摘要，形如 `edits.0.content:string_too_long`。
 
     比 `_validation_error_hint` 更严：连校验器文案都不带，只留字段路径与 Pydantic
-    规则名。两者受众不同 —— 前者回传给模型用于修正，这个会进 journalctl、Langfuse
-    和公开展示站，必须在任何校验器改动之后都不可能夹带模型原文。
+    规则名。两者受众不同 —— 那份回传给模型、并写入只有维护者能看的本机日志；这份
+    会进 Langfuse 和公开展示站，必须在任何校验器改动之后都不可能夹带模型原文。
 
     `extra="forbid"` 下 loc 会带上模型自己编造的字段名，所以每段单独截断。
     """

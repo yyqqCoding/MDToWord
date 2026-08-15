@@ -304,7 +304,7 @@ def test_invalid_structure_reports_which_fields_failed(caplog):
 
     assert "relevance:less_than_equal" in error.schema_errors
     assert "reason:value_error" in error.schema_errors
-    # 校验器文案只回传给模型（_validation_error_hint），不进日志与 Trace
+    # 校验器文案只回传给模型（_validation_error_hint），不进 Trace 与展示站
     assert "must not be blank" not in error.schema_errors
 
     messages = [record.getMessage() for record in caplog.records]
@@ -312,6 +312,8 @@ def test_invalid_structure_reports_which_fields_failed(caplog):
     assert len(messages) == 2
     assert all("relevance:less_than_equal" in item for item in messages)
     assert all("schema=gateclassification" in item for item in messages)
+    # 本机日志是维护者专属，带上校验器文案才能区分同一 validator 的不同分支
+    assert all("must not be blank" in item for item in messages)
 
 
 def test_model_invented_field_names_are_bounded_in_schema_errors():
