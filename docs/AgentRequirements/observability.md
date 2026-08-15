@@ -105,6 +105,22 @@ Token优先采用Provider响应的真实usage。Provider适配器将包含缓存
 Controller同步累计每次调用，写入 `agent_runs`。预算判定使用Controller累计值，不
 查询Langfuse实时结果。
 
+调用失败时Generation记 `level=ERROR`、`status_message=error_code`，输出为
+`{error_code, error_type}`。其中 `invalid_response` 额外记 `schema_errors`：
+
+```text
+schema_errors: "字段路径:Pydantic规则名" 逗号分隔，最多8项，每段路径截断40字符
+               例：relevance:less_than_equal,reason:value_error
+```
+
+该摘要**只含字段路径与规则名**，不含校验器文案、模型原文或用户内容 —— `extra=forbid`
+下路径可能是模型自己编造的字段名，因此逐段截断。它同时以 WARNING 写入进程日志，
+两次格式尝试都记，便于判断修正提示是否生效。
+
+之所以必须在Provider层留痕：该异常用 `from None` 切断链路，Controller 只持久化异常
+类名，CLI 只输出 `error_code`，没有这一项就无法判断 `invalid_response` 卡在哪个字段。
+回传给模型的修正提示是另一份更宽的摘要（含校验器文案），不进日志与Trace。
+
 ## 6. Tool字段
 
 每次工具调用记录：

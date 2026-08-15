@@ -85,6 +85,14 @@ class InvalidArtifactPathError(AgentError):
 class InvalidModelResponseError(AgentError):
     error_code = "invalid_response"
 
+    def __init__(self, message: str, *, schema_errors: str | None = None) -> None:
+        super().__init__(message)
+        # 不合规字段摘要，只含「字段路径:规则名」，不含模型原文，因此可以进日志和
+        # Trace。Controller 只持久化异常类名、CLI 只打印 error_code，没有这个字段就
+        # 无法判断 invalid_response 到底卡在哪一项。
+        # 生成方式见 providers/openai_compatible.py:_schema_error_paths。
+        self.schema_errors = schema_errors
+
 
 class ModelProviderError(AgentError):
     """模型厂商错误的稳定边界；消息不得包含响应正文或请求凭证。"""

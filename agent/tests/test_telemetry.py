@@ -1,6 +1,9 @@
 import asyncio
 from decimal import Decimal
 
+import pytest
+
+from agent.domain.errors import InvalidModelResponseError, ModelProviderError
 from agent.domain.gate import GateClassification
 from agent.providers.base import ModelMessage, StructuredModelResponse
 from agent.providers.fake import FakeModelProvider
@@ -185,6 +188,78 @@ def test_observed_provider_never_sends_message_content_to_telemetry():
     rendered = repr(client.starts)
     assert "private markdown" not in rendered
     assert "user@example.com" not in rendered
+
+
+class _RejectingProvider:
+    """按 provider 层失败契约抛错，用于验证 Trace 上的失败留痕。"""
+
+    provider = "openai_compatible"
+    model = "model"
+
+    def __init__(self, error: Exception) -> None:
+        self._error = error
+
+    async def generate_structured(
+        self,
+        messages,
+        response_schema,
+        *,
+        tools,
+        timeout_seconds,
+    ):
+        del messages, response_schema, tools, timeout_seconds
+        raise self._error
+
+
+def _observed_failure_update(error: Exception) -> dict[str, object]:
+    client = _FakeLangfuseClient()
+    telemetry = LangfuseTelemetry(
+        public_key="public",
+        secret_key="secret",
+        host="https://cloud.langfuse.com",
+        environment="development",
+        client=client,
+    )
+    provider = ObservedModelProvider(
+        _RejectingProvider(error),
+        telemetry,
+        operation="generate-test",
+        prompt_version="reproduction-v1",
+    )
+
+    with pytest.raises(type(error)):
+        asyncio.run(
+            provider.generate_structured(
+                (ModelMessage(role="user", content="bounded input"),),
+                GateClassification,
+                tools=(),
+                timeout_seconds=5,
+            )
+        )
+    return client.observations[0].updates[0]
+
+
+def test_langfuse_records_schema_error_paths_on_invalid_response():
+    """只有 error_code 无法判断卡在哪一项，不合规字段必须上 Trace。"""
+
+    update = _observed_failure_update(
+        InvalidModelResponseError(
+            "model returned invalid structured output",
+            schema_errors="edits.0.content:string_too_long",
+        )
+    )
+
+    assert update["level"] == "ERROR"
+    assert update["status_message"] == "invalid_response"
+    assert update["output"]["error_type"] == "InvalidModelResponseError"
+    assert update["output"]["schema_errors"] == "edits.0.content:string_too_long"
+
+
+def test_langfuse_omits_schema_errors_when_the_failure_has_no_field_detail():
+    update = _observed_failure_update(ModelProviderError("model transport failed"))
+
+    assert update["output"]["error_code"] == "provider_unavailable"
+    assert "schema_errors" not in update["output"]
 
 
 def test_langfuse_records_reproduction_tool_name_round_and_bounded_summary():

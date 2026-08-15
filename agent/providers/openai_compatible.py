@@ -1,6 +1,7 @@
 import asyncio
 from copy import deepcopy
 import json
+import logging
 from collections.abc import Awaitable, Callable
 from decimal import Decimal
 from typing import Any
@@ -25,6 +26,8 @@ from agent.providers.base import (
 
 
 _Sleep = Callable[[float], Awaitable[None]]
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class OpenAICompatibleProvider:
@@ -109,9 +112,20 @@ class OpenAICompatibleProvider:
             try:
                 output = response_schema.model_validate_json(payload["content"])
             except (ValidationError, ValueError, TypeError) as exc:
+                schema_errors = _schema_error_paths(exc)
+                # 这是不合规字段唯一的留痕点：下面用 from None 切断异常链，
+                # controller 只持久化异常类名，cli 只打印 error_code。
+                # 两次尝试都记，便于判断修正提示是否起了作用。
+                _LOGGER.warning(
+                    "structured output rejected: schema=%s attempt=%s errors=%s",
+                    _schema_name(response_schema),
+                    format_attempt,
+                    schema_errors,
+                )
                 if format_attempt >= self._max_format_retries:
                     raise InvalidModelResponseError(
-                        "model returned invalid structured output"
+                        "model returned invalid structured output",
+                        schema_errors=schema_errors,
                     ) from None
                 # 不回传无效原文，避免把潜在敏感内容扩大到下一轮上下文。
                 request_messages.append(
@@ -362,3 +376,26 @@ def _validation_error_hint(error: Exception) -> str:
         )[:8]
     ]
     return json.dumps(safe, ensure_ascii=False, separators=(",", ":"))
+
+
+def _schema_error_paths(error: Exception) -> str:
+    """给日志与 Trace 用的不合规字段摘要，形如 `edits.0.content:string_too_long`。
+
+    比 `_validation_error_hint` 更严：连校验器文案都不带，只留字段路径与 Pydantic
+    规则名。两者受众不同 —— 前者回传给模型用于修正，这个会进 journalctl、Langfuse
+    和公开展示站，必须在任何校验器改动之后都不可能夹带模型原文。
+
+    `extra="forbid"` 下 loc 会带上模型自己编造的字段名，所以每段单独截断。
+    """
+
+    if not isinstance(error, ValidationError):
+        return type(error).__name__
+    parts = []
+    for item in error.errors(
+        include_url=False,
+        include_context=False,
+        include_input=False,
+    )[:8]:
+        location = ".".join(str(part)[:40] for part in item["loc"]) or "<root>"
+        parts.append(f"{location}:{item['type']}")
+    return ",".join(parts)
