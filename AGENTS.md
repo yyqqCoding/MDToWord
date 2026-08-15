@@ -44,6 +44,17 @@ MD To Word converts AI-generated Markdown into editable Word `.docx`.
 - Provider 排障必须区分传输失败与结构失败：`provider_unavailable` 表示传输/上游服务在
   有限重试后仍不可用，`invalid_response` 表示已收到响应但严格 Schema/本地 Policy 校验
   失败。`/models` 返回 200 只证明基础连通与认证，不能替代代表性的结构化生成验证。
+  `invalid_response` 的两层来源用 Trace 区分：Generation 被标 ERROR 是 Provider 严格
+  Schema 层，journalctl 的 `structured output rejected` 行给出字段路径与校验器文案；
+  Generation 全部成功而 run 失败，是 `reproduction.py` 的本地 Policy。
+- 严格 Structured Outputs 只能表达单字段约束。凡是要靠 Pydantic `model_validator` 或
+  `field_validator` 才能表达的跨字段规则（模式选择、路径白名单），必须同时写进对应提示
+  词 —— 模型看不到 Policy 文件，也无法从 Schema 推断。提示词内容变化要同步 bump 对应的
+  `*_PROMPT_VERSION`。
+- 校验器的 `ValueError` 消息会原样回传给模型作为格式修正提示。一个校验器里的每个失败
+  条件必须各有可执行的消息、点名该改哪个字段；合并成一条会让模型重试越改越偏，维护者
+  也只能从日志看到 `字段:value_error`。收紧或放宽白名单前先查
+  `docs/AgentRequirements/security-and-sandbox.md`，受信平台模块的只读约束是刻意的。
 
 Agent 代码或权威设计文档变更后至少运行：
 
