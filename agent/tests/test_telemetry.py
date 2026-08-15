@@ -84,6 +84,45 @@ def test_masking_removes_contact_secrets_and_long_content():
     assert len(masked["markdown"]) == 300
 
 
+@pytest.mark.parametrize(
+    "identifier",
+    [
+        # 都含 9 位以上连续数字段，旧手机号正则会从中间吃掉一截
+        "7902699be42c8a8e46fbbb4501726517e86b22c56a189f7625a6da49081b2451",
+        "sha256:2c624232cdd221771294dfbb310aca000a0df6ac8b66b696d90ef06fdefb64a3",
+        "4a44dc15364204a80fe80e9039455cc1608281820fe2b24f1e5233ade6af1dd5",
+        "1dc85749-cfe2-53ee-9936-1a791daa5356",
+    ],
+)
+def test_masking_keeps_hashes_and_uuids_intact(identifier: str) -> None:
+    """哈希与 UUID 是站点上可核对的证据，被脱敏截断等于伪造证据。
+
+    不是泄露风险，但会让 Trace 里的指纹、镜像 digest 和 job_id 无法对账。
+    """
+
+    masked = mask_sensitive(data={"sha256": identifier, "job_id": identifier})
+
+    assert masked["sha256"] == identifier
+    assert masked["job_id"] == identifier
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "13800138000",
+        "联系电话：13800138000",
+        "手机 138-0013-8000 谢谢",
+        "+1 (415) 555-0132",
+        "请打 +86-138-0013-8000",
+    ],
+)
+def test_masking_still_redacts_phone_numbers(text: str) -> None:
+    masked = mask_sensitive(data={"note": text})
+
+    assert "[REDACTED_PHONE]" in masked["note"]
+    assert "0013" not in masked["note"]
+
+
 def test_usage_buckets_are_mutually_exclusive():
     response = StructuredModelResponse(
         output=_classification(),
