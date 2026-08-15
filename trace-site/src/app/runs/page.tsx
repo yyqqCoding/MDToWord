@@ -3,6 +3,7 @@ import { Card, CardHeader } from "@/components/ui/card";
 import { RunTable } from "@/components/run/RunTable";
 import { usingRealData } from "@/lib/server/env";
 import { getRunList } from "@/lib/server/runs";
+import { SITE_TIME_ZONE_LABEL } from "@/lib/format";
 
 export const revalidate = 300;
 
@@ -27,7 +28,7 @@ export default async function RunsPage() {
       </header>
 
       <Card delay={80} interactive>
-        <CardHeader title={`共 ${runs.length} 次运行`} />
+        <CardHeader title={`共 ${runs.length} 次运行`} description={`时间为 ${SITE_TIME_ZONE_LABEL}`} />
         {runs.length > 0 ? (
           <RunTable runs={runs} />
         ) : (

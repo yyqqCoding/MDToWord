@@ -30,15 +30,52 @@ export function formatCost(raw: string): { text: string; unpriced: boolean } {
   return { text: `$${value.toFixed(4)}`, unpriced: false };
 }
 
+/**
+ * 展示时区固定为 Asia/Shanghai，不跟随访问者本地时区。
+ *
+ * 原实现用 date.getHours() 这类本地时区取值器，在 Vercel 上「本地」就是 UTC：
+ *   - RunTable 是服务端组件，只在服务端算一次 → 列表页永远显示 UTC，差 8 小时
+ *   - RunDetail 是客户端组件，服务端渲 UTC、水合时变本地 → hydration 不匹配 + 闪烁
+ * 跟随访问者时区就必然带上这个不确定性，只能靠仅客户端渲染规避，代价是首屏闪烁。
+ * 这是面向中文读者的展示站，固定 UTC+8 既确定又符合预期，服务端与客户端结果一致。
+ */
+export const SITE_TIME_ZONE = "Asia/Shanghai";
+export const SITE_TIME_ZONE_LABEL = "UTC+8";
+
+const PARTS = new Intl.DateTimeFormat("en-CA", {
+  timeZone: SITE_TIME_ZONE,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hour12: false,
+});
+
+function zoned(date: Date): Record<string, string> {
+  return Object.fromEntries(
+    PARTS.formatToParts(date)
+      .filter((part) => part.type !== "literal")
+      .map((part) => [part.type, part.value]),
+  );
+}
+
 export function formatDateTime(iso: string | null): string {
   if (!iso) return "进行中";
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return "时间无效";
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return (
-    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
-    `${pad(date.getHours())}:${pad(date.getMinutes())}`
-  );
+  const p = zoned(date);
+  return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}`;
+}
+
+/** 带秒与时区的完整形式，用于 title 悬停，正文不铺开。 */
+export function formatDateTimeFull(iso: string | null): string {
+  if (!iso) return "进行中";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "时间无效";
+  const p = zoned(date);
+  return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}:${p.second} (${SITE_TIME_ZONE_LABEL})`;
 }
 
 export function runDurationMs(startedAt: string, finishedAt: string | null): number | null {

@@ -18,7 +18,7 @@ import {
 } from "@/lib/run-graph";
 import { derivePolicyChecks, PATCH_POLICY_VERSION } from "@/lib/policy";
 import { describeFailure } from "@/lib/failure-codes";
-import { formatDateTime, formatDuration, formatInteger, runDurationMs } from "@/lib/format";
+import { formatDateTime, formatDateTimeFull, formatDuration, formatInteger, runDurationMs } from "@/lib/format";
 import type { Observation, RunDetailData } from "@/lib/types";
 
 /**
@@ -66,12 +66,26 @@ function CheckLine({
   );
 }
 
-function Stat({ label, value, note }: { label: string; value: string; note?: string }) {
+function Stat({
+  label,
+  value,
+  note,
+  noteTitle,
+}: {
+  label: string;
+  value: string;
+  note?: string;
+  noteTitle?: string;
+}) {
   return (
     <div className="lift rounded-xl border border-line bg-surface px-5 py-4 hover:border-accent/40">
       <p className="text-sm text-ink-faint">{label}</p>
       <p className="mt-1.5 font-mono text-2xl leading-none text-ink">{value}</p>
-      {note && <p className="mt-1.5 text-sm text-ink-faint">{note}</p>}
+      {note && (
+        <p className="mt-1.5 text-sm text-ink-faint" title={noteTitle}>
+          {note}
+        </p>
+      )}
     </div>
   );
 }
@@ -165,6 +179,7 @@ export function RunDetail({ data }: { data: RunDetailData }) {
           label="总耗时"
           value={wallClock !== null ? formatDuration(wallClock) : "进行中"}
           note={formatDateTime(run.started_at)}
+          noteTitle={formatDateTimeFull(run.started_at)}
         />
         <Stat
           label="Token"

@@ -1,7 +1,12 @@
 import Link from "next/link";
 import { StatusBadge } from "@/components/ui/badge";
 import { describeOutcome } from "@/lib/run-graph";
-import { formatDateTime, formatDuration, formatInteger } from "@/lib/format";
+import {
+  formatDateTime,
+  formatDateTimeFull,
+  formatDuration,
+  formatInteger,
+} from "@/lib/format";
 import type { RunListItem } from "@/lib/types";
 
 /**
@@ -52,7 +57,10 @@ export function RunTable({ runs }: { runs: RunListItem[] }) {
                 <td className="max-w-sm px-5 py-3.5">
                   <Link href={`/runs/${item.id}`} className="block">
                     <span className="line-clamp-1 text-sm text-ink">{item.title}</span>
-                    <span className="text-xs text-ink-faint transition-colors duration-200 group-hover:text-ink-muted">
+                    <span
+                      className="text-xs text-ink-faint transition-colors duration-200 group-hover:text-ink-muted"
+                      title={formatDateTimeFull(item.started_at)}
+                    >
                       {formatDateTime(item.started_at)}
                     </span>
                   </Link>
