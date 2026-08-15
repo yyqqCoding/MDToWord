@@ -74,7 +74,7 @@ def test_terminal_run_is_pushed_with_secret_and_flushed_first():
                 request.headers.get("x-webhook-secret"),
             )
         )
-        return httpx.Response(200, json={"trace": "captured"})
+        return httpx.Response(202, json={"accepted": True})
 
     outcome = make_outcome(AgentRunStatus.COMPLETED)
 
@@ -137,6 +137,23 @@ def test_non_terminal_run_is_not_pushed(status: AgentRunStatus):
 
     asyncio.run(scenario())
     assert calls == []
+
+
+@pytest.mark.parametrize("status_code", [200, 202])
+def test_accepted_response_is_not_logged_as_failure(status_code: int, caplog):
+    """站点先应答再抓取，正常返回 202。2xx 一律视为成功，不得记 warning。"""
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(status_code, json={"accepted": True})
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            notifier = build_notifier(RecordingTelemetry(), client)
+            await notifier.on_run_settled(make_outcome(AgentRunStatus.COMPLETED))
+
+    with caplog.at_level(logging.WARNING):
+        asyncio.run(scenario())
+    assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
 
 
 @pytest.mark.parametrize("status_code", [401, 404, 500, 503])

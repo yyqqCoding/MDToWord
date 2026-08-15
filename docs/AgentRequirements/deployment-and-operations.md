@@ -191,6 +191,9 @@ TRACE_SITE_WEBHOOK_SECRET=<与站点 SITE_WEBHOOK_SECRET 相同的值>
   且只记异常类型（httpx 的异常文本会带完整 URL）。推送是 at-most-once，
   丢了不补推，由站点访问详情页时的按需补抓自愈。
 - 推送前会先 `flush` 一次 Langfuse 客户端，否则站点会拿到不完整的树。
+- 站点正常返回 `202`（先应答、后台抓取）。若日志出现
+  `trace site notify failed: ReadTimeout`，说明站点侧在应答前做了耗时工作，
+  属于站点缺陷而非 Agent 配置问题 —— Agent 只发信号，不应为抓取干等。
 
 网络前提：ECS 需允许出站访问站点域名的 HTTPS。不需要开放任何入站端口。
 
