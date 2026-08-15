@@ -1,4 +1,5 @@
 import asyncio
+import json
 from datetime import UTC, datetime
 from importlib.resources import files
 from uuid import UUID, uuid4
@@ -10,6 +11,7 @@ from agent.domain.enums import FeedbackType
 from agent.domain.models import TaskArtifact
 from agent.domain.reproduction import (
     ExpectedFailureKind,
+    FIX_SOURCE_PATHS,
     OracleKind,
     OracleSpec,
     ReproductionDisposition,
@@ -411,7 +413,22 @@ def test_generate_test_prompt_states_edit_mode_and_fix_allowlist_rules() -> None
 
     assert "新建文件" in prompt and "full_file" in prompt
     assert "search 必须非空" in prompt
-    assert "backend/app/normalizer.py" in prompt
-    assert "backend/app/pandoc_runner.py" in prompt
     # 可读不可写，是模型最常猜错的一项
     assert "mermaid_renderer.py" in prompt
+
+
+def test_fix_source_allowlist_stays_in_sync_across_policy_validator_and_prompt() -> None:
+    """白名单有三处镜像，任何一处漂移都不会在运行时报错，只会让模型收到错误指引。
+
+    Policy JSON 是安全文档的机器可读镜像；域校验器要在没有文件 I/O 的情况下判定；
+    提示词必须复述，因为模型读不到 Policy 文件。
+    """
+
+    policy = json.loads(
+        files("agent.policies").joinpath("patch_policy.json").read_text("utf-8")
+    )
+    assert tuple(policy["write"]["fix_exact"]) == FIX_SOURCE_PATHS
+
+    prompt = files("agent.prompts").joinpath("generate_test.md").read_text("utf-8")
+    for path in FIX_SOURCE_PATHS:
+        assert path in prompt
