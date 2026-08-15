@@ -101,3 +101,65 @@ Worker 或 CLI。不要在已经失效的 Docker bind mount 目录中继续运�
 2026-08-13 生产复测确认该路径生效：已修复的裸 `graph TD` 反馈不再因
 `generate-test/invalid_response` 提前终结，受信模板进入 Docker 后无法复现旧缺陷，最终
 状态为 `cannot_reproduce`，没有进入修复或发布。
+
+## 问题 10：`invalid_response` 在任何地方都查不到失败原因
+
+生产 run 以 `InvalidModelResponseError/invalid_response` 终结，但三处刻意的脱敏边界
+叠加后，"哪个字段不合规"这一信息在系统里不存在：
+
+- `openai_compatible.py` 用 `raise ... from None` 切断 `ValidationError` 异常链；
+- `controller.py` 只把 `type(error).__name__` 写进数据库 `error_message`；
+- `cli.py` 捕获 `AgentError` 后只输出 `{"error": error_code}`，且仓库没有
+  `logging.basicConfig`，`_LOGGER.info` 不会出现在 journalctl。
+
+结果是数据库、Langfuse、展示站和系统日志都只有 `invalid_response` 一个词。
+
+### 解决方案
+
+Provider 层新增 `_schema_error_paths`，只输出「字段路径:Pydantic 规则名」。该摘要挂到
+`InvalidModelResponseError` 上，由 `ObservedModelProvider` 转发进 Langfuse Generation 的
+失败输出，同时以 WARNING 写入进程日志；两次格式尝试都记，便于判断修正提示是否生效。
+
+日志额外带 `detail=`，即回传给模型的那份含校验器文案的摘要，只进本机日志。Langfuse 与
+公开展示站仍只收字段路径 —— `extra=forbid` 下路径可能是模型编造的字段名，逐段截断。
+
+由此可以区分 `invalid_response` 的两层来源：Generation 被标 ERROR 说明失败在 Provider
+严格 Schema 层；Generation 全部成功而 run 失败，说明是 `reproduction.py` 的本地 Policy。
+
+## 问题 11：校验器把多个失败条件合并成一条消息，重试越改越偏
+
+`Edit.validate_mode_fields` 原本用一条 `full_file requires content only` 覆盖三种互不
+相同的违规。该消息会**原样回传给模型**作为格式修正提示，模型看到它会认为自己已经给了
+content，无从知道真正的问题是未使用字段填了 `""` 而不是 `null`。
+
+生产日志显示第一轮只有 `edits.1` 一处失败，第二轮恶化为 `edits.0`、`edits.1` 全错并
+触发 `edits:too_short`。维护者侧同样只能看到 `edits.N:value_error`。
+
+### 解决方案
+
+拆开每个失败条件，各自给出点名字段的消息，例如 `full_file requires search to be null`、
+`search_replace requires a non-empty search`。128 种字段组合已逐一比对，接受/拒绝集合与
+原实现完全一致，只有消息不同。`validate_fix_paths` 的拒绝消息同样改为直接列出白名单，
+并由 `allowed` 集合拼出以免与校验逻辑漂移。
+
+## 问题 12：严格 Schema 无法表达的规则没有写进提示词
+
+严格 Structured Outputs 要求每个属性都进入 `required`，可空性只能用 `null` 表达，跨字段
+约束根本无法编码进 JSON Schema。而 `generate_test.md` 从未说明何时用 `search_replace`、
+何时用 `full_file`，也从未给出 `files_needed_for_fix` 的白名单。唯一讲模式选择的那句话在
+`reproduction.py` 的本地 Policy 重试提示里，格式层失败永远走不到。
+
+模型因此只能猜：给新建固件选了 `search_replace` 却没有原文可搜；PlantUML 反馈的自然答案
+`backend/app/mermaid_renderer.py` 又恰好是可读不可写的受信模块。
+
+### 解决方案
+
+白名单不放宽 —— `mermaid_renderer.py` 驱动 Mermaid CLI 与 Chromium 子进程，写入权限是
+刻意不给的，见 [security-and-sandbox.md](../AgentRequirements/security-and-sandbox.md)。
+改为把规则明确写进 `generate_test.md`：新建文件必须 `full_file`；`search_replace` 的
+`search` 必须非空且恰好命中一次；`files_needed_for_fix` 只接受 Policy `write.fix_exact`
+中的两个路径，不确定时填空数组。提示词内容变化时同步 bump
+`TEST_GENERATION_PROMPT_VERSION`。
+
+凡是只能由 Pydantic 校验器表达的规则，都必须在对应提示词里复述一遍：模型看不到 Policy
+文件，也无法从 Schema 推断。
