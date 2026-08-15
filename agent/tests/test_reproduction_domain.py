@@ -349,3 +349,50 @@ def test_unexpected_conversion_error_requires_conversion_error_type(
         target_test_selector=SELECTOR,
     )
     assert report.disposition is expected
+
+
+@pytest.mark.parametrize(
+    ("fields", "expected"),
+    [
+        ({"mode": "full_file", "search": "", "content": "x"},
+         "full_file requires search to be null"),
+        ({"mode": "full_file", "replace": "", "content": "x"},
+         "full_file requires replace to be null"),
+        ({"mode": "full_file"}, "full_file requires content"),
+        ({"mode": "search_replace", "search": "", "replace": "r"},
+         "search_replace requires a non-empty search"),
+        ({"mode": "search_replace", "search": "s"},
+         "search_replace requires replace"),
+        ({"mode": "search_replace", "search": "s", "replace": "r", "content": "x"},
+         "search_replace requires content to be null"),
+        ({"mode": "full_file", "content": "a\x00b"},
+         "edit text must not contain NUL"),
+    ],
+)
+def test_edit_rejection_names_the_offending_field(
+    fields: dict[str, str],
+    expected: str,
+) -> None:
+    """严格 Structured Outputs 要求所有字段都出现，模型极易把未使用字段填 "" 而非 null。
+
+    该消息会原样回传给模型作为修正提示。合并成一条时模型无从判断该改哪一项，
+    实测会越改越偏；维护者从日志里也只能看到 `edits.N:value_error`。
+    """
+
+    with pytest.raises(ValidationError) as exc_info:
+        Edit(path="backend/tests/test_feedback_regressions.py", **fields)
+
+    assert expected in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"mode": EditMode.FULL_FILE, "content": "x"},
+        {"mode": EditMode.SEARCH_REPLACE, "search": "s", "replace": "r"},
+        # 空 replace 是合法的删除
+        {"mode": EditMode.SEARCH_REPLACE, "search": "s", "replace": ""},
+    ],
+)
+def test_edit_accepts_well_formed_modes(fields: dict[str, str]) -> None:
+    assert Edit(path="backend/tests/test_feedback_regressions.py", **fields)

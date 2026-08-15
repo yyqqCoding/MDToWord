@@ -45,11 +45,23 @@ class Edit(BaseModel):
 
     @model_validator(mode="after")
     def validate_mode_fields(self) -> "Edit":
+        # 每个条件单独抛错：严格 Structured Outputs 要求所有字段都出现，未使用的只能填
+        # null，模型很容易改填 ""。合并成一条消息时，模型和维护者都无法从
+        # 「requires content only」看出真正违反的是哪一项，重试因此常常越改越偏。
         if self.mode is EditMode.SEARCH_REPLACE:
-            if not self.search or self.replace is None or self.content is not None:
-                raise ValueError("search_replace requires search and replace only")
-        elif self.content is None or self.search is not None or self.replace is not None:
-            raise ValueError("full_file requires content only")
+            if not self.search:
+                raise ValueError("search_replace requires a non-empty search")
+            if self.replace is None:
+                raise ValueError("search_replace requires replace")
+            if self.content is not None:
+                raise ValueError("search_replace requires content to be null")
+        else:
+            if self.content is None:
+                raise ValueError("full_file requires content")
+            if self.search is not None:
+                raise ValueError("full_file requires search to be null")
+            if self.replace is not None:
+                raise ValueError("full_file requires replace to be null")
         for value in (self.search, self.replace, self.content):
             if value is not None and "\x00" in value:
                 raise ValueError("edit text must not contain NUL")

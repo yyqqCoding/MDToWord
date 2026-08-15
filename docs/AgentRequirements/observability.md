@@ -117,6 +117,10 @@ schema_errors: "字段路径:Pydantic规则名" 逗号分隔，最多8项，每�
 下路径可能是模型自己编造的字段名，因此逐段截断。它同时以 WARNING 写入进程日志，
 两次格式尝试都记，便于判断修正提示是否生效。
 
+进程日志额外带 `detail=`，即回传给模型的那份修正摘要（含 Pydantic 校验器文案）。
+同一个 validator 可能抛出多条不同 ValueError，只看 `字段:value_error` 分不出是哪条，
+必须有文案才能定位。该字段**只进本机日志**，不上 Langfuse 也不上展示站。
+
 之所以必须在Provider层留痕：该异常用 `from None` 切断链路，Controller 只持久化异常
 类名，CLI 只输出 `error_code`，没有这一项就无法判断 `invalid_response` 卡在哪个字段。
 回传给模型的修正提示是另一份更宽的摘要（含校验器文案），不进日志与Trace。
