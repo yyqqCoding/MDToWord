@@ -13,6 +13,17 @@ from agent.sandbox.contracts import SandboxResult, SandboxStatus, TargetTestOutc
 from agent.workspace.edits import Edit
 
 
+# 修复阶段可写的后端源码，是 agent/policies/patch_policy.json 中 write.fix_exact 的
+# 域层镜像；agent/prompts/generate_test.md 也复述了同一份清单，因为模型读不到 Policy
+# 文件。三处由 test_reproduction_domain.py 的一致性测试锁住，改一处不改其余会失败。
+# 不在这里直接读 Policy：field_validator 每次校验都做文件 I/O 不值得，也会给域层引入
+# 导入期失败模式。收紧或放宽前先看 docs/AgentRequirements/security-and-sandbox.md。
+FIX_SOURCE_PATHS: tuple[str, ...] = (
+    "backend/app/normalizer.py",
+    "backend/app/pandoc_runner.py",
+)
+
+
 class OracleKind(StrEnum):
     CONVERSION_SUCCESS = "conversion_success"
     CONVERSION_ERROR = "conversion_error"
@@ -198,22 +209,18 @@ class TestGenerationResult(BaseModel):
     @field_validator("files_needed_for_fix")
     @classmethod
     def validate_fix_paths(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        allowed = {
-            "backend/app/normalizer.py",
-            "backend/app/pandoc_runner.py",
-        }
         for raw in value:
             path = PurePosixPath(raw)
             if (
                 path.is_absolute()
                 or ".." in path.parts
                 or len(raw) > 240
-                or raw not in allowed
+                or raw not in FIX_SOURCE_PATHS
             ):
                 # 直接列出白名单：该消息会进入格式修正提示，只说「invalid」模型无从改起。
                 # mermaid_renderer.py 可读不可写，是模型最常猜错的一项。
                 raise ValueError(
-                    "fix source path must be one of: " + ", ".join(sorted(allowed))
+                    "fix source path must be one of: " + ", ".join(FIX_SOURCE_PATHS)
                 )
         return value
 
