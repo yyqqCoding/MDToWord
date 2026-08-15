@@ -171,6 +171,9 @@ PR正文包含Trace URL，便于维护者从代码审查跳转到执行证据。
 - 模型输入输出只保留结构化结果摘要；
 - stdout/stderr只保留脱敏、截断后的错误摘要；
 - 删除Authorization、Cookie、API Key、邮箱、电话和已知Secret模式；
+- 电话匹配的前后边界排除十六进制字符与连字符。SHA-256、git SHA、镜像 digest 和 UUID
+  普遍含 9 位以上连续数字段，边界若只排除数字，会把这些可核对标识符从中间截断 ——
+  性质是过度脱敏而非泄露，但 Trace 里的指纹、`job_id` 和补丁 SHA 会无法对账；
 - development、staging、production使用不同environment标签。
 
 如需临时调试完整内容，必须由维护者显式启用，限定单次run，并在完成后恢复默认；

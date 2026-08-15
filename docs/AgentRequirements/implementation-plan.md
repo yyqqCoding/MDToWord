@@ -832,6 +832,8 @@ Cloud，使真实 Gate 调用具备严格结构化输出、有限重试、真实
   赋值，并保留同 run 幂等恢复。修复后同 run 已创建
   [PR #1](https://github.com/yyqqCoding/MDToWord/pull/1)；feedback=`pr_opened`、
   run=`completed`、`error_code=null`，数据库、GitHub 分支和 `publication.json` 一致。
+  该电话规则的根因已在后续修复：匹配边界改为排除十六进制字符与连字符，SHA-256、git
+  SHA、镜像 digest 与 UUID 不再被截断。Publisher 侧关闭电话匹配的处置保持不变。
 
 ### 阶段 F 实施检查点
 
