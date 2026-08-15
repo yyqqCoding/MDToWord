@@ -1,0 +1,17 @@
+# 仓库根 .gitignore 来自 Python 模板，含未锚定的 `lib/` 规则，会连带忽略本项目的
+# src/lib。此处显式恢复，避免源码被静默漏提交；不修改根 .gitignore，以免影响
+# backend/ 与 agent/ 的既有忽略行为。
+!/src/lib/
+
+node_modules
+.next
+.next-verify
+out
+build
+.env
+.env.local
+.env*.local
+*.tsbuildinfo
+next-env.d.ts
+.vercel
+.DS_Store

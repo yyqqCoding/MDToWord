@@ -43,6 +43,20 @@ class AgentRunStatus(str, Enum):
     STALE_BASE = "stale_base"
 
 
+# 终态：运行不会再被 Scheduler 恢复。与 SupabaseAgentRunRepository.find_resumable
+# 的状态过滤互为补集，新增状态时两处必须同步。
+TERMINAL_RUN_STATUSES = frozenset(
+    {
+        AgentRunStatus.COMPLETED,
+        AgentRunStatus.FAILED,
+        AgentRunStatus.CANCELLED,
+        AgentRunStatus.BUDGET_EXHAUSTED,
+        AgentRunStatus.SECURITY_REJECTED,
+        AgentRunStatus.STALE_BASE,
+    }
+)
+
+
 class RiskLevel(str, Enum):
     UNKNOWN = "unknown"
     LOW = "low"

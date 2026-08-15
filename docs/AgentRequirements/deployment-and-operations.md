@@ -167,3 +167,32 @@ sudo mdtoword-agentctl logs
 
 历史 `failed` feedback/run 保留用于审计，不重新打开。修复部署后使用新的 `pending`
 反馈验证；如果当前代码已经解决问题，正确终态是 `cannot_reproduce`，不是创建空修复 PR。
+
+## 8. 展示站点完成回调（可选）
+
+公开 Trace 展示站（`trace-site/`，部署在 Vercel）需要知道一次运行何时结束，才能立即
+抓取 Trace 快照并刷新页面缓存。Agent 侧因此支持一个可选的完成回调。
+
+`/etc/mdtoword/controller.env` 新增两项：
+
+```text
+TRACE_SITE_WEBHOOK_URL=https://<站点域名>/api/hooks/run-finished
+TRACE_SITE_WEBHOOK_SECRET=<与站点 SITE_WEBHOOK_SECRET 相同的值>
+```
+
+行为约束：
+
+- **两项缺任一即完全关闭推送**，Agent 行为与接入前完全一致。这是可选能力，
+  不配置不会影响任何修复流程。
+- **只在运行落终态时推送**，恢复中的运行不推 —— 此时 Trace 还不完整。
+- **推送体只有 `run_id` 与 `status`**，不含反馈正文、补丁、日志或任何观测内容。
+  站点自己去 Langfuse 取 Trace。
+- **推送失败绝不影响修复**：站点不可达、超时、返回 5xx 都只记一行 WARNING，
+  且只记异常类型（httpx 的异常文本会带完整 URL）。推送是 at-most-once，
+  丢了不补推，由站点访问详情页时的按需补抓自愈。
+- 推送前会先 `flush` 一次 Langfuse 客户端，否则站点会拿到不完整的树。
+
+网络前提：ECS 需允许出站访问站点域名的 HTTPS。不需要开放任何入站端口。
+
+密钥仍按既有约定管理：只写入 `/etc/mdtoword/controller.env`，不提交、不记录、
+不通过聊天传递；`install.sh` 不会创建或覆盖该文件。

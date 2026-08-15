@@ -70,6 +70,9 @@ class AgentConfig(BaseModel):
     langfuse_trace_url_template: str | None = None
     sandbox_worker_url: str | None = None
     sandbox_worker_credential: SecretStr | None = None
+    # 公开展示站点的完成回调。两项都留空时完全不推送，Agent 行为与之前一致。
+    trace_site_webhook_url: str | None = None
+    trace_site_webhook_secret: SecretStr | None = None
 
     @field_validator("supabase_url")
     @classmethod
@@ -90,6 +93,7 @@ class AgentConfig(BaseModel):
         "langfuse_host",
         "sandbox_worker_url",
         "github_api_url",
+        "trace_site_webhook_url",
     )
     @classmethod
     def require_http_external_url(cls, value: str | None) -> str | None:
@@ -265,6 +269,14 @@ class AgentConfig(BaseModel):
                 values,
                 "SANDBOX_WORKER_CREDENTIAL",
             ),
+            trace_site_webhook_url=_optional_text(
+                values,
+                "TRACE_SITE_WEBHOOK_URL",
+            ),
+            trace_site_webhook_secret=_optional_secret(
+                values,
+                "TRACE_SITE_WEBHOOK_SECRET",
+            ),
         )
 
     def require_database_url(self) -> str:
@@ -328,6 +340,19 @@ class AgentConfig(BaseModel):
             self.langfuse_host,
             self.langfuse_public_key.get_secret_value(),
             self.langfuse_secret_key.get_secret_value(),
+        )
+
+    def trace_site_webhook_settings(self) -> tuple[str, str] | None:
+        """展示站点回调是可选能力：只有 URL 与密钥都配齐才启用，缺一律视为关闭。
+
+        刻意不抛错。回调纯粹服务于对外展示，不配置时 Agent 必须照常修复。
+        """
+
+        if self.trace_site_webhook_url is None or self.trace_site_webhook_secret is None:
+            return None
+        return (
+            self.trace_site_webhook_url,
+            self.trace_site_webhook_secret.get_secret_value(),
         )
 
     def require_stage_c_controller_settings(self) -> tuple[str, str, str, str]:

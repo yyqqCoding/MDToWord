@@ -314,6 +314,7 @@ async def _run_production_scheduler(
             lease_seconds=config.claim_lease_seconds,
             max_attempts=config.max_claim_attempts,
             poll_interval_seconds=config.poll_interval_seconds,
+            run_settled_listener=runtime.trace_site_notifier,
         )
         if once:
             return await scheduler.run_once()
