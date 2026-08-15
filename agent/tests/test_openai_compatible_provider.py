@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 from decimal import Decimal
 
 import httpx
@@ -265,3 +266,87 @@ async def _run_async(provider: OpenAICompatibleProvider):
         tools=(),
         timeout_seconds=5,
     )
+
+
+def _reject_with(payload: dict[str, object]):
+    async def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(200, json=_response(json.dumps(payload)))
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            await _run_async(
+                OpenAICompatibleProvider(
+                    api_key="secret",
+                    model="model",
+                    base_url="https://models.example/v1",
+                    client=client,
+                )
+            )
+
+    with pytest.raises(InvalidModelResponseError) as exc_info:
+        asyncio.run(scenario())
+    return exc_info.value
+
+
+def test_invalid_structure_reports_which_fields_failed(caplog):
+    """invalid_response 必须能指认不合规字段。
+
+    异常链被 `from None` 切断、Controller 只持久化异常类名、CLI 只打印 error_code，
+    provider 这一层是唯一的留痕点。
+    """
+
+    # reason 用空白字符：能过 min_length，再被 field_validator 拒绝，产生 value_error
+    payload = _classification_payload() | {"relevance": 4.2, "reason": "   "}
+
+    with caplog.at_level(logging.WARNING, logger="agent.providers.openai_compatible"):
+        error = _reject_with(payload)
+
+    assert "relevance:less_than_equal" in error.schema_errors
+    assert "reason:value_error" in error.schema_errors
+    # 校验器文案只回传给模型（_validation_error_hint），不进日志与 Trace
+    assert "must not be blank" not in error.schema_errors
+
+    messages = [record.getMessage() for record in caplog.records]
+    # 两次尝试都留痕，便于判断修正提示有没有起作用
+    assert len(messages) == 2
+    assert all("relevance:less_than_equal" in item for item in messages)
+    assert all("schema=gateclassification" in item for item in messages)
+
+
+def test_model_invented_field_names_are_bounded_in_schema_errors():
+    """extra="forbid" 下 loc 会带上模型自己编造的字段名，必须逐段截断。"""
+
+    invented = "explanation_" + "x" * 200
+    error = _reject_with(_classification_payload() | {invented: "很长的解释"})
+
+    assert error.schema_errors == f"{invented[:40]}:extra_forbidden"
+    assert "很长的解释" not in error.schema_errors
+
+
+def test_malformed_json_reports_a_root_level_schema_error():
+    # 整段 JSON 解析失败时 Pydantic 给的 loc 为空，摘要必须仍然可读
+    error = _reject_with_content("still-not-json")
+
+    assert error.schema_errors == "<root>:json_invalid"
+
+
+def _reject_with_content(content: str):
+    async def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(200, json=_response(content))
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            await _run_async(
+                OpenAICompatibleProvider(
+                    api_key="secret",
+                    model="model",
+                    base_url="https://models.example/v1",
+                    client=client,
+                )
+            )
+
+    with pytest.raises(InvalidModelResponseError) as exc_info:
+        asyncio.run(scenario())
+    return exc_info.value

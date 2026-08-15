@@ -60,6 +60,7 @@ class ObservedModelProvider:
                 observation.fail(
                     error_code=getattr(exc, "error_code", "unexpected_error"),
                     error_type=type(exc).__name__,
+                    schema_errors=getattr(exc, "schema_errors", None),
                 )
                 raise
             observation.succeed(response)

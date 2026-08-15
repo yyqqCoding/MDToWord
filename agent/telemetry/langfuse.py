@@ -214,12 +214,26 @@ class _LangfuseGenerationObservation:
         except Exception as exc:
             _warn(exc)
 
-    def fail(self, *, error_code: str, error_type: str) -> None:
+    def fail(
+        self,
+        *,
+        error_code: str,
+        error_type: str,
+        schema_errors: str | None = None,
+    ) -> None:
+        output: dict[str, object] = {
+            "error_code": error_code,
+            "error_type": error_type,
+        }
+        if schema_errors:
+            # 只有字段路径与 Pydantic 规则名，不经 mask_sensitive 也不含模型原文；
+            # 见 providers/openai_compatible.py:_schema_error_paths。
+            output["schema_errors"] = schema_errors
         try:
             self._raw.update(
                 level="ERROR",
                 status_message=error_code,
-                output={"error_code": error_code, "error_type": error_type},
+                output=output,
             )
         except Exception as exc:
             _warn(exc)

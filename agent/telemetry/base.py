@@ -42,7 +42,14 @@ class RunObservation(Protocol):
 class GenerationObservation(Protocol):
     def succeed(self, response: StructuredModelResponse[object]) -> None: ...
 
-    def fail(self, *, error_code: str, error_type: str) -> None: ...
+    # schema_errors 只接受「字段路径:规则名」摘要，不接受模型原文或校验器文案。
+    def fail(
+        self,
+        *,
+        error_code: str,
+        error_type: str,
+        schema_errors: str | None = None,
+    ) -> None: ...
 
 
 class ToolObservation(Protocol):
@@ -73,8 +80,14 @@ class _NoopGenerationObservation:
     def succeed(self, response: StructuredModelResponse[object]) -> None:
         del response
 
-    def fail(self, *, error_code: str, error_type: str) -> None:
-        del error_code, error_type
+    def fail(
+        self,
+        *,
+        error_code: str,
+        error_type: str,
+        schema_errors: str | None = None,
+    ) -> None:
+        del error_code, error_type, schema_errors
 
 
 class _NoopToolObservation:
