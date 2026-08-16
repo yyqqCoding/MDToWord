@@ -825,6 +825,17 @@ Cloud，使真实 Gate 调用具备严格结构化输出、有限重试、真实
   条件测试 skipped，`compileall` 与 `git diff --check` 通过；使用当前 Dockerfile 新建的
   固定镜像运行完整 Docker 集成为 5 passed。旧 `.env` 镜像因不含 `mmdc` 得到的 Mermaid
   失败不计为通过，更新镜像后已复测全部通过。
+- 权限修复部署后的真实 feedback `41d6c497-6c9e-4647-b54c-cfd11d9fff6c` / run
+  `d771e2a9-6ce3-4b08-bbfb-15182ec72514` 基于 `26b84f7...` 完成生产全链路。
+  `agent-graph-v8` 第二轮受信回退以 `target_conversion_error` 复现
+  `test_feedback_41d6c497_aligned_notag`，第一轮修复即令目标测试通过；独立验证确认基线
+  失败、目标通过、DOCX `minimum_math_count` 通过及后端全量 55 passed/0 failures/0 skipped。
+  最终 `validation.passed=true`，变更仅含 `backend/app/normalizer.py`、固定回归测试和 fixture，
+  validated patch SHA-256 为 `545904a6...`。GitHub App 自动创建
+  [PR #2](https://github.com/yyqqCoding/MDToWord/pull/2)，feedback=`pr_opened`、
+  run=`completed`、两者错误码均为空；共 5 次模型调用、21 次工具调用和 48,146 tokens。
+  维护者已确认本次 Agent 运行与 PR 内容正确；PR 是否合并及后端是否部署仍按独立人工
+  流程验收，不由该 run 推断。
 - `repair-policy-v2` 的真实 run `4aee5378-...` 已通过 Gate 并生成合规 Mermaid drawing
   复现计划，证明上述校正真实生效；第一轮结构化测试编辑未通过本地文本/Python 校验，
   有界第二轮生成又在 Provider 格式修正后仍不符合严格 Schema，run 以
@@ -940,7 +951,8 @@ Cloud，使真实 Gate 调用具备严格结构化输出、有限重试、真实
   `rejected_irrelevant`；已修复 Mermaid 反馈在 `generate-test` 的复杂严格 Schema 失败后
   由受信 drawing 模板接管，Docker 无法复现旧缺陷并进入 `cannot_reproduce`，没有补丁或
   PR。`/models=200` 只作为连通/认证证据，Provider 故障继续按 Langfuse generation 节点与
-  `provider_unavailable`/`invalid_response` 分开诊断。
+  `provider_unavailable`/`invalid_response` 分开诊断；权限修复部署后又以真实 aligned/notag
+  公式反馈验证可修复路径，完整通过复现、修复、独立验证并自动创建 PR #2。
 
 | 阶段 | 状态 | 验收日期 | 证据 |
 |---|---|---|---|
@@ -950,6 +962,6 @@ Cloud，使真实 Gate 调用具备严格结构化输出、有限重试、真实
 | D 自动复现 | Implemented | 2026-08-11 | Agent 178 passed；Docker 2 passed；Backend 44 passed；真实 Mermaid 反馈在固定 SHA 上产生目标断言失败并进入 `repairing/reproduced` |
 | E 修复与独立验证 | Completed | 2026-08-11；Mermaid 平台能力更新 2026-08-12 | 历史 Agent 217 passed/Docker 4 passed/Backend 44 passed；固定渲染器完成中文流程图“基线失败 -> 修复通过”，真实 run 最终生成 validated patch |
 | F GitHub PR | Completed | 2026-08-12 | Agent 全量回归通过；真实 App 最小权限预检通过；run `f11032d7-...` 幂等创建 PR #1，数据库与 Artifact 一致，维护者已人工合并 |
-| G 评估与投产 | Completed | 2026-08-13 | 12 条真实 Gate 评估、Fake 发布 E2E、PR/Render/插件回放通过；独立 ECS Worker/Scheduler 常驻；生产 `rejected_irrelevant` 与 Mermaid `cannot_reproduce` 小流量验收通过 |
+| G 评估与投产 | Completed | 2026-08-13；公式闭环复验 2026-08-16 | 12 条真实 Gate 评估、Fake 发布 E2E、PR/Render/插件回放通过；独立 ECS Worker/Scheduler 常驻；生产 `rejected_irrelevant`、Mermaid `cannot_reproduce` 与公式自动修复 PR #2 验收通过 |
 
 状态只在完成对应验收后更新。已有代码不因存在文件或历史提交自动视为通过。
