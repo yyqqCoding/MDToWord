@@ -89,6 +89,7 @@ class DockerRunner:
                 patch_path = job_root / name
                 patch_path.write_bytes(content)
                 _apply_patch(workspace, patch_path, git_environment)
+            _normalize_container_workspace_permissions(workspace)
             authorized_diff = _workspace_diff(workspace, git_environment)
             authorized_hash = hashlib.sha256(authorized_diff).hexdigest()
 
@@ -315,6 +316,18 @@ def _initialize_baseline(job_root: Path, environment: dict[str, str]) -> None:
 def _apply_patch(root: Path, patch: Path, environment: dict[str, str]) -> None:
     _git(root, environment, "apply", "--check", str(patch))
     _git(root, environment, "apply", str(patch))
+
+
+def _normalize_container_workspace_permissions(root: Path) -> None:
+    """让非 root 容器可读取补丁后的源码，同时保持源码不可写。"""
+
+    for path in root.rglob("*"):
+        if path.is_dir():
+            path.chmod(0o755)
+        elif path.is_file():
+            path.chmod(0o755 if path.stat().st_mode & 0o111 else 0o644)
+    # 顶层挂载点保持可写；源码子目录和文件仍只允许 Worker 写入。
+    root.chmod(0o777)
 
 
 def _workspace_diff(root: Path, environment: dict[str, str]) -> bytes:

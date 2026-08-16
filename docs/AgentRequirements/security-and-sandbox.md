@@ -205,6 +205,8 @@ Langfuse 或 GitHub 凭据注入 Worker 进程。Controller 与 Worker 共享的
 
 - 设置 `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`；
 - 清除非必要环境变量；
+- Worker 在启动容器前把临时 workspace 目录规范为可遍历、普通文件规范为只读可读，
+  不依赖 systemd `UMask`；补丁新增文件也必须对固定非 root UID 可读；
 - 目标测试与全量测试使用固定argv；
 - 按Job设置墙钟超时，整次运行沙箱总预算默认900秒；
 - stdout/stderr截断、清理控制字符后返回；

@@ -628,6 +628,8 @@ Cloud，使真实 Gate 调用具备严格结构化输出、有限重试、真实
   Hash、过期时间和幂等键；同一 Job 不重复执行，不同请求不能复用 Job ID；
 - Docker Runner 只生成固定 argv，不使用 `sh -c`，启用无网络、只读根、能力清空、
   `no-new-privileges`、非 root、内存/CPU/PID/超时限制和独立 tmpfs；
+- Worker 在容器启动前确定性规范源码快照和补丁新增文件的读取权限，不继承宿主
+  systemd `UMask`，固定非 root UID 能完成 pytest 启动与收集；
 - 任务容器看不到 Worker Git 元数据或业务 Secret；执行后 workspace 偏离授权补丁时
   返回 `security_rejected`，临时 workspace 在任何终态后销毁。
 
@@ -813,6 +815,16 @@ Cloud，使真实 Gate 调用具备严格结构化输出、有限重试、真实
   skipped，部署后应在 ECS 上执行该项并用新 feedback 验证。变更后 Agent 套件按文件
   分组完整执行：303 passed、5 个 Docker 条件测试 skipped，`compileall` 与
   `git diff --check` 通过。
+- 部署 `agent-graph-v8` 后的真实 feedback `14f0f023-...` / run
+  `677c3be4-...` 已进入受信转换测试回退，但第二轮 Job `5521fdb2-...` 仍以
+  `exit_code=1/junit=null` 返回。Worker 持久化 stderr 证明 pytest 因
+  `/workspace/backend/pytest.toml` 的 `PermissionError` 在收集前退出：systemd
+  `UMask=0077` 使快照子目录成为 `0700`，补丁新增文件也可能成为 `0600`。快照物化与
+  Docker Runner 现显式规范非 root 容器的读取权限，不依赖宿主 umask。回归在
+  `umask 0077` 下覆盖基线目录和新增 fixture；Agent 全量为 305 passed、5 个 Docker
+  条件测试 skipped，`compileall` 与 `git diff --check` 通过；使用当前 Dockerfile 新建的
+  固定镜像运行完整 Docker 集成为 5 passed。旧 `.env` 镜像因不含 `mmdc` 得到的 Mermaid
+  失败不计为通过，更新镜像后已复测全部通过。
 - `repair-policy-v2` 的真实 run `4aee5378-...` 已通过 Gate 并生成合规 Mermaid drawing
   复现计划，证明上述校正真实生效；第一轮结构化测试编辑未通过本地文本/Python 校验，
   有界第二轮生成又在 Provider 格式修正后仍不符合严格 Schema，run 以
@@ -921,8 +933,9 @@ Cloud，使真实 Gate 调用具备严格结构化输出、有限重试、真实
   systemd 管理并保持 `active/enabled`，Worker 仅监听 `127.0.0.1:8090`。安装脚本每次
   更新后仍默认关闭 Scheduler，只有 `mdtoword-agentctl audit` 通过并显式确认才恢复领取；
   日常更新新增 `deploy/agent/deploy.sh` 编排入口，服务器只需执行一次 fast-forward pull
-  和一次部署命令。入口内部仍固定停止领取、安装审计、交互式 `ENABLE` 与状态输出，失败
-  时保持 Scheduler 关闭；三个生产 Shell 脚本的 `bash -n` 检查通过；
+  和一次部署命令。入口内部仍固定停止领取、安装后显式重启 Worker、审计、交互式
+  `ENABLE` 与状态输出，失败时保持 Scheduler 关闭；三个生产 Shell 脚本的 `bash -n`
+  检查通过；
 - 生产小流量验证覆盖两条不会产生 GitHub 写入的路径：无关内容自动进入
   `rejected_irrelevant`；已修复 Mermaid 反馈在 `generate-test` 的复杂严格 Schema 失败后
   由受信 drawing 模板接管，Docker 无法复现旧缺陷并进入 `cannot_reproduce`，没有补丁或

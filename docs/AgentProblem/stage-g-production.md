@@ -174,4 +174,33 @@ Schema 合法但跨字段矛盾的结果。第二层缺口在本地 Policy：已
 `git pull --ff-only`，再运行部署脚本；脚本内部固定执行停止领取、底层安装与审计、交互式
 `ENABLE` 确认和最终状态输出。任何步骤失败都因 `set -Eeuo pipefail` 立即停止，而
 `install.sh` 与 `mdtoword-agentctl enable` 的 fail-safe 继续保证 Scheduler 保持关闭。
+后续审查发现，`systemctl enable --now` 不会重启已经活动的 Worker，拉取的新 Python 代码
+可能未被当前进程加载；`install.sh` 因此改为先确保服务 enabled，再显式 restart 后审计。
 该入口只编排已有受信命令，不读取或改写 Secret，也不放宽 Worker 监听和 Docker 边界。
+
+## 问题 15：生产 Sandbox 两轮都没有 JUnit，本地 Docker 却通过
+
+公式反馈 `14f0f023-...` 使用 `agent-graph-v8` 后，第二轮已确定进入受信转换崩溃模板，
+但 Sandbox Job `5521fdb2-...` 仍返回 `completed/exit_code=1/junit=null`。本地使用相同代码
+和固定镜像运行真实 Docker 回归可以产出目标 JUnit，说明问题不在公式、提示词或受信模板。
+Worker 持久化结果中的 `stderr_tail` 最终给出直接证据：pytest 在读取
+`/workspace/backend/pytest.toml` 时触发 `PermissionError`，尚未开始测试收集。
+
+### 根因
+
+生产 Worker 的 systemd 单元刻意设置 `UMask=0077`。快照物化虽然把普通文件显式设为
+`0644/0755`，但隐式创建的子目录仍继承 umask 成为 `0700`；Runner 只把 workspace 顶层
+改为 `0777`，容器的固定 UID `65532` 无法穿过 `backend/`。此外，`git apply` 新增的
+fixture 也可能继承同一 umask 成为 `0600`。开发机通常使用 `0022`，所以此前 Docker
+集成测试没有暴露生产差异。界面的“测试无效”只是缺少 JUnit 后的下游分类，不是根因。
+
+### 解决方案
+
+源码快照物化显式把所有子目录规范为 `0755`；应用授权补丁后、启动容器前，Runner 再把
+临时 workspace 统一为目录 `0755`、普通文件 `0644`、原可执行文件 `0755`，顶层挂载点
+保持既有 `0777`。这样非 root 容器只能读取源码和测试，且权限不再依赖宿主 umask；新增
+fixture 也包含在同一边界内。回归测试在进程临时设置 `umask 0077`，同时验证基线配置与
+补丁新增文件可读。Agent 全量为 305 passed、5 个 Docker 条件测试 skipped；使用当前
+Dockerfile 新建的固定镜像运行完整 Docker 集成为 5 passed，受信转换崩溃模板可以产生
+目标 JUnit。旧 `.env` 指向的镜像缺少 `mmdc`，导致 Mermaid 用例失败；更新为当前镜像后
+同一用例通过，因此没有把过期镜像结果冒充本次权限修复失败。

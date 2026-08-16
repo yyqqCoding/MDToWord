@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import io
+import os
 import tarfile
 from pathlib import Path
 
@@ -8,7 +9,10 @@ import httpx
 import pytest
 
 from agent.domain.errors import SourceSnapshotError
-from agent.workspace.source_repository import GitHubSourceRepository
+from agent.workspace.source_repository import (
+    GitHubSourceRepository,
+    materialize_snapshot_archive,
+)
 
 
 def _archive(entries: dict[str, bytes], *, symlink: str | None = None) -> bytes:
@@ -77,6 +81,24 @@ def test_github_source_repository_follows_archive_redirect(tmp_path: Path):
         "/archive.tar.gz",
     ]
     assert (snapshot.root / "README.md").read_text("utf-8") == "summary\n"
+
+
+def test_materialize_snapshot_archive_normalizes_directory_permissions(
+    tmp_path: Path,
+):
+    archive_path = tmp_path / "source.tar.gz"
+    archive_path.write_bytes(
+        _archive({"repo-root/backend/pytest.toml": b"[pytest]\n"})
+    )
+
+    previous_umask = os.umask(0o077)
+    try:
+        materialize_snapshot_archive(archive_path, tmp_path / "snapshot")
+    finally:
+        os.umask(previous_umask)
+
+    assert ((tmp_path / "snapshot/backend").stat().st_mode & 0o777) == 0o755
+    assert ((tmp_path / "snapshot/backend/pytest.toml").stat().st_mode & 0o777) == 0o644
 
 
 @pytest.mark.parametrize(
