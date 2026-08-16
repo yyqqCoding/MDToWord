@@ -908,6 +908,9 @@ Cloud，使真实 Gate 调用具备严格结构化输出、有限重试、真实
 - Controller、Worker 与 Docker Engine 已部署到独立 Linux ECS；Worker 与 Scheduler 由
   systemd 管理并保持 `active/enabled`，Worker 仅监听 `127.0.0.1:8090`。安装脚本每次
   更新后仍默认关闭 Scheduler，只有 `mdtoword-agentctl audit` 通过并显式确认才恢复领取；
+  日常更新新增 `deploy/agent/deploy.sh` 编排入口，服务器只需执行一次 fast-forward pull
+  和一次部署命令。入口内部仍固定停止领取、安装审计、交互式 `ENABLE` 与状态输出，失败
+  时保持 Scheduler 关闭；三个生产 Shell 脚本的 `bash -n` 检查通过；
 - 生产小流量验证覆盖两条不会产生 GitHub 写入的路径：无关内容自动进入
   `rejected_irrelevant`；已修复 Mermaid 反馈在 `generate-test` 的复杂严格 Schema 失败后
   由受信 drawing 模板接管，Docker 无法复现旧缺陷并进入 `cannot_reproduce`，没有补丁或
