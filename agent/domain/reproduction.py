@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from agent.domain.content import contains_mermaid_diagram
 from agent.domain.models import TaskArtifact
 from agent.sandbox.contracts import SandboxResult, SandboxStatus, TargetTestOutcome
-from agent.workspace.edits import Edit
+from agent.workspace.edits import Edit, EditMode
 
 
 # 修复阶段可写的后端源码，是 agent/policies/patch_policy.json 中 write.fix_exact 的
@@ -247,6 +247,47 @@ class TestGenerationResult(BaseModel):
             )
             if "docx_assertions" not in generated_text or assertion not in generated_text:
                 raise ValueError("DOCX oracle must use its registered trusted assertion")
+
+    def validate_regression_append(
+        self,
+        *,
+        file_has_content: bool,
+        append_anchor: str | None,
+    ) -> None:
+        """已有回归文件只能借助 Controller 给出的唯一尾部锚点追加。"""
+
+        expected_path = "backend/tests/test_feedback_regressions.py"
+        regression_edits = tuple(
+            edit for edit in self.edits if edit.path == expected_path
+        )
+        if len(regression_edits) != 1:
+            raise ValueError(
+                "generated test must contain exactly one edit for the regression file"
+            )
+        edit = regression_edits[0]
+        if not file_has_content:
+            if edit.mode is not EditMode.FULL_FILE:
+                raise ValueError(
+                    "empty regression file requires mode=full_file with complete content"
+                )
+            return
+        if not append_anchor:
+            raise ValueError("existing regression file requires a non-empty append_anchor")
+        if edit.mode is not EditMode.SEARCH_REPLACE:
+            raise ValueError(
+                "existing regression file requires mode=search_replace using "
+                "regression_append_context.append_anchor"
+            )
+        if edit.search != append_anchor:
+            raise ValueError(
+                "regression search must exactly equal "
+                "regression_append_context.append_anchor"
+            )
+        if edit.replace is None or not edit.replace.startswith(append_anchor):
+            raise ValueError(
+                "regression replace must start with the unchanged append_anchor "
+                "before appending the new test"
+            )
 
 
 class ReproductionReport(BaseModel):

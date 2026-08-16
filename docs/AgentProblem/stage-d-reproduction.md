@@ -163,3 +163,31 @@ content，无从知道真正的问题是未使用字段填了 `""` 而不是 `nu
 
 凡是只能由 Pydantic 校验器表达的规则，都必须在对应提示词里复述一遍：模型看不到 Policy
 文件，也无法从 Schema 推断。
+
+## 问题 13：已有回归文件没有追加锚点，模型按提示重写后被安全拒绝
+
+2026-08-16 的真实 feedback `5180ba17-...` 已通过 `gate-v7`，复现计划也正确选择
+`unexpected_conversion_error`。但 run `1ebfb33c-...` 最终显示
+`test_edit_security_rejected`；Trace 中两次测试生成都把 Markdown fixture 与
+`backend/tests/test_feedback_regressions.py` 作为 `full_file` 编辑提交。后者没有完整保留
+快照中的既有测试，Patch Policy 因而以 `test edits must preserve existing regressions`
+拒绝。该拒绝发生在 Controller 的 `submit-test-edits`，Sandbox Job 实际没有启动；界面上的
+“沙箱复现：安全拒绝”只是阶段汇总，不能据此判断为 Docker 内复现失败。
+
+### 根因
+
+这是提示词与运行时上下文共同造成的契约缺口。`test-generation-v3` 告诉模型可以用
+`full_file` 提交完整回归文件，本地修正提示还把“不在 source_files”错误等同于“文件不
+存在”；但 Graph 只把计划选择的应用源码放进 `source_files`，没有向模型提供已有回归文件
+内容。模型既无法完整保留它，又没有可构造尾部 `search_replace` 的精确文本，因此合法的
+结构化响应仍会在更下游触发安全拒绝。
+
+### 解决方案
+
+安全规则不放宽。Controller 从固定源码快照计算最短且唯一的文件尾部，把它作为
+`regression_append_context.append_anchor` 交给测试生成器。文件非空时，
+`test-generation-v4` 只允许一个 `search_replace`：`search` 必须精确复制锚点，`replace`
+必须先原样保留锚点再追加 import 和目标测试；只有空文件才能使用 `full_file`。同一规则
+同时进入本地跨字段校验，违规输出在调用 Patch Builder 前获得一次有界格式修正，不再把
+可纠正的编辑模式误报为安全事件。Patch Builder 仍独立验证既有内容前缀、AST 能力、唯一
+selector、路径和补丁规模。

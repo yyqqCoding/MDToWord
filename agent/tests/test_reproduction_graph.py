@@ -530,7 +530,7 @@ def test_mermaid_invalid_model_edit_uses_trusted_fallback_without_second_call(
     assert b"graph TD" in patch
 
 
-def test_missing_search_replace_target_is_revised_instead_of_terminal(tmp_path: Path) -> None:
+def test_missing_search_replace_target_gets_local_policy_correction(tmp_path: Path) -> None:
     plan = _plan()
     missing_target = GeneratedTestResult(
         edits=(
@@ -560,7 +560,7 @@ def test_missing_search_replace_target_is_revised_instead_of_terminal(tmp_path: 
 
     assert feedback is not None and feedback.status is FeedbackStatus.REPAIRING
     assert run is not None and run.reproduction is not None
-    assert run.reproduction["round"] == 2
+    assert run.reproduction["round"] == 1
     assert len(test_provider.requests) == 2
     assert len(sandbox.jobs) == 1
 

@@ -144,9 +144,13 @@ extension_sync_required: bool
 `backend/app/mermaid_renderer.py` 可读不可写，是模型最常猜错的一项，拒绝消息因此直接
 列出白名单 —— 该消息会进入格式修正提示，只说「invalid」模型无从改起。
 
-新建文件（含 `backend/tests/fixtures/feedback/` 下的固件）必须用 `full_file`；
-`search_replace` 的 `search` 必须非空。这两条同样写进 `generate_test.md`：严格
-Structured Outputs 要求所有字段都出现，模型无法从 Schema 推断模式选择规则。
+新建文件（含 `backend/tests/fixtures/feedback/` 下的固件）必须用 `full_file`。
+`backend/tests/test_feedback_regressions.py` 已存在且非空时，Controller 在
+`regression_append_context` 中提供最短唯一文件尾部 `append_anchor`；模型必须用
+`search_replace`，让 `search` 精确等于该锚点、`replace` 先原样保留锚点再追加新测试。
+只有该文件为空时才允许 `full_file`。这些跨字段规则同时写进 `generate_test.md` 并由
+本地 Policy 校验：严格 Structured Outputs 要求所有字段都出现，但无法从 Schema 推断
+文件是否存在、模式选择和只能追加的约束。
 
 ## 5. 生成修复契约
 

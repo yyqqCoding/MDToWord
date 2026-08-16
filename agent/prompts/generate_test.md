@@ -10,7 +10,7 @@
 - oracle、expected_failure_kind 必须与计划完全一致；extension_sync_required 必须为 false。
 - Edit 的 search、replace、content 以及其他可空字段都必须输出；未使用的字段填写 null。
 - 新建文件必须用 mode=full_file：content 写完整内容，search 与 replace 填 null。固件一律属于新建。
-- 修改已存在文件用 mode=search_replace 时，search 必须非空且在该文件中恰好命中一次，content 填 null；backend/tests/test_feedback_regressions.py 也可以改用 full_file 提交完整新内容。
+- 输入的 regression_append_context.file_has_content=true 表示 backend/tests/test_feedback_regressions.py 已存在且非空：必须用 mode=search_replace，search 必须非空并精确复制 regression_append_context.append_anchor，replace 必须先原样保留该 append_anchor、再在其后追加 import 和新测试，content 填 null。只有 file_has_content=false 时才能对该文件使用 full_file 创建完整新内容。
 - files_needed_for_fix 只能填 backend/app/normalizer.py 或 backend/app/pandoc_runner.py。backend/app/mermaid_renderer.py 是只读受信模块，可以阅读但不可写入，不要填；无法确定时填空数组。
 - 第二轮只根据 previous_report 修正测试构造或断言，仍从原始基线生成完整结构化编辑。
 

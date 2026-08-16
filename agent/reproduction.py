@@ -20,7 +20,7 @@ from agent.workspace.edits import Edit, EditMode
 
 
 REPRODUCTION_PLAN_PROMPT_VERSION = "reproduction-plan-v3"
-TEST_GENERATION_PROMPT_VERSION = "test-generation-v3"
+TEST_GENERATION_PROMPT_VERSION = "test-generation-v4"
 DEFAULT_REPRODUCTION_TIMEOUT_SECONDS = 180.0
 
 
@@ -170,10 +170,18 @@ async def generate_reproduction_test(
     plan: ReproductionPlan,
     source_files: tuple[SourceFileResult, ...],
     previous_report: ReproductionReport | None,
+    existing_test_source: str,
     provider: ModelProvider,
     timeout_seconds: float = DEFAULT_REPRODUCTION_TIMEOUT_SECONDS,
 ) -> ReproductionModelExecution:
-    messages = _test_messages(task, plan, source_files, previous_report)
+    append_anchor = _unique_append_anchor(existing_test_source)
+    messages = _test_messages(
+        task,
+        plan,
+        source_files,
+        previous_report,
+        append_anchor=append_anchor,
+    )
     previous_responses: list[StructuredModelResponse[TestGenerationResult]] = []
     for policy_attempt in range(2):
         response = await provider.generate_structured(
@@ -185,6 +193,10 @@ async def generate_reproduction_test(
         _reject_model_tool_calls(response)
         try:
             response.output.validate_against(task.feedback_id, plan)
+            response.output.validate_regression_append(
+                file_has_content=bool(existing_test_source),
+                append_anchor=append_anchor,
+            )
         except ValueError as exc:
             if policy_attempt == 1:
                 raise InvalidModelResponseError(
@@ -201,8 +213,10 @@ async def generate_reproduction_test(
                         f"policy_error={str(exc)}；"
                         f"required_trusted_assertion={required_assertion}。"
                         "required_edit_path=backend/tests/test_feedback_regressions.py；"
-                        "若该文件不在 source_files 中，使用 full_file，search/replace 为 null，"
-                        "content 写完整新文件。"
+                        "若 regression_append_context.file_has_content=true，必须使用 "
+                        "mode=search_replace，search 精确复制 append_anchor，replace 以同一 "
+                        "append_anchor 开头再追加新测试，content=null；若为 false 才使用 "
+                        "mode=full_file，search/replace=null，content 写完整新文件。"
                         "必须保持计划中的 selector、oracle 和 expected_failure_kind，"
                         "未使用字段填 null，不要添加解释。"
                     ),
@@ -274,6 +288,8 @@ def _test_messages(
     plan: ReproductionPlan,
     source_files: tuple[SourceFileResult, ...],
     previous_report: ReproductionReport | None,
+    *,
+    append_anchor: str | None,
 ) -> tuple[ModelMessage, ...]:
     prompt = files("agent.prompts").joinpath("generate_test.md").read_text("utf-8")
     payload = json.dumps(
@@ -283,6 +299,10 @@ def _test_messages(
             "markdown_content": task.markdown_content,
             "plan": plan.model_dump(mode="json"),
             "required_trusted_assertion": plan.oracle.trusted_assertion_name(),
+            "regression_append_context": {
+                "file_has_content": append_anchor is not None,
+                "append_anchor": append_anchor,
+            },
             "source_files": [item.model_dump(mode="json") for item in source_files],
             "previous_report": (
                 previous_report.model_dump(mode="json") if previous_report else None
@@ -301,3 +321,17 @@ def _test_messages(
             ),
         ),
     )
+
+
+def _unique_append_anchor(source: str) -> str | None:
+    """返回最短的唯一文件尾部，供模型构造只能追加的 search_replace。"""
+
+    if not source:
+        return None
+    lines = source.splitlines(keepends=True)
+    for line_count in range(1, len(lines) + 1):
+        candidate = "".join(lines[-line_count:])
+        if candidate and source.count(candidate) == 1:
+            return candidate
+    # 非空字符串整体在自身中只会完整命中一次；保留兜底便于处理罕见换行表示。
+    return source
