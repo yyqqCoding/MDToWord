@@ -801,6 +801,18 @@ Cloud，使真实 Gate 调用具备严格结构化输出、有限重试、真实
   格式修正；安全白名单与“不得改写既有回归”规则不放宽。历史 run 不重新打开，部署后用
   新 feedback 验证复现、修复与发布链路。变更后 Agent 套件按文件分组完整执行：301
   passed、4 个 Docker 条件测试 skipped，`compileall` 与 `git diff --check` 通过。
+- 部署上述修复后的真实 feedback `064f8e30-...` / run `a00cc2f7-...` 已使用
+  `test-generation-v4`，两轮均成功提交包含 fixture 与追加回归测试的合规 Patch，证明
+  Problem 13 已解决；但两个 `reproduce_target` Sandbox Job 都在约 2 秒内以
+  `status=completed/exit_code=1/junit=null` 返回，最终为 `invalid_test/missing_junit`，没有
+  进入修复阶段。`agent-graph-v8` 对 `unexpected_conversion_error` 增加受信转换测试回退：
+  首轮测试无效或模型格式修正耗尽时，Controller 固定生成 fixture、转换调用与登记 Oracle，
+  第二轮不再调用测试模型，仍经过原 Patch Policy 与全新 Sandbox。领域与 Graph 聚焦测试
+  证明缺少 JUnit 后只保留一次模型调用，第二轮目标 `ConversionError` 可进入
+  `repairing/reproduced`；真实 Docker 测试已加入，当前环境缺少 Docker 条件时必须报告
+  skipped，部署后应在 ECS 上执行该项并用新 feedback 验证。变更后 Agent 套件按文件
+  分组完整执行：303 passed、5 个 Docker 条件测试 skipped，`compileall` 与
+  `git diff --check` 通过。
 - `repair-policy-v2` 的真实 run `4aee5378-...` 已通过 Gate 并生成合规 Mermaid drawing
   复现计划，证明上述校正真实生效；第一轮结构化测试编辑未通过本地文本/Python 校验，
   有界第二轮生成又在 Provider 格式修正后仍不符合严格 Schema，run 以

@@ -152,7 +152,8 @@ plan_reproduction
   -> inspect_source/read-only tools
   -> generate_test_edit
   -> policy_check_test_edit
-       `- Mermaid invalid response/edit -> trusted drawing template
+       |- Mermaid invalid response/edit -> trusted drawing template
+       `- conversion crash invalid response/test -> trusted conversion template
   -> run_reproduction_in_sandbox
        |- target_failure -> reproduction_confirmed
        |- test_passed -> revise_test_edit (最多 2 轮)
@@ -170,9 +171,11 @@ plan_reproduction
 两轮仍无法复现时进入 `cannot_reproduce`，不生成修复。
 
 Mermaid 模型输出耗尽一次格式修正仍不符合严格 Schema 时，或第一轮模型编辑无法形成合法
-Python/文本补丁时，由 Controller 生成固定测试与 `.md` fixture，使用计划已登记的
-`assert_minimum_drawing_count`。该模板不读取网络、环境变量或任意 XPath，仍经过相同
-Patch Policy 和全新 Sandbox；其他类别及 Sandbox 中发生的无效测试不会触发此回退。
+Python/文本补丁时，由 Controller 生成固定 drawing 测试。`unexpected_conversion_error`
+计划的模型输出耗尽格式修正，或第一轮 Sandbox 测试无效（包括没有 JUnit）时，由
+Controller 生成固定转换测试：读取 `.md` fixture、调用 `convert_markdown_to_docx`，转换
+成功后再调用计划中已登记的受信 Oracle。两类模板都不读取网络、环境变量或任意 XPath，
+仍经过相同 Patch Policy 和全新 Sandbox；其他类别不会触发此回退。
 
 ## 6. 修复子图
 

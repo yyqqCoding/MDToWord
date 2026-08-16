@@ -32,7 +32,10 @@ from agent.domain.reproduction import (
     classify_reproduction_result,
 )
 from agent.domain.repair import build_validation_result
-from agent.reproduction import build_mermaid_test_fallback
+from agent.reproduction import (
+    build_conversion_error_test_fallback,
+    build_mermaid_test_fallback,
+)
 from agent.sandbox.docker_runner import DockerRunner
 from agent.sandbox.worker import FileJobStore, SandboxWorker
 from agent.workspace.edits import EditPhase, PatchBuilder
@@ -509,6 +512,108 @@ def test_mermaid_renderer_reproduces_and_validates_real_fix_in_docker(tmp_path: 
     assert validated.junit_summary.tests == 1
     assert validated.junit_summary.target_outcome is TargetTestOutcome.PASSED
     assert validated.status is SandboxStatus.COMPLETED
+
+
+def test_conversion_error_fallback_produces_target_junit_in_docker(tmp_path: Path):
+    image_digest = os.environ.get("SANDBOX_IMAGE_DIGEST", "")
+    if not image_digest or shutil.which("docker") is None:
+        pytest.skip("SANDBOX_IMAGE_DIGEST and Docker are required")
+
+    snapshot = tmp_path / "conversion-error-fallback-snapshot"
+    repository_root = Path(__file__).resolve().parents[2]
+    shutil.copytree(repository_root / "backend/app", snapshot / "backend/app")
+    tests_root = snapshot / "backend/tests"
+    tests_root.mkdir(parents=True)
+    existing_test = "# Conversion error fallback baseline\n"
+    (tests_root / "test_feedback_regressions.py").write_text(
+        existing_test,
+        encoding="utf-8",
+    )
+
+    feedback_id = uuid4()
+    selector = f"test_feedback_{feedback_id.hex[:8]}_aligned_notag_formula"
+    task = TaskArtifact(
+        feedback_id=feedback_id,
+        feedback_type=FeedbackType.BUG,
+        markdown_content=(
+            "$$\\begin{aligned} a &= b + c \\notag \\\\ "
+            "b &= d + e \\end{aligned}$$"
+        ),
+        description="formula export raises a conversion error",
+        content_fingerprint="c" * 64,
+    )
+    plan = ReproductionPlan(
+        hypothesis="Pandoc rejects aligned math containing notag",
+        oracle=OracleSpec(
+            kind=OracleKind.DOCX_XPATH,
+            parameters={"validator": "minimum_math_count", "minimum": 1},
+        ),
+        target_test_selector=selector,
+        expected_failure_kind=ExpectedFailureKind.UNEXPECTED_CONVERSION_ERROR,
+        files_to_read=(
+            SourceReadRequest(path="backend/app/pandoc_runner.py"),
+            SourceReadRequest(path="backend/app/normalizer.py"),
+        ),
+    )
+    previous = ReproductionReport(
+        disposition=ReproductionDisposition.INVALID_TEST,
+        round=1,
+        target_test_selector=selector,
+        expected_failure_kind=plan.expected_failure_kind,
+        failure_code="missing_junit",
+        failure_summary="sandbox result is not a valid target failure",
+    )
+    generated = build_conversion_error_test_fallback(
+        task,
+        plan=plan,
+        previous_report=previous,
+        existing_test_source=existing_test,
+    )
+    assert generated is not None
+    test_patch = PatchBuilder(PatchPolicy.load_default()).build(
+        snapshot,
+        generated.edits,
+        EditPhase.TEST,
+        target_test_selector=selector,
+    ).content
+    source_archive = _archive_snapshot(snapshot)
+    job = SandboxJob(
+        job_id=uuid4(),
+        run_id=uuid4(),
+        job_type=JobType.REPRODUCE_TARGET,
+        base_sha="c" * 40,
+        source_snapshot_sha256=hashlib.sha256(source_archive).hexdigest(),
+        test_patch_sha256=hashlib.sha256(test_patch).hexdigest(),
+        target_test_selector=selector,
+        expires_at=datetime.now(UTC) + timedelta(minutes=5),
+    )
+
+    result = DockerRunner(
+        image_digest=image_digest,
+        work_root=tmp_path / "conversion-error-fallback-work",
+    ).execute(
+        job,
+        SandboxArtifacts(
+            job=job,
+            source_archive=source_archive,
+            test_patch=test_patch,
+        ),
+    )
+    report = classify_reproduction_result(
+        result,
+        expected_failure_kind=plan.expected_failure_kind,
+        round_number=2,
+        target_test_selector=selector,
+    )
+
+    assert result.junit_summary is not None
+    assert result.junit_summary.tests == 1
+    assert result.junit_summary.target_outcome in {
+        TargetTestOutcome.FAILED,
+        TargetTestOutcome.ERROR,
+    }
+    assert "ConversionError" in (result.junit_summary.target_failure_type or "")
+    assert report.disposition is ReproductionDisposition.REPRODUCED
 
 
 def _archive_snapshot(snapshot: Path) -> bytes:

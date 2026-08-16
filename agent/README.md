@@ -152,7 +152,9 @@ set +a
 两轮仍通过或无效则 feedback 为 `cannot_reproduce`、run 为 `completed`；Sandbox Policy
 拒绝则二者进入安全终态。`--reproduce` 禁止 Fake Provider，防止人为的固定断言被当作
 真实缺陷证据。Mermaid 第一轮模型编辑为 `invalid_test_edit` 时，第二轮使用 Controller
-固定的 drawing 测试模板，不再请求模型；模板仍必须通过 Patch Policy 和真实 Sandbox。
+固定的 drawing 测试模板，不再请求模型；`unexpected_conversion_error` 首轮测试无效时，
+第二轮同样改用固定转换测试与登记 Oracle。两类模板仍必须通过 Patch Policy 和真实
+Sandbox。
 
 ## 6. 阶段 E 修复与独立验证
 

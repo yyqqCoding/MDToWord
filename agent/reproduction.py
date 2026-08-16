@@ -10,6 +10,8 @@ from agent.domain.content import contains_mermaid_diagram
 from agent.domain.models import TaskArtifact
 from agent.domain.reproduction import (
     ExpectedFailureKind,
+    FIX_SOURCE_PATHS,
+    ReproductionDisposition,
     ReproductionPlan,
     ReproductionReport,
     TestGenerationResult,
@@ -114,6 +116,102 @@ def build_mermaid_test_fallback(
     )
     generated.validate_against(task.feedback_id, plan)
     return generated
+
+
+def build_conversion_error_test_fallback(
+    task: TaskArtifact,
+    *,
+    plan: ReproductionPlan,
+    previous_report: ReproductionReport | None,
+    existing_test_source: str,
+    after_invalid_model_response: bool = False,
+) -> TestGenerationResult | None:
+    """模型测试无效时，生成受信的通用转换崩溃回归测试。"""
+
+    previous_test_was_invalid = (
+        previous_report is not None
+        and previous_report.disposition is ReproductionDisposition.INVALID_TEST
+    )
+    if (
+        not (previous_test_was_invalid or after_invalid_model_response)
+        or plan.expected_failure_kind
+        is not ExpectedFailureKind.UNEXPECTED_CONVERSION_ERROR
+    ):
+        return None
+
+    fixture_name = f"{plan.target_test_selector}.md"
+    fixture_path = f"backend/tests/fixtures/feedback/{fixture_name}"
+    assertion_name = plan.oracle.trusted_assertion_name()
+    assertion_import = ""
+    assertion_call = ""
+    if assertion_name is not None:
+        assertion_import = f"    from docx_assertions import {assertion_name}\n"
+        assertion_call = (
+            f"    {assertion_name}(docx_bytes{_trusted_oracle_arguments(plan)})\n"
+        )
+    test_function = (
+        f"def {plan.target_test_selector}(tmp_path):\n"
+        "    from pathlib import Path\n\n"
+        "    from app.pandoc_runner import convert_markdown_to_docx\n"
+        f"{assertion_import}\n"
+        f'    fixture = Path(__file__).parent / "fixtures" / "feedback" / "{fixture_name}"\n'
+        '    markdown = fixture.read_text(encoding="utf-8")\n'
+        "    docx_bytes = convert_markdown_to_docx(markdown, tmp_path)\n"
+        f"{assertion_call}"
+    )
+    test_source = existing_test_source
+    if test_source and not test_source.endswith("\n"):
+        test_source += "\n"
+    if test_source:
+        test_source += "\n\n"
+    test_source += test_function
+
+    fix_paths = tuple(
+        dict.fromkeys(
+            request.path
+            for request in plan.files_to_read
+            if request.path in FIX_SOURCE_PATHS
+        )
+    )
+    generated = TestGenerationResult(
+        edits=(
+            Edit(
+                path="backend/tests/test_feedback_regressions.py",
+                mode=EditMode.FULL_FILE,
+                content=test_source,
+            ),
+            Edit(
+                path=fixture_path,
+                mode=EditMode.FULL_FILE,
+                content=task.markdown_content.rstrip("\n") + "\n",
+            ),
+        ),
+        target_test_selector=plan.target_test_selector,
+        oracle=plan.oracle,
+        expected_failure_kind=plan.expected_failure_kind,
+        reason=(
+            "trusted conversion-error regression fallback after invalid model response"
+            if after_invalid_model_response
+            else "trusted conversion-error regression fallback after invalid model test"
+        ),
+        files_needed_for_fix=fix_paths,
+        extension_sync_required=False,
+    )
+    generated.validate_against(task.feedback_id, plan)
+    return generated
+
+
+def _trusted_oracle_arguments(plan: ReproductionPlan) -> str:
+    """把登记 Oracle 的数据参数渲染为受信断言的位置参数。"""
+
+    parameters = plan.oracle.parameters
+    if parameters.minimum is not None:
+        return f", {parameters.minimum}"
+    if parameters.text is not None:
+        return f", {parameters.text!r}"
+    if parameters.style is not None:
+        return f", {parameters.style!r}"
+    return ""
 
 
 async def plan_reproduction(

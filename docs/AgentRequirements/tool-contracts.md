@@ -299,6 +299,12 @@ Validator 解析 JUnit，不用正则猜测 pytest 文本：
 - 非目标测试先失败是 `baseline_regression`；
 - 模型生成的测试不得通过自定义插件、hook 或配置改变报告行为。
 
+`expected_failure_kind=unexpected_conversion_error` 且首轮结果为 `invalid_test` 时，第二轮
+不再请求模型重写测试。Controller 确定性生成固定测试与 Markdown fixture：测试只调用
+`convert_markdown_to_docx`，成功后调用计划中已登记的受信 DOCX 断言；在缺陷基线上必须由
+目标测试产生 `ConversionError`。该模板仍通过相同的路径、AST、selector、补丁规模和
+Sandbox Policy，不能扩大修复白名单。
+
 ## 10. DOCX Validator
 
 复用 `convert_markdown_to_docx` 和受信断言库，至少支持：

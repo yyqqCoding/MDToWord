@@ -43,6 +43,7 @@ from agent.publishing.contracts import (
 )
 from agent.reproduction import (
     ReproductionModelExecution,
+    build_conversion_error_test_fallback,
     build_mermaid_test_fallback,
     generate_reproduction_test,
     plan_reproduction,
@@ -78,7 +79,7 @@ from agent.domain.reproduction import (
 )
 
 
-GRAPH_VERSION = "agent-graph-v7"
+GRAPH_VERSION = "agent-graph-v8"
 POLICY_VERSION = "publication-policy-v6"
 
 _ROUTE_TO_FEEDBACK_STATUS = {
@@ -342,7 +343,12 @@ def build_gate_graph(
                 if regression_path.is_file()
                 else ""
             )
-            fallback = build_mermaid_test_fallback(
+            fallback = build_conversion_error_test_fallback(
+                task,
+                plan=plan,
+                previous_report=previous_report,
+                existing_test_source=existing_test_source,
+            ) or build_mermaid_test_fallback(
                 task,
                 plan=plan,
                 previous_report=previous_report,
@@ -409,7 +415,13 @@ def build_gate_graph(
                         timeout_seconds=reproduction.model_timeout_seconds,
                     )
                 except InvalidModelResponseError:
-                    fallback = build_mermaid_test_fallback(
+                    fallback = build_conversion_error_test_fallback(
+                        task,
+                        plan=plan,
+                        previous_report=previous_report,
+                        existing_test_source=existing_test_source,
+                        after_invalid_model_response=True,
+                    ) or build_mermaid_test_fallback(
                         task,
                         plan=plan,
                         previous_report=previous_report,
@@ -418,8 +430,8 @@ def build_gate_graph(
                     )
                     if fallback is None:
                         raise
-                    # Mermaid 的图形 Oracle 和测试结构均已受信，可在模型格式重试耗尽后
-                    # 确定性接管；普通反馈仍保留严格 Schema 失败边界。
+                    # Mermaid 图形与转换崩溃模板只调用已登记 Oracle，可在模型格式重试
+                    # 耗尽后确定性接管；其他反馈仍保留严格 Schema 失败边界。
                     execution = ReproductionModelExecution(
                         output=fallback,
                         model_calls=0,
