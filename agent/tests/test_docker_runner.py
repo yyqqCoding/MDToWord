@@ -1,5 +1,6 @@
 import hashlib
 import io
+import os
 import tarfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -20,6 +21,7 @@ def _archive() -> bytes:
     with tarfile.open(fileobj=output, mode="w:gz") as archive:
         files = {
             "repo-root/backend/app/__init__.py": b"",
+            "repo-root/backend/pytest.toml": b"[pytest]\n",
             "repo-root/backend/tests/test_feedback_regressions.py": (
                 b"def test_existing():\n    assert True\n"
             ),
@@ -45,6 +47,63 @@ def _patch() -> bytes:
         b"+def test_feedback_ab12cd_table():\n"
         b"+    assert False\n"
     )
+
+
+def _new_fixture_patch() -> bytes:
+    return (
+        b"diff --git a/backend/tests/fixtures/feedback/case.md "
+        b"b/backend/tests/fixtures/feedback/case.md\n"
+        b"new file mode 100644\n"
+        b"--- /dev/null\n"
+        b"+++ b/backend/tests/fixtures/feedback/case.md\n"
+        b"@@ -0,0 +1 @@\n"
+        b"+fixture\n"
+    )
+
+
+def test_docker_runner_normalizes_workspace_permissions_under_strict_umask(
+    tmp_path: Path,
+):
+    source = _archive()
+    patch = _new_fixture_patch()
+    job = SandboxJob(
+        job_id=uuid4(),
+        run_id=uuid4(),
+        job_type=JobType.REPRODUCE_TARGET,
+        base_sha="a" * 40,
+        source_snapshot_sha256=hashlib.sha256(source).hexdigest(),
+        test_patch_sha256=hashlib.sha256(patch).hexdigest(),
+        target_test_selector="feedback_ab12cd_table",
+        expires_at=datetime.now(UTC) + timedelta(minutes=5),
+    )
+
+    def execute(argv: tuple[str, ...], timeout_seconds: int) -> CommandOutcome:
+        del timeout_seconds
+        workspace_arg = next(item for item in argv if item.endswith(":/workspace:rw"))
+        workspace = Path(
+            workspace_arg.removeprefix("--volume=").removesuffix(":/workspace:rw")
+        )
+        assert (workspace / "backend").stat().st_mode & 0o777 == 0o755
+        assert (workspace / "backend/pytest.toml").stat().st_mode & 0o777 == 0o644
+        fixture = workspace / "backend/tests/fixtures/feedback/case.md"
+        assert fixture.stat().st_mode & 0o777 == 0o644
+        return CommandOutcome(exit_code=0, stdout=b"ok", stderr=b"")
+
+    runner = DockerRunner(
+        image_digest="registry.example/mdtoword-sandbox@sha256:" + "f" * 64,
+        work_root=tmp_path / "work",
+        execute_command=execute,
+    )
+    previous_umask = os.umask(0o077)
+    try:
+        result = runner.execute(
+            job,
+            SandboxArtifacts(job=job, source_archive=source, test_patch=patch),
+        )
+    finally:
+        os.umask(previous_umask)
+
+    assert result.status is SandboxStatus.COMPLETED
 
 
 def test_docker_runner_builds_fixed_hardened_argv_and_destroys_workspace(tmp_path: Path):

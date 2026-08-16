@@ -143,14 +143,14 @@ def materialize_snapshot_archive(archive_path: Path, destination: Path) -> None:
                 except ValueError as exc:
                     raise SourceSnapshotError("snapshot entry escapes destination") from exc
                 if member.isdir():
-                    target.mkdir(parents=True, exist_ok=True)
+                    _make_snapshot_directory(target, temporary)
                     continue
                 if not member.isfile() or member.size > _MAX_MEMBER_BYTES:
                     raise SourceSnapshotError("snapshot archive member is invalid")
                 total_size += member.size
                 if total_size > _MAX_EXPANDED_BYTES:
                     raise SourceSnapshotError("snapshot expanded size exceeds limit")
-                target.parent.mkdir(parents=True, exist_ok=True)
+                _make_snapshot_directory(target.parent, temporary)
                 extracted = archive.extractfile(member)
                 if extracted is None:
                     raise SourceSnapshotError("snapshot member could not be read")
@@ -163,6 +163,16 @@ def materialize_snapshot_archive(archive_path: Path, destination: Path) -> None:
     finally:
         if temporary.exists():
             shutil.rmtree(temporary)
+
+
+def _make_snapshot_directory(path: Path, root: Path) -> None:
+    """创建容器可遍历的目录，不继承 Worker 的严格 umask。"""
+
+    path.mkdir(parents=True, exist_ok=True)
+    current = path
+    while current != root:
+        current.chmod(0o755)
+        current = current.parent
 
 
 def _atomic_write(path: Path, content: bytes) -> None:

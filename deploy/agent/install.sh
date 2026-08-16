@@ -35,8 +35,9 @@ systemd-analyze verify \
     /etc/systemd/system/mdtoword-scheduler.service
 systemctl daemon-reload
 
-# 安装动作保持安全默认：Worker 常驻，Scheduler 明确关闭，审核后再单独 enable。
-systemctl enable --now mdtoword-worker.service
+# 安装动作保持安全默认：Worker 加载本次更新，Scheduler 明确关闭，审核后再单独 enable。
+systemctl enable mdtoword-worker.service
+systemctl restart mdtoword-worker.service
 /usr/local/sbin/mdtoword-agentctl disable
 /usr/local/sbin/mdtoword-agentctl audit
 

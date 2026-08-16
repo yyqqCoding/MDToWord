@@ -124,12 +124,12 @@ sudo git -C /opt/mdtoword pull --ff-only origin main
 sudo bash /opt/mdtoword/deploy/agent/deploy.sh
 ```
 
-`deploy.sh` 先停止 Scheduler，再调用底层 `install.sh` 安装 systemd 单元与管理命令、启动
-Worker 并执行只读审计；随后调用 `enable` 再次审计并要求维护者输入 `ENABLE`，最后输出
-Worker 与 Scheduler 状态。任一步失败都会保持 Scheduler 关闭。脚本不会创建、复制或输出
-Secret，也不会覆盖两份环境文件。审计会等待 Worker 最多 30 秒完成端口绑定，并只输出
-活动状态数量，不读取反馈正文、联系方式或 Artifact；Worker 超时未就绪时会直接附带
-systemd 状态和最近日志。
+`deploy.sh` 先停止 Scheduler，再调用底层 `install.sh` 安装 systemd 单元与管理命令、显式
+重启 Worker 以加载本次代码并执行只读审计；随后调用 `enable` 再次审计并要求维护者输入
+`ENABLE`，最后输出 Worker 与 Scheduler 状态。任一步失败都会保持 Scheduler 关闭。脚本
+不会创建、复制或输出 Secret，也不会覆盖两份环境文件。审计会等待 Worker 最多 30 秒完成
+端口绑定，并只输出活动状态数量，不读取反馈正文、联系方式或 Artifact；Worker 超时未
+就绪时会直接附带 systemd 状态和最近日志。
 
 常用命令：
 
