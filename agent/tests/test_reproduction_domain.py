@@ -23,6 +23,7 @@ from agent.domain.reproduction import (
 )
 from agent.providers.fake import FakeModelProvider
 from agent.reproduction import (
+    build_conversion_error_test_fallback,
     build_mermaid_test_fallback,
     generate_reproduction_test,
     plan_reproduction,
@@ -296,6 +297,59 @@ def test_mermaid_invalid_edit_gets_deterministic_trusted_test_fallback() -> None
     assert test_edit.content is not None
     assert test_edit.content.startswith("# existing regression\n")
     assert "assert_minimum_drawing_count(docx_bytes, 1)" in test_edit.content
+    assert fixture_edit.content == task.markdown_content + "\n"
+
+
+def test_conversion_error_missing_junit_gets_deterministic_trusted_fallback() -> None:
+    task = TaskArtifact(
+        feedback_id=FEEDBACK_ID,
+        feedback_type=FeedbackType.BUG,
+        markdown_content=(
+            "$$\\begin{aligned} a &= b + c \\notag \\\\ "
+            "b &= d + e \\end{aligned}$$"
+        ),
+        description="formula export raises a conversion error",
+        content_fingerprint="a" * 64,
+    )
+    plan = ReproductionPlan(
+        hypothesis="Pandoc rejects aligned math containing notag",
+        oracle=OracleSpec(
+            kind=OracleKind.DOCX_XPATH,
+            parameters={"validator": "minimum_math_count", "minimum": 1},
+        ),
+        target_test_selector="test_feedback_a257a846_aligned_notag_formula",
+        expected_failure_kind=ExpectedFailureKind.UNEXPECTED_CONVERSION_ERROR,
+        files_to_read=(
+            SourceReadRequest(path="backend/app/pandoc_runner.py"),
+            SourceReadRequest(path="backend/app/normalizer.py"),
+        ),
+    )
+    previous = ReproductionReport(
+        disposition=ReproductionDisposition.INVALID_TEST,
+        round=1,
+        target_test_selector=plan.target_test_selector,
+        expected_failure_kind=plan.expected_failure_kind,
+        failure_code="missing_junit",
+        failure_summary="sandbox result is not a valid target failure",
+    )
+
+    generated = build_conversion_error_test_fallback(
+        task,
+        plan=plan,
+        previous_report=previous,
+        existing_test_source="# existing regression\n",
+    )
+
+    assert generated is not None
+    assert generated.files_needed_for_fix == (
+        "backend/app/pandoc_runner.py",
+        "backend/app/normalizer.py",
+    )
+    test_edit, fixture_edit = generated.edits
+    assert test_edit.content is not None
+    assert test_edit.content.startswith("# existing regression\n")
+    assert "convert_markdown_to_docx(markdown, tmp_path)" in test_edit.content
+    assert "assert_minimum_math_count(docx_bytes, 1)" in test_edit.content
     assert fixture_edit.content == task.markdown_content + "\n"
 
 

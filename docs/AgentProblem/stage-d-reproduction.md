@@ -191,3 +191,30 @@ content，无从知道真正的问题是未使用字段填了 `""` 而不是 `nu
 同时进入本地跨字段校验，违规输出在调用 Patch Builder 前获得一次有界格式修正，不再把
 可纠正的编辑模式误报为安全事件。Patch Builder 仍独立验证既有内容前缀、AST 能力、唯一
 selector、路径和补丁规模。
+
+## 问题 14：转换崩溃的模型测试两轮都没有生成 JUnit
+
+部署 `test-generation-v4` 后，真实 feedback `064f8e30-...` 的 run `a00cc2f7-...` 已正常
+通过 Gate、计划和追加式 Patch Policy。两轮测试都成功生成 fixture 与目标测试补丁，证明
+问题 13 已修复；但两个 Sandbox Job 均在约 2 秒内返回
+`status=completed/exit_code=1/junit=null`，Controller 因而判为 `invalid_test/missing_junit`。
+界面中的“第 2 轮成功”表示测试生成与补丁提交成功，不表示 pytest 已产出可判定结果。
+
+### 根因
+
+`unexpected_conversion_error` 的回归测试结构其实是确定的：读取原始 Markdown，调用
+`convert_markdown_to_docx`；缺陷存在时目标测试抛出 `ConversionError`，修复后转换成功并
+通过登记 Oracle。旧 Graph 却让模型在第二轮继续自由重写完整测试。首轮没有 JUnit 时，
+`previous_report` 只能提供固定 `missing_junit`，既不能安全回传可能含用户公式的 stderr，
+也没有足够信息让模型修正 pytest 启动/收集结构，因此第二轮容易重复同一无效模式。
+
+### 解决方案
+
+`agent-graph-v8` 为 `expected_failure_kind=unexpected_conversion_error` 增加受信回退。首轮
+`invalid_test`（含 `missing_junit`）后，第二轮由 Controller 固定生成 `.md` fixture、
+`convert_markdown_to_docx` 调用，以及计划已经登记的受信 Oracle 调用；不再请求模型生成
+测试。模型格式修正耗尽时也可使用同一模板。模板只从计划白名单镜像
+`files_needed_for_fix`，仍经过既有路径、AST、唯一 selector、补丁规模 Policy 和全新
+Sandbox；没有放宽测试或修复权限。Graph 回归固定“首轮无 JUnit、第二轮目标
+ConversionError”路径，真实 Docker 回归则要求固定模板必须产生目标 JUnit，不能用 Fake
+结果代替。

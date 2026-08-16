@@ -101,7 +101,7 @@ class _SourceWorkspace:
 
 
 class _Sandbox:
-    def __init__(self, outcomes: list[TargetTestOutcome]) -> None:
+    def __init__(self, outcomes: list[TargetTestOutcome | None]) -> None:
         self.outcomes = outcomes
         self.jobs = []
 
@@ -109,6 +109,15 @@ class _Sandbox:
         self.jobs.append(artifacts)
         outcome = self.outcomes.pop(0)
         now = datetime.now(UTC)
+        if outcome is None:
+            return SandboxResult(
+                job_id=artifacts.job.job_id,
+                status=SandboxStatus.COMPLETED,
+                exit_code=1,
+                started_at=now,
+                finished_at=now,
+                duration_ms=5,
+            )
         return SandboxResult(
             job_id=artifacts.job.job_id,
             status=SandboxStatus.COMPLETED,
@@ -125,7 +134,13 @@ class _Sandbox:
                 target_collected=True,
                 target_outcome=outcome,
                 target_failure_type=(
-                    "AssertionError" if outcome is TargetTestOutcome.FAILED else None
+                    "AssertionError"
+                    if outcome is TargetTestOutcome.FAILED
+                    else (
+                        "ConversionError"
+                        if outcome is TargetTestOutcome.ERROR
+                        else None
+                    )
                 ),
                 target_message="expected three rows",
             ),
@@ -263,7 +278,7 @@ def _external_dependency_fix() -> FixGenerationResult:
 
 async def _run(
     tmp_path: Path,
-    outcomes: list[TargetTestOutcome],
+    outcomes: list[TargetTestOutcome | None],
     *,
     generated_outputs: list[GeneratedTestResult] | None = None,
     markdown: str = "|a|b|\n|-|-|\n|1|2|",
@@ -528,6 +543,68 @@ def test_mermaid_invalid_model_edit_uses_trusted_fallback_without_second_call(
     assert patch is not None
     assert b"assert_minimum_drawing_count" in patch
     assert b"graph TD" in patch
+
+
+def test_conversion_missing_junit_uses_trusted_fallback_on_second_round(
+    tmp_path: Path,
+) -> None:
+    selector = "test_feedback_a257a846_aligned_notag_formula"
+    plan = ReproductionPlan(
+        hypothesis="Pandoc rejects aligned math containing notag",
+        oracle=OracleSpec(
+            kind=OracleKind.DOCX_XPATH,
+            parameters={"validator": "minimum_math_count", "minimum": 1},
+        ),
+        target_test_selector=selector,
+        expected_failure_kind=ExpectedFailureKind.UNEXPECTED_CONVERSION_ERROR,
+        files_to_read=(
+            SourceReadRequest(path="backend/app/pandoc_runner.py"),
+            SourceReadRequest(path="backend/app/normalizer.py"),
+        ),
+    )
+    first_model_test = GeneratedTestResult(
+        edits=(
+            Edit(
+                path="backend/tests/test_feedback_regressions.py",
+                mode=EditMode.FULL_FILE,
+                content=(
+                    "from docx_assertions import assert_minimum_math_count\n\n"
+                    f"def {selector}():\n"
+                    "    assert_minimum_math_count(b'docx', 1)\n"
+                ),
+            ),
+        ),
+        target_test_selector=selector,
+        oracle=plan.oracle,
+        expected_failure_kind=plan.expected_failure_kind,
+        reason="model-generated test exits before producing JUnit",
+        files_needed_for_fix=("backend/app/normalizer.py",),
+    )
+
+    _, feedback, run, sandbox, test_provider = asyncio.run(
+        _run(
+            tmp_path,
+            [None, TargetTestOutcome.ERROR],
+            generated_outputs=[first_model_test],
+            markdown=(
+                "$$\\begin{aligned} a &= b + c \\notag \\\\ "
+                "b &= d + e \\end{aligned}$$"
+            ),
+            description="formula export raises a conversion error",
+            reproduction_plan=plan,
+        )
+    )
+
+    assert feedback is not None and feedback.status is FeedbackStatus.REPAIRING
+    assert run is not None and run.reproduction is not None
+    assert run.reproduction["disposition"] == ReproductionDisposition.REPRODUCED.value
+    assert run.reproduction["round"] == 2
+    assert len(test_provider.requests) == 1
+    assert len(sandbox.jobs) == 2
+    trusted_patch = sandbox.jobs[1].test_patch
+    assert trusted_patch is not None
+    assert b"convert_markdown_to_docx(markdown, tmp_path)" in trusted_patch
+    assert b"assert_minimum_math_count(docx_bytes, 1)" in trusted_patch
 
 
 def test_missing_search_replace_target_gets_local_policy_correction(tmp_path: Path) -> None:
