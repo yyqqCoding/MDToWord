@@ -162,3 +162,16 @@ Schema 合法但跨字段矛盾的结果。第二层缺口在本地 Policy：已
 仍为 `needs_human`。Agent 全量结果为 300 passed、4 个 Docker 条件测试 skipped，编译检查
 通过。历史 `needs_human` run 不重新打开；部署后使用新 feedback 验证完整复现、修复和
 发布链路。
+
+## 问题 14：生产更新需要手工串联多条管理命令
+
+生产更新原本要求维护者依次停止 Scheduler、切换目录、拉取代码、运行安装脚本、重新启用
+并查看状态。安全顺序本身必要，但每次复制六行命令容易漏掉最后的启用或状态检查。
+
+### 解决方案
+
+新增 `deploy/agent/deploy.sh` 作为标准生产更新入口。维护者只需先对 `/opt/mdtoword` 执行
+`git pull --ff-only`，再运行部署脚本；脚本内部固定执行停止领取、底层安装与审计、交互式
+`ENABLE` 确认和最终状态输出。任何步骤失败都因 `set -Eeuo pipefail` 立即停止，而
+`install.sh` 与 `mdtoword-agentctl enable` 的 fail-safe 继续保证 Scheduler 保持关闭。
+该入口只编排已有受信命令，不读取或改写 Secret，也不放宽 Worker 监听和 Docker 边界。

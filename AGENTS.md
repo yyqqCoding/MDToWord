@@ -150,20 +150,17 @@ Docker Socket 或 Worker 端口。完整拓扑与启停说明见
 `docs/AgentRequirements/deployment-and-operations.md`。
 
 生产 Agent 的标准部署形态是独立 Linux ECS：Controller/Scheduler 与 Worker 由 systemd
-管理，Worker 只监听 `127.0.0.1:8090`，本地电脑和 Docker Desktop 无需常驻。更新生产
-Agent 前先停止自动领取，更新后用仓库脚本重新安装并审计，再由维护者显式启用 Scheduler：
+管理，Worker 只监听 `127.0.0.1:8090`，本地电脑和 Docker Desktop 无需常驻。生产更新使用
+两条命令；部署脚本内部按“停止领取、安装并审计、显式启用、输出状态”的顺序执行：
 
 ```bash
-sudo mdtoword-agentctl disable
-cd /opt/mdtoword
-sudo git pull --ff-only origin main
-sudo bash deploy/agent/install.sh
-sudo mdtoword-agentctl enable
-sudo mdtoword-agentctl status
+sudo git -C /opt/mdtoword pull --ff-only origin main
+sudo bash /opt/mdtoword/deploy/agent/deploy.sh
 ```
 
-`install.sh` 有意让 Scheduler 保持关闭；只有审计结果正确并输入 `ENABLE` 后才恢复自动
-领取。不要绕过该顺序直接编辑 systemd 单元或在公开安全组中开放 8090/Docker Socket。
+`install.sh` 仍是保持 Scheduler 关闭的底层 fail-safe；标准更新由 `deploy.sh` 在审计正确且
+维护者输入 `ENABLE` 后恢复自动领取。不要绕过该顺序直接编辑 systemd 单元或在公开安全组
+中开放 8090/Docker Socket。
 
 After backend changes:
 

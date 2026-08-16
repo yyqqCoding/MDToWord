@@ -109,6 +109,7 @@ Controller 与 Worker 通过内网通信。Worker 端口不得暴露到公网，
 
 ```text
 deploy/agent/install.sh
+deploy/agent/deploy.sh
 deploy/agent/mdtoword-agentctl
 deploy/agent/systemd/mdtoword-worker.service
 deploy/agent/systemd/mdtoword-scheduler.service
@@ -116,18 +117,19 @@ deploy/agent/systemd/mdtoword-scheduler.service
 
 适用前提：仓库位于 `/opt/mdtoword`，虚拟环境、`mdtoword-controller`、
 `mdtoword-worker`、运行目录、Docker 镜像以及 `/etc/mdtoword/controller.env`、
-`worker.env` 已按本方案准备完成。更新代码后执行：
+`worker.env` 已按本方案准备完成。日常更新只执行以下两条命令：
 
 ```bash
-cd /opt/mdtoword
-sudo git pull --ff-only origin main
-sudo bash deploy/agent/install.sh
+sudo git -C /opt/mdtoword pull --ff-only origin main
+sudo bash /opt/mdtoword/deploy/agent/deploy.sh
 ```
 
-安装脚本不会创建、复制或输出 Secret，也不会覆盖两份环境文件。它会安装最新 systemd
-单元与管理命令、启动并启用 Worker、明确停止并禁用 Scheduler，然后执行只读审计。审计
-会等待 Worker 最多 30 秒完成端口绑定，并只输出活动状态数量，不读取反馈正文、联系方式
-或 Artifact；Worker 超时未就绪时会直接附带 systemd 状态和最近日志。
+`deploy.sh` 先停止 Scheduler，再调用底层 `install.sh` 安装 systemd 单元与管理命令、启动
+Worker 并执行只读审计；随后调用 `enable` 再次审计并要求维护者输入 `ENABLE`，最后输出
+Worker 与 Scheduler 状态。任一步失败都会保持 Scheduler 关闭。脚本不会创建、复制或输出
+Secret，也不会覆盖两份环境文件。审计会等待 Worker 最多 30 秒完成端口绑定，并只输出
+活动状态数量，不读取反馈正文、联系方式或 Artifact；Worker 超时未就绪时会直接附带
+systemd 状态和最近日志。
 
 常用命令：
 
@@ -141,8 +143,8 @@ sudo mdtoword-agentctl logs
 
 `enable` 会先备份 `controller.env`，再原子更新
 `PRODUCTION_SCHEDULER_ENABLED=true`。Scheduler 启动后优先恢复审计中列出的活动 run，随后
-领取 `pending` 反馈；因此首次启用前必须人工核对两个状态计数对象。运行代码更新时重新
-执行安装脚本是有意的 fail-safe：它会关闭 Scheduler，完成审计后再由维护者重新启用。
+领取 `pending` 反馈；因此启用前必须人工核对两个状态计数对象。`deploy.sh` 只是把既有安全
+顺序编排成一个入口；底层 `install.sh` 单独执行时仍会保持 Scheduler 关闭。
 
 ## 7. 生产巡检与 Provider 排障
 
