@@ -41,6 +41,12 @@ MD To Word converts AI-generated Markdown into editable Word `.docx`.
   生产与 Sandbox 镜像。Agent 生成的补丁仍不得修改依赖、Dockerfile 或受信平台模块。
 - 历史故障与排障结论写入 `docs/AgentProblem/`；稳定行为或接口变化仍必须同步更新
   `docs/AgentRequirements/`，避免从复盘文档反推当前契约。
+- Sandbox 临时 workspace 的目录和文件权限必须由受信代码显式规范，不能依赖开发机
+  umask；新增或调整物化/补丁流程时必须在 `UMask=0077` 与容器固定非 root UID 下验证
+  pytest 能读取源码、配置和新增 fixture。
+- 生产 Agent 更新必须先停止 Scheduler，并显式重启 Worker 以加载新 Python 代码；
+  `systemctl enable --now` 不会重启已活动服务。标准更新统一使用
+  `deploy/agent/deploy.sh`，不要用服务处于 `active` 代替代码版本验证。
 - Provider 排障必须区分传输失败与结构失败：`provider_unavailable` 表示传输/上游服务在
   有限重试后仍不可用，`invalid_response` 表示已收到响应但严格 Schema/本地 Policy 校验
   失败。`/models` 返回 200 只证明基础连通与认证，不能替代代表性的结构化生成验证。

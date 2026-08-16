@@ -97,11 +97,13 @@ Controller 与 Worker 通过内网通信。Worker 端口不得暴露到公网，
 
 ## 5. 当前完成状态
 
-截至 2026-08-13，阶段 A～G 的开发、自动测试、真实模型评估、真实 GitHub App PR、
+截至 2026-08-16，阶段 A～G 的开发、自动测试、真实模型评估、真实 GitHub App PR、
 人工合并、Render 部署和 Mermaid 原样例回放均已完成。常驻 Agent 已在独立 Linux ECS
 上线：Worker 与 Scheduler 均为 `active/enabled`，Worker 仅监听本机 8090。无关反馈已在
 生产环境路由为 `rejected_irrelevant`；已修复 Mermaid 反馈经受信测试回退与 Docker
-复现后路由为 `cannot_reproduce`，没有生成补丁或 PR。
+复现后路由为 `cannot_reproduce`，没有生成补丁或 PR。部署 Worker 权限修复后，真实公式
+反馈 `41d6c497-...` 已完成复现、修复、独立验证，并由 GitHub App 自动创建 PR #2；该证据
+只证明 Agent 发布闭环，PR 合并和后端部署仍由维护者单独执行。
 
 ## 6. Linux 常驻 Agent 一键安装
 

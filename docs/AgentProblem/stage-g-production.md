@@ -204,3 +204,15 @@ fixture 也包含在同一边界内。回归测试在进程临时设置 `umask 0
 Dockerfile 新建的固定镜像运行完整 Docker 集成为 5 passed，受信转换崩溃模板可以产生
 目标 JUnit。旧 `.env` 指向的镜像缺少 `mmdc`，导致 Mermaid 用例失败；更新为当前镜像后
 同一用例通过，因此没有把过期镜像结果冒充本次权限修复失败。
+
+### 生产验收
+
+部署权限修复并显式重启 Worker 后，真实 feedback
+`41d6c497-6c9e-4647-b54c-cfd11d9fff6c` 的 run
+`d771e2a9-6ce3-4b08-bbfb-15182ec72514` 不再出现 `PermissionError/missing_junit`。第二轮
+受信回退对 `test_feedback_41d6c497_aligned_notag` 产生计划内 `ConversionError`，随后修复
+第一轮通过；独立验证确认基线失败、目标通过、DOCX 公式断言通过及后端全量 55 passed。
+最终 validation 为 passed，GitHub App 自动创建
+[PR #2](https://github.com/yyqqCoding/MDToWord/pull/2)，feedback=`pr_opened`、
+run=`completed` 且无错误码。维护者已确认 Agent 运行和 PR 内容正确，证明此前连续失败的
+完整链路已修复；该记录不把“PR 已创建”写成“PR 已合并或生产后端已部署”。

@@ -39,7 +39,7 @@ GitHub 创建 Pull Request，由维护者人工审核和合并。
 
 ## 当前实现状态
 
-截至 2026-08-13：
+截至 2026-08-16：
 
 - 阶段 A、B1 和 B2 已完成；
 - 阶段 B3 的真实模型分类、Prompt Injection 隔离、Langfuse Trace、Token 统计和默认
@@ -58,13 +58,14 @@ GitHub 创建 Pull Request，由维护者人工审核和合并。
   已新增生产/Sandbox 同版本的本地 Mermaid CLI + Chromium 平台能力，Mermaid 可继续
   进入自动修复和 drawing 验证，模型仍不能修改依赖或部署文件；
 - 阶段 F GitHub App Publisher、固定分支/提交/PR、基线过期与幂等恢复已实现；真实
-  run 已创建 PR #1，维护者已人工审核并合并；
+  run 已创建 PR #1 并由维护者审核合并，公式转换崩溃反馈又自动创建 PR #2；
 - 阶段 G 的 12 条离线评估、Fake E2E 发布场景和默认关闭的生产 Scheduler 已实现；真实
   Provider 的 Gate/自动化精确率/Schema/注入召回均为 100%，注入误报为 0；合并后的
   Render 部署与原 Mermaid 反馈回放已成功完成；独立 Linux ECS 上的 Worker 与 Scheduler
   已通过一键安装、审计和 systemd 常驻验收。生产反馈已验证无关内容进入
   `rejected_irrelevant`，已修复的 Mermaid 问题经受信回退和 Docker 复现后进入
-  `cannot_reproduce`，未创建无效 PR。阶段 A～G 的开发、生产部署与小流量验收完成。
+  `cannot_reproduce`，未创建无效 PR；真实公式反馈已完成“复现、修复、独立验证、创建
+  PR”全链路。阶段 A～G 的开发、生产部署与小流量验收完成。
 
 可直接执行的配置和命令见 [agent/README.md](../../agent/README.md)。阶段划分、历史检查点
 和验收证据以 [implementation-plan.md](implementation-plan.md) 为准；本文档中的目标
