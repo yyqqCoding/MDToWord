@@ -791,6 +791,16 @@ Cloud，使真实 Gate 调用具备严格结构化输出、有限重试、真实
   模型类别或相关度不稳定也进入 `conversion_crash` 有界复现；缺少明确错误证据的低相关
   反馈仍转人工。历史 run 不重新打开，部署后必须使用新 feedback 验证完整复现/修复/发布
   链路。
+- 后续真实 feedback `5180ba17-...` / run `1ebfb33c-...` 已使用 `gate-v7` 与
+  `publication-policy-v6` 正常进入 Stage D，但第二轮测试生成把已有
+  `backend/tests/test_feedback_regressions.py` 作为 `full_file` 提交，Controller 在提交
+  Patch 时以 `test_edit_security_rejected` 终结，Sandbox 实际没有启动。根因是
+  `test-generation-v3` 既没有提供现有文件的可追加锚点，又错误允许对该文件提交完整内容。
+  `test-generation-v4` 改为由 Controller 提供最短唯一尾部 `append_anchor`，已有文件只
+  接受精确锚点的 `search_replace`，并在进入 Patch Policy 前给予一次不回传源码的本地
+  格式修正；安全白名单与“不得改写既有回归”规则不放宽。历史 run 不重新打开，部署后用
+  新 feedback 验证复现、修复与发布链路。变更后 Agent 套件按文件分组完整执行：301
+  passed、4 个 Docker 条件测试 skipped，`compileall` 与 `git diff --check` 通过。
 - `repair-policy-v2` 的真实 run `4aee5378-...` 已通过 Gate 并生成合规 Mermaid drawing
   复现计划，证明上述校正真实生效；第一轮结构化测试编辑未通过本地文本/Python 校验，
   有界第二轮生成又在 Provider 格式修正后仍不符合严格 Schema，run 以

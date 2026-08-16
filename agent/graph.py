@@ -404,6 +404,7 @@ def build_gate_graph(
                         plan=plan,
                         source_files=source_files,
                         previous_report=previous_report,
+                        existing_test_source=existing_test_source,
                         provider=reproduction.test_provider,
                         timeout_seconds=reproduction.model_timeout_seconds,
                     )

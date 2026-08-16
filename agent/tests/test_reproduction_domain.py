@@ -22,7 +22,11 @@ from agent.domain.reproduction import (
     classify_reproduction_result,
 )
 from agent.providers.fake import FakeModelProvider
-from agent.reproduction import build_mermaid_test_fallback, plan_reproduction
+from agent.reproduction import (
+    build_mermaid_test_fallback,
+    generate_reproduction_test,
+    plan_reproduction,
+)
 from agent.sandbox.contracts import (
     JUnitSummary,
     SandboxResult,
@@ -159,6 +163,71 @@ def test_mermaid_plan_requires_drawing_oracle_and_gets_one_correction() -> None:
     correction = provider.requests[1].messages[-1].content
     assert "minimum_drawing_count" in correction
     assert invalid.hypothesis not in correction
+
+
+def test_existing_regression_file_requires_an_append_edit_and_gets_one_correction() -> None:
+    task = TaskArtifact(
+        feedback_id=FEEDBACK_ID,
+        feedback_type=FeedbackType.BUG,
+        markdown_content="$x$",
+        description="formula conversion raises an unexpected error",
+        content_fingerprint="a" * 64,
+    )
+    plan = _plan()
+    generated_test = (
+        "from docx_assertions import assert_minimum_table_count\n\n"
+        f"def {SELECTOR}():\n"
+        "    assert_minimum_table_count(b'docx', 3)\n"
+    )
+    unsafe_replacement = GeneratedTestResult(
+        edits=(
+            Edit(
+                path="backend/tests/test_feedback_regressions.py",
+                mode=EditMode.FULL_FILE,
+                content=generated_test,
+            ),
+        ),
+        target_test_selector=SELECTOR,
+        oracle=plan.oracle,
+        expected_failure_kind=plan.expected_failure_kind,
+        reason="replace the existing regression file",
+    )
+    existing_source = "def test_existing():\n    assert True\n"
+    append_anchor = "    assert True\n"
+    corrected = unsafe_replacement.model_copy(
+        update={
+            "edits": (
+                Edit(
+                    path="backend/tests/test_feedback_regressions.py",
+                    mode=EditMode.SEARCH_REPLACE,
+                    search=append_anchor,
+                    replace=append_anchor + "\n\n" + generated_test,
+                ),
+            )
+        }
+    )
+    provider = FakeModelProvider([unsafe_replacement, corrected])
+
+    execution = asyncio.run(
+        generate_reproduction_test(
+            task,
+            plan=plan,
+            source_files=(),
+            previous_report=None,
+            existing_test_source=existing_source,
+            provider=provider,
+        )
+    )
+
+    assert execution.output == corrected
+    assert execution.model_calls == 2
+    assert len(provider.requests) == 2
+    request_context = provider.requests[0].messages[-1].content
+    assert '"file_has_content": true' in request_context
+    assert '"append_anchor": "    assert True\\n"' in request_context
+    correction = provider.requests[1].messages[-1].content
+    assert "mode=search_replace" in correction
+    assert "append_anchor" in correction
 
 
 def test_generated_fix_hints_only_reference_backend_fix_allowlist() -> None:
