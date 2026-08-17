@@ -206,6 +206,11 @@ TRACE_SITE_WEBHOOK_SECRET=<与站点 SITE_WEBHOOK_SECRET 相同的值>
   `trace site notify failed: ReadTimeout`，说明站点侧在应答前做了耗时工作，
   属于站点缺陷而非 Agent 配置问题 —— Agent 只发信号，不应为抓取干等。
 
+展示站部署后至少抽查一条 `model_calls/tool_calls > 0` 的 PR 运行和一条
+`cannot_reproduce` 运行：工具调用卡片必须能展开实际 observation，不能只显示“阶段已执行、
+调用明细未上报”的摘要兜底。若摘要计数与快照不一致，先按上述完整性规则回填，再判断为
+Telemetry 确实缺失；不得用页面文案代替 Supabase/Langfuse 对账。
+
 网络前提：ECS 需允许出站访问站点域名的 HTTPS。不需要开放任何入站端口。
 
 密钥仍按既有约定管理：只写入 `/etc/mdtoword/controller.env`，不提交、不记录、

@@ -75,6 +75,16 @@ Agent 代码或权威设计文档变更后至少运行：
 Sandbox 或 Docker 边界变化时还要运行 `agent/tests/test_docker_integration.py`。缺少
 Docker 时可以在开发过程中跳过，但交付时必须明确报告，不能把 skipped 记为通过。
 
+## Trace Site Development
+
+- `trace-site/` 的运行摘要以 Supabase 为事实来源，Langfuse 只提供脱敏 observation
+  快照；展示缺失不得反推 Agent 阶段未执行。
+- Langfuse 索引是异步的。快照投影必须等到稳定命名的 `feedback-repair-run` 根出现；
+  `run_id` 精确匹配失败时只能退回该命名根，不能把父节点尚未索引的孤儿调用当作根。
+- `model_calls + tool_calls > 0` 而合成根没有 observation 后代时，快照是不完整缓存，
+  详情页和批量回填都必须重抓；真实零调用运行允许只有合成根。
+- 修改 `trace-site/` 后至少运行 `npm test`、`npm run typecheck` 和 `npm run build`。
+
 ## Core Rule
 
 Preview and export must normalize math consistently.
