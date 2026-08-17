@@ -195,6 +195,13 @@ TRACE_SITE_WEBHOOK_SECRET=<与站点 SITE_WEBHOOK_SECRET 相同的值>
   且只记异常类型（httpx 的异常文本会带完整 URL）。推送是 at-most-once，
   丢了不补推，由站点访问详情页时的按需补抓自愈。
 - 推送前会先 `flush` 一次 Langfuse 客户端，否则站点会拿到不完整的树。
+- `flush` 只保证客户端已发送，不保证 Langfuse Cloud 同时完成根节点与子节点索引。站点只在
+  响应中出现稳定命名的 `feedback-repair-run` 根后才固化快照；若子调用先到而根尚未出现，
+  本次按缺失处理并进入既有重试，不能把孤儿调用合成为空明细快照。
+- 数据库摘要已有 `model_calls/tool_calls`、但快照合成根下没有任何 observation 时，该快照
+  视为不完整。详情页按需补抓和手工 `/api/cron/snapshot` 都必须重新抓取；真实零调用运行
+  仍允许只有合成根。精确 `run_id` 因脱敏缺失或被部分替换时，只能退回同一 Trace 中稳定
+  命名的 Agent 根，不能退回任意 observation。
 - 站点正常返回 `202`（先应答、后台抓取）。若日志出现
   `trace site notify failed: ReadTimeout`，说明站点侧在应答前做了耗时工作，
   属于站点缺陷而非 Agent 配置问题 —— Agent 只发信号，不应为抓取干等。

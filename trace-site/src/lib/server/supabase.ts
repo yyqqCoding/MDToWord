@@ -1,6 +1,7 @@
 import "server-only";
 
 import { supabaseConfig } from "@/lib/server/env";
+import type { RunTrace } from "@/lib/types";
 
 /**
  * Supabase PostgREST 访问。
@@ -97,10 +98,17 @@ export async function upsertTrace(row: {
  */
 export async function selectPendingTraceIds(
   limit: number,
-): Promise<{ id: string; langfuse_trace_id: string | null }[]> {
+): Promise<
+  {
+    id: string;
+    langfuse_trace_id: string | null;
+    model_calls: number;
+    tool_calls: number;
+  }[]
+> {
   if (!supabaseConfig) return [];
   const query = new URLSearchParams({
-    select: "id,langfuse_trace_id",
+    select: "id,langfuse_trace_id,model_calls,tool_calls",
     langfuse_trace_id: "not.is.null",
     order: "started_at.desc",
     limit: String(limit),
@@ -119,7 +127,12 @@ export async function selectPendingTraceIds(
   if (!response.ok) {
     throw new Error(`supabase agent_runs responded ${response.status}`);
   }
-  return (await response.json()) as { id: string; langfuse_trace_id: string | null }[];
+  return (await response.json()) as {
+    id: string;
+    langfuse_trace_id: string | null;
+    model_calls: number;
+    tool_calls: number;
+  }[];
 }
 
 /**
@@ -157,10 +170,13 @@ export async function selectTraceIdForRun(runId: string): Promise<string | null>
   return rows[0]?.langfuse_trace_id ?? null;
 }
 
-/** 已有快照的 run id，用于跳过重复回填。 */
-export async function selectSnapshottedRunIds(): Promise<Set<string>> {
-  const rows = await selectTraces<{ run_id: string }>("select=run_id", {
-    revalidate: false,
-  });
-  return new Set(rows.map((row) => row.run_id));
+/** 已有快照及其投影，用于区分完整快照与需要重抓的空明细快照。 */
+export async function selectTraceSnapshots(): Promise<Map<string, RunTrace>> {
+  const rows = await selectTraces<{ run_id: string; trace_json: RunTrace }>(
+    "select=run_id,trace_json",
+    {
+      revalidate: false,
+    },
+  );
+  return new Map(rows.map((row) => [row.run_id, row.trace_json]));
 }

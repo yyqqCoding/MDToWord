@@ -127,9 +127,13 @@ export function projectTrace(trace: LangfuseTrace, runId: string): RunTrace | nu
   const rootsAll = raw.filter(
     (item) => !item.parentObservationId || !ids.has(item.parentObservationId),
   );
-  const matched = rootsAll.filter((item) => metadataRunId(item) === runId);
-  // 没有 run_id 元数据的历史 Trace：退回全部根，至少不丢数据
-  const roots = matched.length > 0 ? matched : rootsAll;
+  // 子 observation 可能先于真正的根完成索引。此时它们的 parent 不在响应里，
+  // 但不能因此把它们当作根保存，否则会固化成 children=[] 的空调用明细。
+  const namedRoots = rootsAll.filter((item) => item.name === "feedback-repair-run");
+  const matched = namedRoots.filter((item) => metadataRunId(item) === runId);
+  // 历史 Trace 可能没有 run_id，UUID 也可能被 masking 误判成电话而部分替换。
+  // 精确匹配不到时只退回稳定命名的 Agent 根，绝不退回任意孤儿 observation。
+  const roots = matched.length > 0 ? matched : namedRoots;
   if (roots.length === 0) return null;
 
   const rootIds = new Set(roots.map((item) => item.id!));

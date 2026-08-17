@@ -3,9 +3,10 @@ import { cronSecret, langfuseConfig, supabaseConfig } from "@/lib/server/env";
 import { fetchTrace } from "@/lib/server/langfuse";
 import {
   selectPendingTraceIds,
-  selectSnapshottedRunIds,
+  selectTraceSnapshots,
   upsertTrace,
 } from "@/lib/server/supabase";
+import { isTraceSnapshotUsable } from "@/lib/trace-snapshot";
 
 /**
  * Trace 快照批量回填。
@@ -42,13 +43,20 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "data sources are not configured" }, { status: 503 });
   }
 
-  const [candidates, snapshotted] = await Promise.all([
+  const [candidates, snapshots] = await Promise.all([
     selectPendingTraceIds(BATCH * 3),
-    selectSnapshottedRunIds(),
+    selectTraceSnapshots(),
   ]);
 
   const pending = candidates
-    .filter((row) => row.langfuse_trace_id && !snapshotted.has(row.id))
+    .filter(
+      (row) =>
+        row.langfuse_trace_id &&
+        !isTraceSnapshotUsable(
+          snapshots.get(row.id),
+          row.model_calls + row.tool_calls,
+        ),
+    )
     .slice(0, BATCH);
 
   let captured = 0;
