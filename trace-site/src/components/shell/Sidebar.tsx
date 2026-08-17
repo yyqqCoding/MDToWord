@@ -3,6 +3,7 @@
 import clsx from "clsx";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
 import { BookText, LayoutDashboard, ListTree } from "lucide-react";
 
 /**
@@ -22,17 +23,45 @@ const NAV = [
 
 export function Sidebar() {
   const pathname = usePathname();
+  const listRef = useRef<HTMLUListElement>(null);
+  // 滑动指示条的位置；null = 尚未测量（首帧/无 JS 时不渲染，激活态背景色仍在）
+  const [indicator, setIndicator] = useState<{ top: number } | null>(null);
+
+  useEffect(() => {
+    const measure = () => {
+      const list = listRef.current;
+      if (!list) return;
+      const active = list.querySelector<HTMLElement>('[aria-current="page"]');
+      if (!active) {
+        setIndicator(null);
+        return;
+      }
+      // 指示条高 20px，垂直对齐激活项中心
+      setIndicator({ top: active.offsetTop + active.offsetHeight / 2 - 10 });
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [pathname]);
 
   return (
     // sticky + h-dvh：页面滚动时侧栏常驻，不必回到顶部才能换页
     <aside className="sticky top-0 hidden h-dvh w-60 shrink-0 flex-col border-r border-line bg-surface lg:flex">
       <div className="px-6 py-6">
         <p className="text-base font-semibold leading-snug text-ink">MD To Word</p>
-        <p className="text-base font-semibold leading-snug text-accent">Repair Agent</p>
+        <p className="brand-sheen text-base font-semibold leading-snug">Repair Agent</p>
       </div>
 
       <nav className="min-h-0 flex-1 overflow-y-auto px-3">
-        <ul className="space-y-1.5">
+        <ul ref={listRef} className="relative space-y-1.5">
+          {/* 滑动指示条：换页时从上一项滑到当前项，而不是原地淡入 */}
+          {indicator && (
+            <span
+              aria-hidden
+              className="absolute left-0 h-5 w-0.5 rounded-r bg-accent transition-[top] duration-300 ease-out"
+              style={{ top: indicator.top }}
+            />
+          )}
           {NAV.map((item, index) => {
             const active = item.exact
               ? pathname === item.href
@@ -54,12 +83,6 @@ export function Sidebar() {
                       : "text-ink-muted hover:translate-x-0.5 hover:bg-raised hover:text-ink",
                   )}
                 >
-                  {active && (
-                    <span
-                      aria-hidden
-                      className="anim-fade absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-r bg-accent"
-                    />
-                  )}
                   <Icon
                     aria-hidden
                     className="size-5 shrink-0 transition-transform duration-200 group-hover:scale-110"

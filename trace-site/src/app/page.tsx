@@ -1,12 +1,14 @@
 import Link from "next/link";
 import { ArrowRight, FlaskConical } from "lucide-react";
 import { Card, CardHeader } from "@/components/ui/card";
+import { CountUp } from "@/components/ui/count-up";
 import { RunTable } from "@/components/run/RunTable";
 import { StageChips } from "@/components/run/StageChips";
 import { deriveStages } from "@/lib/run-graph";
-import { formatDuration, formatInteger } from "@/lib/format";
+import { formatDuration } from "@/lib/format";
 import { usingRealData } from "@/lib/server/env";
-import { getOverviewStats, getRunDetail, getRunList } from "@/lib/server/runs";
+import { getFeaturedRunDetail, getOverviewStats, getRunList } from "@/lib/server/runs";
+import { fallbackTitle } from "@/content/cases";
 
 /**
  * 概览页。
@@ -18,23 +20,42 @@ import { getOverviewStats, getRunDetail, getRunList } from "@/lib/server/runs";
 
 export const revalidate = 300;
 
-function Kpi({ label, value, delay }: { label: string; value: string; delay: number }) {
+function Kpi({
+  label,
+  value,
+  count,
+  delay,
+}: {
+  label: string;
+  /** 静态展示值（耗时等复合文案）；与 count 二选一。 */
+  value?: string;
+  /** 整数值：水合后从 0 滚到终值；无 JS 时直接渲染终值。 */
+  count?: number;
+  delay: number;
+}) {
   return (
     <div
-      className="anim-rise lift rounded-xl border border-line bg-surface px-5 py-4 hover:border-line-strong"
+      className="anim-rise lift panel rounded-xl border border-line bg-surface px-5 py-4 hover:border-line-strong"
       style={{ animationDelay: `${delay}ms` }}
     >
       <p className="text-sm text-ink-faint">{label}</p>
-      <p className="mt-2 font-mono text-3xl leading-none text-ink">{value}</p>
+      <p className="mt-2 font-mono text-3xl leading-none text-ink">
+        {count !== undefined ? (
+          <CountUp value={count} className="tabular-nums" />
+        ) : (
+          value
+        )}
+      </p>
     </div>
   );
 }
 
 export default async function HomePage() {
   const [stats, runs] = await Promise.all([getOverviewStats(), getRunList(8)]);
-  // 精选案例取最近一次产出 PR 的运行；没有就退回最近一次运行。
-  const featuredItem = runs.find((item) => item.pr_url) ?? runs[0] ?? null;
-  const featured = featuredItem ? await getRunDetail(featuredItem.id) : null;
+  // 精选案例取最近一次产出 PR 的运行，由 getFeaturedRunDetail 直接按
+  // pr_url 非空倒序查询 —— 不在「最近 N 条」窗口里碰运气，也不回退到普通运行：
+  // 这个区块只讲完整的修复故事，宁缺毋滥。
+  const featured = await getFeaturedRunDetail();
   const stages = featured ? deriveStages(featured.run, featured.trace) : [];
 
   return (
@@ -46,29 +67,33 @@ export default async function HomePage() {
         </p>
       )}
 
-      <header className="anim-rise mb-7">
-        <h1 className="text-2xl font-semibold text-ink">概览</h1>
-        <p className="mt-2 max-w-3xl text-base leading-relaxed text-ink-muted">
-          用户提交一条反馈，Agent 自动分类、复现、修复、验证，最后提交 Pull Request。
-          每一步都留有可审计的执行证据。
-        </p>
+      <header className="anim-rise relative mb-7">
+        {/* 网格背景向边缘溶解，只给首屏头部加纹理，不出横向滚动条 */}
+        <div aria-hidden className="grid-backdrop" />
+        <div className="relative">
+          <h1 className="text-2xl font-semibold text-ink">概览</h1>
+          <p className="mt-2 max-w-3xl text-base leading-relaxed text-ink-muted">
+            用户提交一条反馈，Agent 自动分类、复现、修复、验证，最后提交 Pull Request。
+            每一步都留有可审计的执行证据。
+          </p>
+        </div>
       </header>
 
       <div className="mb-7 grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <Kpi label="总运行数" value={formatInteger(stats.totalRuns)} delay={60} />
-        <Kpi label="产出 PR" value={formatInteger(stats.pullRequests)} delay={110} />
+        <Kpi label="总运行数" count={stats.totalRuns} delay={60} />
+        <Kpi label="产出 PR" count={stats.pullRequests} delay={110} />
         <Kpi label="平均耗时" value={formatDuration(stats.averageDurationMs)} delay={160} />
-        <Kpi label="TOKEN 合计" value={formatInteger(stats.totalTokens)} delay={210} />
+        <Kpi label="TOKEN 合计" count={stats.totalTokens} delay={210} />
       </div>
 
-      {featured && featuredItem && (
-        <Card className="mb-7" delay={260} interactive>
+      {featured && (
+        <Card className="mb-7" delay={260} interactive spotlight>
           <CardHeader
             title="精选案例"
             description="一次完整的缺陷修复：从反馈到 Pull Request"
             aside={
               <Link
-                href={`/runs/${featuredItem.id}`}
+                href={`/runs/${featured.run.id}`}
                 className="group inline-flex items-center gap-2 text-sm text-accent transition-colors hover:text-ink"
               >
                 查看完整执行流程
@@ -81,7 +106,7 @@ export default async function HomePage() {
           />
           <div className="p-5">
             <p className="text-base font-medium text-ink">
-              {featured.narrative?.title ?? featuredItem.title}
+              {featured.narrative?.title ?? fallbackTitle(featured.run.category)}
             </p>
             {featured.narrative && (
               <p className="mt-2 max-w-3xl text-sm leading-relaxed text-ink-muted">

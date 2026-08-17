@@ -7,7 +7,7 @@ import { fetchPullDiff } from "@/lib/server/github";
 import { CASE_NARRATIVES, fallbackTitle } from "@/content/cases";
 import { runDurationMs } from "@/lib/format";
 import { isTerminalStatus } from "@/lib/run-graph";
-import { getMockRun } from "@/lib/mock/hero-run";
+import { getMockRun, HERO_RUN_ID } from "@/lib/mock/hero-run";
 import { mockOverviewStats, mockRunList } from "@/lib/mock/runs";
 import type {
   OverviewStats,
@@ -90,11 +90,32 @@ export async function getRunDetail(id: string): Promise<RunDetailData | null> {
     revalidate: false,
   });
   if (!run) return null;
+  return assembleRunDetail(run);
+}
 
+/**
+ * 概览页「精选案例」：最近一次产出 PR 的运行。
+ *
+ * 之前从「最近 8 条」列表里 find(pr_url)，找不到还回退到最新一条 ——
+ * 一波没有 PR 的运行过后，精选位就会变成一条普通运行，还随新运行不断变换。
+ * 这里直接按 pr_url 非空倒序查一条：窗口无限、语义稳定，没有 PR 运行就整体不显示。
+ */
+export async function getFeaturedRunDetail(): Promise<RunDetailData | null> {
+  if (!usingRealData) return getMockRun(HERO_RUN_ID);
+  const [run] = await selectRuns<RunPublic>(
+    "select=*&pr_url=not.is.null&order=started_at.desc&limit=1",
+    { revalidate: 300 },
+  );
+  if (!run) return null;
+  return assembleRunDetail(run);
+}
+
+/** 运行摘要 → 完整详情：Trace 快照（含按需补抓）、叙事文案、公开 PR diff。 */
+async function assembleRunDetail(run: RunPublic): Promise<RunDetailData> {
   const [traceRows, diff] = await Promise.all([
     // 快照查询只能短缓存。快照本身不可变，但"尚未回填"是个会变的否定结果 ——
     // 曾经按终态给它 86400s，导致回填完成后页面整整一天仍显示"快照尚未回填"。
-    selectTraces<TraceRow>(`select=run_id,trace_json&run_id=eq.${id}&limit=1`, {
+    selectTraces<TraceRow>(`select=run_id,trace_json&run_id=eq.${run.id}&limit=1`, {
       revalidate: 600,
     }).catch(() => [] as TraceRow[]),
     fetchPullDiff(run.pr_url).catch(() => null),

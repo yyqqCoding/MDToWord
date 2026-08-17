@@ -15,16 +15,20 @@ export default async function RunsPage() {
       {!usingRealData && (
         <p className="anim-fade mb-6 flex items-center gap-2.5 rounded-lg border border-warn/40 bg-warn/10 px-4 py-2.5 text-sm text-warn">
           <FlaskConical aria-hidden className="size-4 shrink-0" />
-          构造数据：未配置 Supabase，当前展示的是结构对齐真实契约的示例数据。
+          构造数据:未配置 Supabase,当前展示的是结构对齐真实契约的示例数据。
         </p>
       )}
 
-      <header className="anim-rise mb-7">
-        <h1 className="text-2xl font-semibold text-ink">运行记录</h1>
-        <p className="mt-2 max-w-3xl text-base leading-relaxed text-ink-muted">
-          全部历史运行如实上站，包含无法复现与安全拦截。
-          只展示成功案例的展示站没有说服力。
-        </p>
+      <header className="anim-rise relative mb-7">
+        {/* 与概览页同款的网格纹理,只出现在首屏头部 */}
+        <div aria-hidden className="grid-backdrop" />
+        <div className="relative">
+          <h1 className="text-2xl font-semibold text-ink">运行记录</h1>
+          <p className="mt-2 max-w-3xl text-base leading-relaxed text-ink-muted">
+            全部历史运行如实上站,包含无法复现与安全拦截。
+            只展示成功案例的展示站没有说服力。
+          </p>
+        </div>
       </header>
 
       <Card delay={80} interactive>

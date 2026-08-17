@@ -7,9 +7,23 @@ import type { OverviewStats, RunListItem } from "@/lib/types";
  *
  * 刻意覆盖四种不同终态：真实站点会全量上站，概览页的分布必须如实包含
  * cannot_reproduce 与 security_rejected —— 只展示成功案例的 Agent 展示站没有说服力。
+ *
+ * 最新一条刻意是没有 PR 的拒单：精选案例的契约是「最近一次产出 PR 的运行」，
+ * 构造数据同样要保证精选位不等于列表第一行。
  */
-
 export const mockRunList: RunListItem[] = [
+  {
+    id: "2a7c9e35-4d61-4b08-a5f7-c39e0b146d82",
+    run_ref: "c825a1f70b93",
+    title: "只是想测试一下这个功能",
+    route: "rejected_irrelevant",
+    category: "unknown",
+    status: "completed",
+    durationMs: 3_560,
+    total_tokens: 1_704,
+    pr_url: null,
+    started_at: "2026-08-14T01:09:12.000Z",
+  },
   {
     id: HERO_RUN_ID,
     run_ref: heroRun.run_ref,
@@ -45,18 +59,6 @@ export const mockRunList: RunListItem[] = [
     total_tokens: 1_988,
     pr_url: null,
     started_at: "2026-08-12T06:22:55.000Z",
-  },
-  {
-    id: "2a7c9e35-4d61-4b08-a5f7-c39e0b146d82",
-    run_ref: "c825a1f70b93",
-    title: "只是想测试一下这个功能",
-    route: "rejected_irrelevant",
-    category: "unknown",
-    status: "completed",
-    durationMs: 3_560,
-    total_tokens: 1_704,
-    pr_url: null,
-    started_at: "2026-08-13T01:09:12.000Z",
   },
 ];
 

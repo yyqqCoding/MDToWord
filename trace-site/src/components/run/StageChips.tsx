@@ -53,6 +53,18 @@ const STATE_STYLE: Record<
 };
 
 /**
+ * 连接线状态由左侧阶段决定：流水线已经流过的段落（done/active/failed 之后）
+ * 用状态色描出并带 draw-on 生长动画，未到达的段落保持静态灰。
+ */
+const CONNECTOR_STYLE: Record<StageState, { color: string; animate: boolean }> = {
+  done: { color: "bg-accent/70", animate: true },
+  active: { color: "bg-accent/70", animate: true },
+  failed: { color: "bg-critical/60", animate: true },
+  skipped: { color: "bg-line-strong/60", animate: false },
+  pending: { color: "bg-line-strong/60", animate: false },
+};
+
+/**
  * 阶段芯片条。7 个阶段固定，布局手工排定。
  *
  * 悬停反馈对所有芯片生效（含未执行的），不因为某页没传 onSelect 就变成死块 ——
@@ -124,7 +136,16 @@ export function StageChips({
             {index < stages.length - 1 && (
               <span
                 aria-hidden
-                className="hidden h-px w-4 shrink-0 self-center bg-line-strong xl:block"
+                className={clsx(
+                  "hidden h-px w-4 shrink-0 self-center xl:block",
+                  CONNECTOR_STYLE[stage.state].color,
+                  CONNECTOR_STYLE[stage.state].animate && "anim-grow-x",
+                )}
+                style={
+                  CONNECTOR_STYLE[stage.state].animate
+                    ? { animationDelay: `${300 + index * 55}ms` }
+                    : undefined
+                }
               />
             )}
           </li>

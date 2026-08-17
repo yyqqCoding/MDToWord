@@ -1,10 +1,12 @@
 import clsx from "clsx";
+import { Spotlight } from "@/components/ui/spotlight";
 
 export function Card({
   children,
   className,
   delay,
   interactive,
+  spotlight,
 }: {
   children: React.ReactNode;
   className?: string;
@@ -12,16 +14,25 @@ export function Card({
   delay?: number;
   /** 整卡可点击或需要悬停反馈时开启上浮与辉光。 */
   interactive?: boolean;
+  /** 指针聚光边框，只给展示性主卡（精选案例），密集数据卡开了是视觉噪音。 */
+  spotlight?: boolean;
 }) {
+  const classes = clsx(
+    "anim-rise panel rounded-xl border border-line bg-surface",
+    interactive ? "lift hover:border-line-strong" : "transition-colors duration-200",
+    className,
+  );
+  const style = delay ? { animationDelay: `${delay}ms` } : undefined;
+
+  if (spotlight) {
+    return (
+      <Spotlight as="section" className={classes} style={style}>
+        {children}
+      </Spotlight>
+    );
+  }
   return (
-    <section
-      className={clsx(
-        "anim-rise rounded-xl border border-line bg-surface",
-        interactive ? "lift hover:border-line-strong" : "transition-colors duration-200",
-        className,
-      )}
-      style={delay ? { animationDelay: `${delay}ms` } : undefined}
-    >
+    <section className={classes} style={style}>
       {children}
     </section>
   );

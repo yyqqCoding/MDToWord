@@ -9,15 +9,21 @@ import {
   SquareStack,
   XCircle,
 } from "lucide-react";
-import { Card, CardHeader } from "@/components/ui/card";
+import { Spotlight } from "@/components/ui/spotlight";
 import { RUN_STAGES } from "@/lib/run-graph";
 
 /**
  * 项目说明。
  *
- * 早期版本是两张并排的大段文字卡，信息全堆在一起、无法扫读。
- * 这些内容本身是结构化的：脱敏规则天然是「原始内容 → 保留什么」的对照表，
- * 能力边界天然是一组并列条目。按结构呈现，而不是压成段落。
+ * 上一版把内容压进两张并排的大卡片：七步流程横向挤成一行（标题被截断），
+ * 脱敏对照表装在重型卡片里，整页是"盒子套盒子"，扫读吃力。
+ *
+ * 这一版改成文档式开放版面：
+ *   - 流程改竖向轨道，每一步独占一行，标题与说明都有完整空间；
+ *   - 脱敏对照脱掉卡片外框，用细分隔线组织；
+ *   - 结论从卡片页脚改为左侧主色竖线的引注；
+ *   - 数据来源不再装盒子，图标块 + 文字直接排在网格里。
+ * 留白和分隔线替代边框，是这页的主要节奏。
  */
 
 const MASKING = [
@@ -62,111 +68,162 @@ const SOURCES = [
   { icon: Github, title: "GitHub", detail: "已合并 PR 的公开 diff" },
 ];
 
+function SectionHeader({
+  title,
+  description,
+  aside,
+  delay = 0,
+}: {
+  title: string;
+  description?: string;
+  aside?: React.ReactNode;
+  delay?: number;
+}) {
+  return (
+    <header
+      className="anim-rise mb-6 flex items-start justify-between gap-4"
+      style={delay ? { animationDelay: `${delay}ms` } : undefined}
+    >
+      <div>
+        <h2 className="text-lg font-semibold text-ink">{title}</h2>
+        {description && (
+          <p className="mt-1.5 text-sm leading-relaxed text-ink-faint">{description}</p>
+        )}
+      </div>
+      {aside}
+    </header>
+  );
+}
+
 export default function AboutPage() {
   return (
-    <div className="mx-auto w-full max-w-5xl px-5 py-7 lg:px-8">
-      <header className="anim-rise mb-8">
+    <div className="mx-auto w-full max-w-4xl px-5 py-7 lg:px-8">
+      <header className="anim-rise">
         <h1 className="text-2xl font-semibold text-ink">项目说明</h1>
-        <p className="mt-2 max-w-3xl text-base leading-relaxed text-ink-muted">
+        <p className="mt-2.5 max-w-2xl text-base leading-relaxed text-ink-muted">
           用户提交一条反馈，Agent 自动分类、复现、修复、验证，最后提交 Pull Request。
           这一页讲清楚它能做什么、不能做什么，以及为什么站点上看不到原始内容。
         </p>
       </header>
 
-      <Card className="mb-6" delay={60}>
-        <CardHeader title="处理流程" description="固定七步，每一步都留有可审计的执行证据" />
-        <ol className="flex flex-col gap-2 p-5 xl:flex-row xl:items-stretch xl:gap-0">
+      {/* 处理流程：竖向轨道，主色填充沿轨道向下生长，节点错峰入场 */}
+      <section className="mt-14">
+        <SectionHeader
+          title="处理流程"
+          description="固定七步，每一步都留有可审计的执行证据"
+          delay={60}
+        />
+        <ol className="relative">
+          {/* 轨道：底色线 + 主色生长线，两条重叠 */}
+          <span
+            aria-hidden
+            className="absolute bottom-2 left-[13px] top-2 w-px bg-line"
+          />
+          <span
+            aria-hidden
+            className="anim-grow-y absolute bottom-2 left-[13px] top-2 w-px bg-accent/60"
+            style={{ animationDelay: "200ms" }}
+          />
           {RUN_STAGES.map((stage, index) => (
             <li
               key={stage.key}
-              className="anim-rise flex min-w-0 flex-1 items-center"
-              style={{ animationDelay: `${120 + index * 60}ms` }}
+              className="anim-rise group relative flex gap-4 pb-7 last:pb-0"
+              style={{ animationDelay: `${100 + index * 70}ms` }}
             >
-              <div className="lift group h-full w-full rounded-lg border border-line bg-canvas px-3.5 py-3 hover:border-accent/50">
-                <div className="flex items-center gap-2">
-                  <span
-                    aria-hidden
-                    className="flex size-5 shrink-0 items-center justify-center rounded bg-raised font-mono text-xs text-ink-faint transition-colors duration-200 group-hover:bg-accent/20 group-hover:text-accent"
-                  >
-                    {index + 1}
-                  </span>
-                  <span className="truncate text-sm font-medium text-ink">{stage.label}</span>
-                </div>
-                <p className="mt-1.5 text-xs leading-relaxed text-ink-faint">{stage.hint}</p>
+              <span
+                aria-hidden
+                className="relative z-10 flex size-7 shrink-0 items-center justify-center rounded-full border border-line bg-surface font-mono text-xs text-ink-faint transition-colors duration-200 group-hover:border-accent/60 group-hover:text-accent"
+              >
+                {index + 1}
+              </span>
+              <div className="min-w-0 pt-0.5">
+                <p className="text-sm font-medium text-ink">{stage.label}</p>
+                <p className="mt-1 max-w-xl text-sm leading-relaxed text-ink-faint">
+                  {stage.hint}
+                </p>
               </div>
-              {index < RUN_STAGES.length - 1 && (
-                <span aria-hidden className="hidden h-px w-3 shrink-0 bg-line-strong xl:block" />
-              )}
             </li>
           ))}
         </ol>
-      </Card>
+      </section>
 
-      <Card className="mb-6" delay={120}>
-        <CardHeader
+      {/* 脱敏对照：开放表格，只用分隔线；结论做成引注 */}
+      <section className="mt-16">
+        <SectionHeader
           title="Trace 为什么看不到原始内容"
           description="观测数据默认脱敏；下面是每类内容实际保留了什么"
-          aside={<ShieldCheck aria-hidden className="size-5 text-ink-faint" />}
+          aside={<ShieldCheck aria-hidden className="mt-0.5 size-5 shrink-0 text-ink-faint" />}
+          delay={60}
         />
-        <ul className="divide-y divide-line/60">
+        <ul className="border-y border-line/60">
           {MASKING.map((row, index) => (
             <li
               key={row.source}
-              className="anim-fade row-hover grid gap-1 px-5 py-3.5 hover:bg-raised/50 sm:grid-cols-[14rem_1fr] sm:gap-4"
-              style={{ animationDelay: `${180 + index * 50}ms` }}
+              className="anim-fade row-hover grid gap-1 border-b border-line/60 px-2 py-4 last:border-b-0 hover:bg-raised/40 sm:grid-cols-[12rem_1fr] sm:gap-6"
+              style={{ animationDelay: `${100 + index * 50}ms` }}
             >
               <span className="text-sm text-ink">{row.source}</span>
               <span className="text-sm leading-relaxed text-ink-muted">{row.kept}</span>
             </li>
           ))}
         </ul>
-        <p className="border-t border-line px-5 py-4 text-sm leading-relaxed text-ink-muted">
+        <p className="anim-fade mt-6 border-l-2 border-accent/60 pl-4 text-sm leading-relaxed text-ink-muted"
+          style={{ animationDelay: "380ms" }}
+        >
           因此本站展示的是<span className="text-ink">执行结构与判定依据</span>，
           而不是内容本身。这是设计选择，不是数据缺失。
         </p>
-      </Card>
+      </section>
 
-      <section className="mb-6">
-        <h2 className="anim-rise mb-3 text-base font-semibold text-ink">Agent 的能力边界</h2>
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      {/* 能力边界：保留卡片，但只在整页一个区块使用盒子 */}
+      <section className="mt-16">
+        <SectionHeader
+          title="Agent 的能力边界"
+          description="五条硬约束，写进执行路径而不是靠自觉"
+          delay={60}
+        />
+        <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
           {BOUNDARIES.map((item, index) => {
             const Icon = item.icon;
             return (
-              <div
+              <Spotlight
                 key={item.title}
-                className="anim-rise lift group rounded-xl border border-line bg-surface p-5 hover:border-accent/40"
-                style={{ animationDelay: `${240 + index * 60}ms` }}
+                className="anim-rise lift panel group rounded-xl border border-line bg-surface p-5 hover:border-accent/40"
+                style={{ animationDelay: `${100 + index * 60}ms` }}
               >
                 <Icon
                   aria-hidden
                   className="size-5 text-accent transition-transform duration-200 group-hover:scale-110"
                 />
-                <p className="mt-3 text-sm font-medium text-ink">{item.title}</p>
+                <p className="mt-3.5 text-sm font-medium text-ink">{item.title}</p>
                 <p className="mt-1.5 text-sm leading-relaxed text-ink-muted">{item.detail}</p>
-              </div>
+              </Spotlight>
             );
           })}
         </div>
       </section>
 
-      <section>
-        <h2 className="anim-rise mb-3 text-base font-semibold text-ink">数据来源</h2>
-        <div className="grid gap-4 sm:grid-cols-3">
+      {/* 数据来源：不装盒子，图标块 + 文字直接排开 */}
+      <section className="mt-16">
+        <SectionHeader title="数据来源" delay={60} />
+        <div className="grid gap-x-8 gap-y-6 sm:grid-cols-3">
           {SOURCES.map((item, index) => {
             const Icon = item.icon;
             return (
               <div
                 key={item.title}
-                className="anim-rise lift group flex items-center gap-3 rounded-xl border border-line bg-surface px-5 py-4 hover:border-accent/40"
-                style={{ animationDelay: `${560 + index * 60}ms` }}
+                className="anim-rise group flex items-center gap-3.5"
+                style={{ animationDelay: `${100 + index * 60}ms` }}
               >
-                <Icon
-                  aria-hidden
-                  className="size-5 shrink-0 text-ink-faint transition-colors duration-200 group-hover:text-accent"
-                />
+                <span className="panel flex size-10 shrink-0 items-center justify-center rounded-lg border border-line bg-surface transition-colors duration-200 group-hover:border-accent/40">
+                  <Icon
+                    aria-hidden
+                    className="size-5 text-ink-faint transition-colors duration-200 group-hover:text-accent"
+                  />
+                </span>
                 <div className="min-w-0">
                   <p className="text-sm font-medium text-ink">{item.title}</p>
-                  <p className="text-sm text-ink-muted">{item.detail}</p>
+                  <p className="mt-0.5 text-sm text-ink-muted">{item.detail}</p>
                 </div>
               </div>
             );

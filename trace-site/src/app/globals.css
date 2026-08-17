@@ -50,10 +50,36 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/*
+ * 胶片颗粒：消灭大面积纯色的"平面渲染感"。
+ * soft-light 混合 + 5% 不透明度，只给表面加纹理，不改变配色。
+ */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  pointer-events: none;
+  opacity: 0.05;
+  mix-blend-mode: soft-light;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='0.6'/%3E%3C/svg%3E");
+}
+
 :focus-visible {
   outline: 2px solid var(--color-accent);
   outline-offset: 2px;
   border-radius: 4px;
+}
+
+/* 品牌色选中区：一处规则，即时传达"有人打磨过" */
+::selection {
+  background-color: rgba(91, 156, 255, 0.32);
+  color: var(--color-ink);
+}
+
+/* CJK 小字补偿：12px 中文笔画粘连，非等宽文本补一点字距（等宽 diff/哈希保持原样） */
+html[lang="zh-CN"] .text-xs:not(.font-mono) {
+  letter-spacing: 0.02em;
 }
 
 /* ------------------------------------------------------------------ */
@@ -89,6 +115,15 @@ body {
   }
 }
 
+@keyframes grow-y {
+  from {
+    transform: scaleY(0);
+  }
+  to {
+    transform: scaleY(1);
+  }
+}
+
 @keyframes slide-in {
   from {
     opacity: 0;
@@ -114,6 +149,11 @@ body {
   transform-origin: left center;
 }
 
+.anim-grow-y {
+  animation: grow-y 0.9s cubic-bezier(0.16, 1, 0.3, 1) both;
+  transform-origin: top center;
+}
+
 .anim-slide-in {
   animation: slide-in 0.35s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
@@ -127,6 +167,18 @@ body {
  *   .glow-strong 当前选中的块：常驻辉光，与 hover 区分开
  *   .row-hover   信息行/表格行：只提亮背景，不上浮（不是独立可点块）
  */
+
+/*
+ * 抬升表面：深色主题下把面板从背景里分离出来的是顶部内侧高光，
+ * 外加一层克制的环境阴影。hover 辉光（.lift:hover，优先级更高）与选中辉光
+ * （.glow-strong，文件内位置靠后）会接管 box-shadow，过渡由 .lift 的 transition 完成。
+ */
+.panel {
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.05),
+    0 1px 2px rgb(0 0 0 / 0.3),
+    0 10px 28px -16px rgb(0 0 0 / 0.5);
+}
 
 .lift {
   transition:
@@ -165,6 +217,127 @@ body {
     background-color 0.2s ease;
 }
 
+/* ------------------------------------------------------------------ */
+/* 纹理与结构装饰                                                       */
+/* ------------------------------------------------------------------ */
+
+/*
+ * 首屏网格背景：1px 主色线条 + 径向遮罩让线条向边缘溶解。
+ * 水平出血严格不超过页面 padding（px-5 / lg:px-8），不产生横向滚动条。
+ * 内容需用 relative 包一层盖在网格之上。
+ */
+.grid-backdrop {
+  position: absolute;
+  inset: -1.75rem -1.25rem -0.5rem;
+  pointer-events: none;
+  background-image:
+    linear-gradient(to right, rgb(91 156 255 / 0.08) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(91 156 255 / 0.08) 1px, transparent 1px);
+  background-size: 44px 44px;
+  -webkit-mask-image: radial-gradient(ellipse 60% 55% at 25% 15%, black 25%, transparent 75%);
+  mask-image: radial-gradient(ellipse 60% 55% at 25% 15%, black 25%, transparent 75%);
+}
+
+@media (min-width: 1024px) {
+  .grid-backdrop {
+    inset: -1.75rem -2rem -0.5rem;
+  }
+}
+
+/*
+ * 指针聚光边框：--mx/--my 由 Spotlight 组件在 pointermove 时写入（rAF 节流）。
+ * padding: 1px + mask 排除内容区，只画一圈跟随指针的边框光。
+ * 仅 fine-pointer 设备渲染；无 JS / 触屏下伪元素不存在，卡片退化为普通边框。
+ */
+@media (pointer: fine) {
+  .spot {
+    position: relative;
+  }
+
+  .spot::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    padding: 1px;
+    background: radial-gradient(
+      150px circle at var(--mx, 50%) var(--my, 50%),
+      rgb(91 156 255 / 0.55),
+      transparent 75%
+    );
+    -webkit-mask:
+      linear-gradient(#fff 0 0) content-box,
+      linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor;
+    mask:
+      linear-gradient(#fff 0 0) content-box,
+      linear-gradient(#fff 0 0);
+    mask-composite: exclude;
+    opacity: 0;
+    transition: opacity 0.25s ease;
+    pointer-events: none;
+  }
+
+  .spot:hover::before {
+    opacity: 1;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* 加载骨架                                                             */
+/* ------------------------------------------------------------------ */
+
+/* 形状对齐最终布局的灰块 + transform 微光扫过（只动 transform，不触发重排） */
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background-color: var(--color-raised);
+}
+
+.skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.07), transparent);
+  animation: shimmer 1.5s linear infinite;
+}
+
+@keyframes shimmer {
+  to {
+    transform: translateX(100%);
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* 品牌点缀                                                             */
+/* ------------------------------------------------------------------ */
+
+/* 侧栏品牌字的慢速光泽流动：全站唯一一处渐变文字，9s 往返，克制 */
+.brand-sheen {
+  background: linear-gradient(
+    100deg,
+    var(--color-accent) 30%,
+    #a8ccff 50%,
+    var(--color-accent) 70%
+  );
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: sheen 9s ease-in-out infinite;
+}
+
+@keyframes sheen {
+  0%,
+  100% {
+    background-position: 0% 0;
+  }
+  50% {
+    background-position: 100% 0;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -176,5 +349,14 @@ body {
 
   .lift:hover {
     transform: none;
+  }
+
+  /*
+   * 无限循环动画（骨架微光、加载旋转）在 duration 归零后会高速空转，
+   * 既晃眼又费电 —— 直接停掉，骨架退化为静态灰块、图标静止。
+   */
+  .skeleton::after,
+  .animate-spin {
+    animation: none;
   }
 }

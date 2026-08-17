@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Check, ChevronDown, ChevronRight, ExternalLink, FlaskConical, Minus } from "lucide-react";
 import clsx from "clsx";
 import { Card, CardHeader } from "@/components/ui/card";
+import { CountUp } from "@/components/ui/count-up";
 import { MetaBadge, StatusBadge } from "@/components/ui/badge";
 import { StageChips } from "@/components/run/StageChips";
 import { StageDetail } from "@/components/run/StageDetail";
@@ -69,18 +70,34 @@ function CheckLine({
 function Stat({
   label,
   value,
+  count,
   note,
   noteTitle,
+  delay,
 }: {
   label: string;
-  value: string;
+  /** 静态展示值（耗时、"+12 −3" 这类复合文案）；与 count 二选一。 */
+  value?: string;
+  /** 整数值：水合后从 0 滚到终值；无 JS 时直接渲染终值。 */
+  count?: number;
   note?: string;
   noteTitle?: string;
+  /** 入场延迟,四张统计卡错峰出现。 */
+  delay?: number;
 }) {
   return (
-    <div className="lift rounded-xl border border-line bg-surface px-5 py-4 hover:border-accent/40">
+    <div
+      className="lift panel anim-rise rounded-xl border border-line bg-surface px-5 py-4 hover:border-accent/40"
+      style={delay ? { animationDelay: `${delay}ms` } : undefined}
+    >
       <p className="text-sm text-ink-faint">{label}</p>
-      <p className="mt-1.5 font-mono text-2xl leading-none text-ink">{value}</p>
+      <p className="mt-1.5 font-mono text-2xl leading-none text-ink">
+        {count !== undefined ? (
+          <CountUp value={count} className="tabular-nums" />
+        ) : (
+          value
+        )}
+      </p>
       {note && (
         <p className="mt-1.5 text-sm text-ink-faint" title={noteTitle}>
           {note}
@@ -180,21 +197,25 @@ export function RunDetail({ data }: { data: RunDetailData }) {
           value={wallClock !== null ? formatDuration(wallClock) : "进行中"}
           note={formatDateTime(run.started_at)}
           noteTitle={formatDateTimeFull(run.started_at)}
+          delay={0}
         />
         <Stat
           label="Token"
-          value={formatInteger(run.total_tokens)}
+          count={run.total_tokens}
           note={`${run.model_calls} 次模型调用`}
+          delay={50}
         />
         <Stat
           label="代码改动"
           value={diffLines ? `+${diffLines.added} −${diffLines.removed}` : "无补丁"}
           note={validation ? `${validation.changed_files.length} 个文件` : undefined}
+          delay={100}
         />
         <Stat
           label="工具调用"
-          value={formatInteger(run.tool_calls)}
+          count={run.tool_calls}
           note={trace && trace.attempts > 1 ? `恢复 ${trace.attempts} 次` : "沙箱与外部操作"}
+          delay={150}
         />
       </div>
 
