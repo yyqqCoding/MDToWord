@@ -7,6 +7,7 @@ import { fetchPullDiff } from "@/lib/server/github";
 import { CASE_NARRATIVES, fallbackTitle } from "@/content/cases";
 import { runDurationMs } from "@/lib/format";
 import { isTerminalStatus } from "@/lib/run-graph";
+import { isTraceSnapshotUsable } from "@/lib/trace-snapshot";
 import { getMockRun, HERO_RUN_ID } from "@/lib/mock/hero-run";
 import { mockOverviewStats, mockRunList } from "@/lib/mock/runs";
 import type {
@@ -122,10 +123,13 @@ async function assembleRunDetail(run: RunPublic): Promise<RunDetailData> {
   ]);
 
   const snapshot = traceRows[0]?.trace_json ?? null;
+  const expectedCalls = run.model_calls + run.tool_calls;
 
   return {
     run,
-    trace: snapshot ?? (await backfillTrace(run)),
+    trace: isTraceSnapshotUsable(snapshot, expectedCalls)
+      ? snapshot
+      : await backfillTrace(run),
     narrative: CASE_NARRATIVES[run.id] ?? null,
     diff,
     isMock: false,
