@@ -13,9 +13,9 @@ import type { Observation, RunPublic } from "@/lib/types";
 /**
  * 阶段详情。
  *
- * 取代了原先「常驻元数据面板 + 全量瀑布」的组合：那两者对同一批调用重复呈现，
- * 而真正缺失的是「这一步做了什么判断」。这里左侧讲叙述与关键产物，
- * 右侧只列本阶段的调用，点开才展开脱敏摘要 —— 逐层深入，不一次性铺开。
+ * 取代了原先「常驻元数据面板 + 全量瀑布」的组合:那两者对同一批调用重复呈现,
+ * 而真正缺失的是「这一步做了什么判断」。这里左侧讲叙述与关键产物,
+ * 右侧只列本阶段的调用,点开才展开脱敏摘要 —— 逐层深入,不一次性铺开。
  */
 
 const TYPE_ICON = {
@@ -100,7 +100,7 @@ function CallRow({
           )}
         </span>
 
-        {/* 相对本阶段的微型时间条，替代整页瀑布 */}
+        {/* 相对本阶段的微型时间条,替代整页瀑布 */}
         <span aria-hidden className="relative hidden h-1.5 w-24 shrink-0 rounded bg-raised sm:block">
           <span
             className={clsx(
@@ -166,6 +166,11 @@ export function StageDetail({
   calls: Observation[];
 }) {
   const story = stageStory(stage.key as StageKey, run);
+  // 阶段是否确实执行过:done/failed 来自 Trace 或运行摘要字段,active 是进行中的当前阶段。
+  // 只有「没执行过」的阶段(skipped/pending)才展示「从未执行」的提示,
+  // 已执行但 Trace 恰好没有它的调用时,要明说是「未上报」而不是「从未执行」。
+  const hasEvidence =
+    stage.state === "done" || stage.state === "failed" || stage.state === "active";
   const spanStart = calls.length > 0 ? Math.min(...calls.map((c) => c.startMs)) : 0;
   const spanEnd =
     calls.length > 0 ? Math.max(...calls.map((c) => c.startMs + c.durationMs)) : 1;
@@ -229,11 +234,17 @@ export function StageDetail({
               />
             ))}
           </ul>
+        ) : hasEvidence ? (
+          <p className="rounded-xl border border-dashed border-line px-4 py-10 text-center text-sm leading-relaxed text-ink-faint">
+            该阶段已执行,但调用明细未随 Trace 上报。
+            <br />
+            观测上报是 fail-open 的,未成功上报不影响业务结果。
+          </p>
         ) : (
           <p className="rounded-xl border border-dashed border-line px-4 py-10 text-center text-sm leading-relaxed text-ink-faint">
             该阶段没有可用的调用明细。
             <br />
-            观测上报是 fail-open 的，未成功上报不影响业务结果。
+            观测上报是 fail-open 的,未成功上报不影响业务结果。
           </p>
         )}
       </div>
