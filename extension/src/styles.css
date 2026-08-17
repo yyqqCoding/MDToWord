@@ -48,62 +48,97 @@ input {
   width: 44px;
 }
 
-.brand h1 {
-  color: #172033;
-  font-size: 22px;
-  line-height: 1.2;
-  margin: 0;
-}
-
 .brand-title-row {
   align-items: center;
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 10px;
 }
 
-.brand p {
-  color: #64748b;
+/* 3D 实体按钮：上下渐变做受光面，底部实心边做侧壁，外阴影做离地感 */
+.header-chip {
+  background: linear-gradient(180deg, var(--chip-top) 0%, var(--chip-bottom) 100%);
+  border: 1px solid var(--chip-edge);
+  border-radius: 999px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.95),
+    inset 0 -2px 3px rgba(15, 23, 42, 0.06),
+    0 2px 0 var(--chip-edge),
+    0 4px 8px rgba(15, 23, 42, 0.16);
+  color: var(--chip-text);
   font-size: 12px;
-  margin: 3px 0 0;
+  font-weight: 650;
+  height: 28px;
+  padding: 0 14px;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.75);
+  transition: transform 0.08s ease, box-shadow 0.08s ease, filter 0.12s ease;
+}
+
+.header-chip:hover {
+  filter: brightness(1.04);
+}
+
+/* 按下时整体下沉，外阴影换成内阴影，模拟按键行程 */
+.header-chip:active {
+  box-shadow:
+    inset 0 2px 4px rgba(15, 23, 42, 0.22),
+    0 1px 1px rgba(15, 23, 42, 0.12);
+  filter: brightness(0.98);
+  transform: translateY(2px);
+}
+
+.header-chip:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
 }
 
 .header-status {
+  --chip-top: #fdfefe;
+  --chip-bottom: #e7edf5;
+  --chip-edge: #cbd5e1;
+  --chip-text: #64748b;
   align-items: center;
-  background: #f1f5f9;
-  border-radius: 999px;
-  color: #64748b;
   display: flex;
-  font-size: 12px;
-  font-weight: 650;
   gap: 7px;
-  height: 26px;
-  padding: 0 12px;
 }
 
+/* 状态点也做成凸起的小灯 */
 .header-status span {
   background: #94a3b8;
   border-radius: 999px;
-  height: 6px;
-  width: 6px;
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.7),
+    0 0 4px rgba(148, 163, 184, 0.7);
+  height: 7px;
+  width: 7px;
 }
 
 .header-status.available {
-  background: #dcfce7;
-  color: #15803d;
+  --chip-top: #f4fdf7;
+  --chip-bottom: #d3f4de;
+  --chip-edge: #9ee2b6;
+  --chip-text: #15803d;
 }
 
 .header-status.available span {
   background: #22c55e;
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.7),
+    0 0 5px rgba(34, 197, 94, 0.85);
 }
 
 .header-status.unavailable {
-  background: #fee2e2;
-  color: #b91c1c;
+  --chip-top: #fff6f6;
+  --chip-bottom: #fdd9d9;
+  --chip-edge: #f4aeae;
+  --chip-text: #b91c1c;
 }
 
 .header-status.unavailable span {
   background: #ef4444;
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.7),
+    0 0 5px rgba(239, 68, 68, 0.85);
 }
 
 button {
@@ -704,27 +739,17 @@ textarea {
   border-color: #bfdbfe;
 }
 
-.header-status:hover {
-  opacity: 0.85;
-}
-
 .guide-button {
-  background: #eef2ff;
-  color: #3730a3;
-  font-size: 12px;
-  font-weight: 650;
-  height: 26px;
-  padding: 0 12px;
-}
-
-.guide-button:hover {
-  background: #e0e7ff;
+  --chip-top: #fafbff;
+  --chip-bottom: #dfe5fd;
+  --chip-edge: #bcc7f8;
+  --chip-text: #3730a3;
 }
 
 .feedback-button {
-  display: inline-flex;
   align-items: center;
-  gap: 4px;
+  display: inline-flex;
+  gap: 5px;
 }
 
 .feedback-modal {

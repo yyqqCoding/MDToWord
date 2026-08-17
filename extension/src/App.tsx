@@ -1040,27 +1040,28 @@ export function App() {
       <header className="toolbar">
         <div className="brand">
           <img className="brand-icon" src="icon-48.png" alt="" />
-          <div>
-            <div className="brand-title-row">
-              <h1>MD To Word</h1>
-              <button
-                type="button"
-                className={`header-status ${status}`}
-                onClick={() => void handleHealthCheck()}
-                title="点击重新检查服务"
-              >
-                <span />
-                {statusLabel}
-              </button>
-              <button type="button" className="guide-button" onClick={startOnboarding}>
-                使用指南
-              </button>
-              <button type="button" className="guide-button feedback-button" data-onboarding-target="feedback-button" onClick={() => setFeedbackOpen(true)}>
-                <MessageSquare size={12} />
-                问题反馈
-              </button>
-            </div>
-            <p>Markdown 一键转 Word</p>
+          <div className="brand-title-row">
+            <button
+              type="button"
+              className={`header-chip header-status ${status}`}
+              onClick={() => void handleHealthCheck()}
+              title="点击重新检查服务"
+            >
+              <span />
+              {statusLabel}
+            </button>
+            <button type="button" className="header-chip guide-button" onClick={startOnboarding}>
+              使用指南
+            </button>
+            <button
+              type="button"
+              className="header-chip guide-button feedback-button"
+              data-onboarding-target="feedback-button"
+              onClick={() => setFeedbackOpen(true)}
+            >
+              <MessageSquare size={12} />
+              问题反馈
+            </button>
           </div>
         </div>
       </header>
