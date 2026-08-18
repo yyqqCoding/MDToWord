@@ -66,10 +66,10 @@ GitHub 创建 Pull Request，由维护者人工审核和合并。
   `rejected_irrelevant`，已修复的 Mermaid 问题经受信回退和 Docker 复现后进入
   `cannot_reproduce`，未创建无效 PR；真实公式反馈已完成“复现、修复、独立验证、创建
   PR”全链路。阶段 A～G 的开发、生产部署与小流量验收完成。
-- 阶段 H 的公开反馈入口 IP 限流设计已于 2026-08-18 确认并完成本地实现，采用单 worker
-  进程内滑动窗口，不引入 Redis、数据库 migration、验证码或浏览器指纹；分钟/小时/
-  每日/全局窗口、并发、失败关闭和插件 `429` 行为已通过自动验证。阶段 H 仍须等待
-  Render `CF-Connecting-IP` 脱敏验收后才能标记完成。
+- 阶段 H 的公开反馈入口 IP 限流已于 2026-08-18 完成实现、自动验证和 Render 生产黑盒
+  验收，采用单 worker 进程内滑动窗口，不引入 Redis、数据库 migration、验证码、浏览器
+  指纹或临时 IP 诊断日志；分钟/小时/每日/全局窗口、并发、失败关闭、插件 `429` 行为、
+  伪造头防绕过以及 Wi-Fi/手机流量身份区分均已验证。
 
 可直接执行的配置和命令见 [agent/README.md](../../agent/README.md)。阶段划分、历史检查点
 和验收证据以 [implementation-plan.md](implementation-plan.md) 为准；本文档中的目标

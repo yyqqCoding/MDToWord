@@ -240,8 +240,9 @@ Scheduler是否领取生产反馈，不引入逐条人工批准状态。
 3. 验证 IPv4、IPv4-mapped IPv6、IPv6 `/64`、非法或多值来源；
 4. 验证过期清理、10,000 个 IP 容量边界和 Supabase I/O 不持有进程锁；
 5. 验证插件收到 `429` 后不自动重试、保留输入并显示等待提示；
-6. 部署 Render 后，从 Wi-Fi 与手机流量执行正常/伪造头请求，只用 HMAC 摘要确认
-   `CF-Connecting-IP` 由可信边缘覆盖；验收后关闭临时诊断；
+6. 部署 Render 后，从 Wi-Fi 与手机流量执行正常/伪造头黑盒请求，以状态码、
+   `Retry-After` 和不含 IP 的请求 ID 确认可信边缘覆盖、来源区分及防绕过；不增加临时
+   HMAC Secret、IP 日志或诊断接口；
 7. 运行后端全量测试、扩展构建以及 Agent 全量测试和 compileall，再按本文记录真实证据。
 
 ## 11. 配置清单
@@ -989,7 +990,7 @@ Cloud，使真实 Gate 调用具备严格结构化输出、有限重试、真实
 
 ### 阶段 H 实施检查点
 
-**状态：本地实现与自动验证完成，Render 可信 IP 验收待执行（2026-08-18）**
+**状态：实现、自动验证与 Render 生产黑盒验收完成（2026-08-18）**
 
 - 维护者已接受进程内滑动窗口方案和默认额度：同 IP 每 60 秒 1 次、每小时 5 次、每天
   10 次，全局每小时 30 次；
@@ -1006,8 +1007,15 @@ Cloud，使真实 Gate 调用具备严格结构化输出、有限重试、真实
 - 开发机后端全量曾因未安装 `mmdc` 得到 70 passed、1 failed；随后使用包含 Mermaid
   CLI、Chromium 和 Pandoc 的后端生产 Docker 镜像复验，后端全量为 71 passed、1 个
   Starlette/httpx 弃用警告，无 failure 或 error；
-- 当前生产 IP 候选为 `CF-Connecting-IP`，仍须在部署后完成 Wi-Fi/手机流量与伪造头
-  的脱敏验证；该运行验证是阶段 H 完成条件，不以本地自动测试冒充已通过；
+- Render 生产黑盒验收中，正常 Wi-Fi 请求返回 `200`；调用方伪造
+  `CF-Connecting-IP` 时由 Cloudflare 边缘返回 `403`，请求未到达 Render 应用；同一
+  Wi-Fi 在允许请求 9 秒后仅伪造 `X-Forwarded-For`，应用返回 `429`、
+  `Retry-After: 51` 和 `Cache-Control: no-store`，证明该头不能绕过限流；
+- 绕过本地 HTTP 代理后，手机热点在 15:40:26 UTC 返回 `200`，切换 Wi-Fi 后在同一
+  60 秒窗口内于 15:40:53 UTC 返回 `200`，证明两种网络使用不同限流身份；Wi-Fi 于
+  15:41:03 UTC 立即重试返回 `429` 和 `Retry-After: 50`，证明同一身份的分钟窗口生效；
+- 维护者接受上述不记录 IP 的黑盒证据替代临时 HMAC 诊断，避免为一次性验收新增 Secret、
+  IP 派生日志和再次部署；该决定不放宽解析器对单个可路由 IP 的强制校验；
 - 实现未增加依赖、数据库 migration、Redis、验证码或浏览器指纹。
 
 | 阶段 | 状态 | 验收日期 | 证据 |
@@ -1019,6 +1027,6 @@ Cloud，使真实 Gate 调用具备严格结构化输出、有限重试、真实
 | E 修复与独立验证 | Completed | 2026-08-11；Mermaid 平台能力更新 2026-08-12 | 历史 Agent 217 passed/Docker 4 passed/Backend 44 passed；固定渲染器完成中文流程图“基线失败 -> 修复通过”，真实 run 最终生成 validated patch |
 | F GitHub PR | Completed | 2026-08-12 | Agent 全量回归通过；真实 App 最小权限预检通过；run `f11032d7-...` 幂等创建 PR #1，数据库与 Artifact 一致，维护者已人工合并 |
 | G 评估与投产 | Completed | 2026-08-13；公式闭环复验 2026-08-16 | 12 条真实 Gate 评估、Fake 发布 E2E、PR/Render/插件回放通过；独立 ECS Worker/Scheduler 常驻；生产 `rejected_irrelevant`、Mermaid `cannot_reproduce` 与公式自动修复 PR #2 验收通过 |
-| H 公开反馈入口 IP 限流 | Implemented locally | 未验收 | 限流/API/插件与自动测试已完成；生产 Docker 运行时后端全量 71 passed；Render 可信 IP 验收尚未执行 |
+| H 公开反馈入口 IP 限流 | Completed | 2026-08-18 | 限流/API/插件与自动测试完成；生产 Docker 后端全量 71 passed；Render 黑盒验证伪造头不能绕过、Wi-Fi/手机身份不同、分钟窗口与 `Retry-After` 正确 |
 
 状态只在完成对应验收后更新。已有代码不因存在文件或历史提交自动视为通过。
