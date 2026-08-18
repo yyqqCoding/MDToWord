@@ -827,6 +827,13 @@ textarea {
   margin: 0 0 16px;
 }
 
+.feedback-error {
+  margin: 8px 0;
+  color: #b42318;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .feedback-modal label {
   color: #334155;
   display: block;

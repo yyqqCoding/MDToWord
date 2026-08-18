@@ -3,10 +3,16 @@ import uuid
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 
+from app.feedback_rate_limit import (
+    ClientIpUnavailableError,
+    FeedbackRateLimiter,
+    FeedbackRateLimitPolicy,
+    resolve_cloudflare_client_ip,
+)
 from app.models import (
     ConversionErrorResponse,
     ConvertRequest,
@@ -21,13 +27,32 @@ DOCX_MEDIA_TYPE = (
     "wordprocessingml.document"
 )
 
+
+class FeedbackStorageError(RuntimeError):
+    """反馈存储失败；异常内容不得直接回显给公网调用方。"""
+
+
+def _new_feedback_rate_limiter() -> FeedbackRateLimiter:
+    return FeedbackRateLimiter(
+        FeedbackRateLimitPolicy(
+            per_minute=settings.feedback_rate_per_minute,
+            per_hour=settings.feedback_rate_per_hour,
+            per_day=settings.feedback_rate_per_day,
+            global_per_hour=settings.feedback_global_rate_per_hour,
+        )
+    )
+
+
 app = FastAPI(title="MD To Word Converter")
+# 当前 Render 仅运行一个 Uvicorn worker；应用内所有反馈请求共享同一个限流器。
+app.state.feedback_rate_limiter = _new_feedback_rate_limiter()
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.allowed_origins,
     allow_methods=["GET", "HEAD", "POST", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["Retry-After"],
 )
 
 
@@ -77,21 +102,10 @@ def convert(request: ConvertRequest) -> Response:
     )
 
 
-@app.post("/feedback")
-async def feedback(request: FeedbackRequest) -> FeedbackResponse:
-    feedback_id = str(uuid.uuid4())
-
-    payload = {
-        "id": feedback_id,
-        "feedback_type": request.feedback_type,
-        "markdown_content": request.markdown_content,
-        "description": request.description,
-        "contact": request.contact,
-    }
-
+async def _insert_feedback(payload: dict[str, str]) -> None:
     try:
         async with httpx.AsyncClient() as client:
-            resp = await client.post(
+            response = await client.post(
                 f"{settings.supabase_url}/rest/v1/feedback",
                 headers={
                     "apikey": settings.supabase_key,
@@ -101,35 +115,74 @@ async def feedback(request: FeedbackRequest) -> FeedbackResponse:
                 },
                 json=payload,
             )
+    except httpx.HTTPError as exc:
+        raise FeedbackStorageError("feedback storage request failed") from exc
 
-            if resp.status_code >= 400:
-                detail = (
-                    resp.text[:200]
-                    if resp.text
-                    else "no response body"
-                )
+    if response.status_code >= 400:
+        raise FeedbackStorageError("feedback storage rejected the request")
 
-                return JSONResponse(
-                    status_code=502,
-                    content={
-                        "success": False,
-                        "id": None,
-                        "message": (
-                            f"supabase {resp.status_code}: {detail}"
-                        ),
-                    },
-                )
 
-    except Exception as exc:
+@app.post("/feedback")
+async def feedback(
+    feedback_request: FeedbackRequest,
+    request: Request,
+) -> FeedbackResponse:
+    try:
+        ip_key = resolve_cloudflare_client_ip(
+            request.headers.get("CF-Connecting-IP")
+        )
+    except ClientIpUnavailableError:
         return JSONResponse(
-            status_code=502,
+            status_code=503,
+            headers={"Cache-Control": "no-store"},
             content={
                 "success": False,
                 "id": None,
-                "message": (
-                    f"request error: "
-                    f"{type(exc).__name__}: {exc}"
-                ),
+                "error": "client_ip_unavailable",
+                "message": "暂时无法验证请求来源，请稍后重试",
+            },
+        )
+
+    limiter: FeedbackRateLimiter = request.app.state.feedback_rate_limiter
+    decision = await limiter.consume(ip_key)
+    if not decision.allowed:
+        retry_after = decision.retry_after_seconds or 1
+        return JSONResponse(
+            status_code=429,
+            headers={
+                "Retry-After": str(retry_after),
+                "Cache-Control": "no-store",
+            },
+            content={
+                "success": False,
+                "id": None,
+                "error": "rate_limited",
+                "message": "提交过于频繁，请稍后再试",
+            },
+        )
+
+    feedback_id = str(uuid.uuid4())
+
+    payload = {
+        "id": feedback_id,
+        "feedback_type": feedback_request.feedback_type,
+        "markdown_content": feedback_request.markdown_content,
+        "description": feedback_request.description,
+        "contact": feedback_request.contact,
+    }
+
+    try:
+        # 限流额度已在进程锁内消费；数据库调用必须位于锁外，失败时也不返还额度。
+        await _insert_feedback(payload)
+    except FeedbackStorageError:
+        return JSONResponse(
+            status_code=502,
+            headers={"Cache-Control": "no-store"},
+            content={
+                "success": False,
+                "id": None,
+                "error": "feedback_storage_unavailable",
+                "message": "反馈服务暂时不可用，请稍后重试",
             },
         )
 

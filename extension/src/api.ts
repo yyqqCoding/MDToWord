@@ -67,6 +67,17 @@ export interface FeedbackPayload {
   contact?: string;
 }
 
+export class FeedbackSubmissionError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly retryAfterSeconds?: number,
+  ) {
+    super(message);
+    this.name = 'FeedbackSubmissionError';
+  }
+}
+
 export async function submitFeedback(serviceUrl: string, payload: FeedbackPayload): Promise<void> {
   const response = await fetch(`${trimTrailingSlash(serviceUrl)}/feedback`, {
     method: 'POST',
@@ -75,7 +86,16 @@ export async function submitFeedback(serviceUrl: string, payload: FeedbackPayloa
   });
 
   if (!response.ok) {
-    throw new Error('反馈提交失败，请稍后重试');
+    if (response.status === 429) {
+      const retryAfter = Number.parseInt(response.headers.get('Retry-After') ?? '', 10);
+      const retryAfterSeconds = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : undefined;
+      const waitHint = retryAfterSeconds ? `，请约 ${retryAfterSeconds} 秒后再试` : '，请稍后再试';
+      throw new FeedbackSubmissionError(`反馈提交过于频繁${waitHint}`, response.status, retryAfterSeconds);
+    }
+    if (response.status === 503) {
+      throw new FeedbackSubmissionError('暂时无法验证请求来源，请稍后再试', response.status);
+    }
+    throw new FeedbackSubmissionError('反馈提交失败，请稍后重试', response.status);
   }
 }
 

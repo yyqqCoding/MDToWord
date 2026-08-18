@@ -5,7 +5,8 @@
 ```text
 Edge 插件
   -> FastAPI /feedback
-  -> Supabase feedback
+       -> Client IP Resolver + 进程内 Rate Limiter
+       `-> Supabase feedback
   -> Agent Controller 定时领取
        |- LangGraph Runtime
        |- Model Gateway
@@ -33,7 +34,22 @@ Sandbox Worker。CLI 默认仍只执行 Gate；维护者显式使用 `--reproduc
 
 ## 2. 部署单元
 
-### 2.1 Agent Controller
+### 2.1 Feedback API
+
+公开 Feedback API 与转换接口部署在同一个 Render FastAPI 服务中，但限流规则只作用于
+`POST /feedback`。它负责：
+
+- 从经过生产验证的 Render/Cloudflare 请求元数据解析客户端 IP；
+- 规范化 IPv4、IPv4-mapped IPv6，并将 IPv6 聚合到 `/64` 限流键；
+- 在单进程内按 IP 和全局滑动窗口原子检查并消费额度；
+- 超限时返回 `429`，无法建立可信 IP 时返回 `503`；
+- 只有通过入口校验与限流后才调用 Supabase 写入反馈。
+
+限流器属于 Feedback API 进程，不进入 Agent Controller、Graph State、Supabase 或
+Langfuse。当前 Render 容器只有一个 Uvicorn worker，因此使用一个应用生命周期内共享的
+限流器；启用多 worker 或多实例前必须先替换为跨进程原子存储，不能继续依赖进程内锁。
+
+### 2.2 Agent Controller
 
 一个 Python 服务，负责：
 
@@ -53,7 +69,7 @@ Controller 不直接执行模型生成的测试或修改后的源码。GitHub �
 源码读取使用 Controller-only、指定仓库 `Contents: Read-only` 的凭据；该凭据与
 发布用 GitHub App 分离，也不得进入 Graph State、模型上下文、Worker 或任务容器。
 
-### 2.2 Docker Sandbox Worker
+### 2.3 Docker Sandbox Worker
 
 一个独立 Linux Worker，负责接收经过认证的结构化 Job、创建临时 Docker 容器、
 执行固定命令、收集受限输出并销毁工作区。Worker 和任务容器都不持有模型、
@@ -61,7 +77,7 @@ Supabase、GitHub 或 Langfuse 凭证。
 
 具体隔离规则见 [security-and-sandbox.md](security-and-sandbox.md)。
 
-### 2.3 外部依赖
+### 2.4 外部依赖
 
 | 依赖 | 用途 | 适配边界 |
 |---|---|---|
@@ -219,6 +235,9 @@ current_main_sha != base_sha -> 本次 run 结束为 stale_base，feedback 重�
 
 ## 8. 故障与恢复
 
+- Feedback API 限流状态随 Render 进程重启清空，不作为持久业务状态恢复；
+- Feedback API 在无法取得可信客户端 IP 时失败关闭，不绕过限流写入 Supabase；
+- Supabase 写入失败时已消费的反馈额度不回滚，避免失败路径成为无限重试入口；
 - 数据库领取使用原子 claim、租约超时和最大尝试次数；
 - `operation_id = run_id + node + attempt`，所有外部副作用幂等；
 - Controller 重启后从持久化 LangGraph checkpoint 与数据库状态恢复；
@@ -230,6 +249,8 @@ current_main_sha != base_sha -> 本次 run 结束为 stale_base，feedback 重�
 
 ## 9. 关键取舍
 
+- 当前小流量公开反馈入口使用进程内滑动窗口，不引入 Redis、数据库限流表、浏览器指纹或
+  每次提交验证码；多进程或多实例是切换共享限流存储的明确触发条件；
 - 使用 LangGraph 而非自研通用 Runtime，因为本系统需要持久化、循环和恢复；
 - 使用显式状态图包住有限 ReAct，不采用拥有任意 Shell 的开放式 Agent；
 - 使用 Docker Worker 而非自研沙箱；

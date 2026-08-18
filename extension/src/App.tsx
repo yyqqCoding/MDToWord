@@ -198,6 +198,7 @@ export function App() {
   const [feedbackContact, setFeedbackContact] = useState('');
   const [feedbackFeature, setFeedbackFeature] = useState('');
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
+  const [feedbackError, setFeedbackError] = useState('');
 
   const openFolder = useMemo(
     () => folders.find((folder) => folder.id === openFolderId),
@@ -619,7 +620,7 @@ export function App() {
     }
   }
 
-  function handleFeedbackSubmit() {
+  async function handleFeedbackSubmit() {
     if (feedbackTab === 'bug') {
       if (!feedbackMd.trim() || !feedbackDesc.trim()) return;
     } else {
@@ -633,28 +634,25 @@ export function App() {
       contact: feedbackContact,
     };
 
-    setFeedbackOpen(false);
-    setFeedbackMd('');
-    setFeedbackDesc('');
-    setFeedbackFeature('');
-    setFeedbackContact('');
-    confetti({ particleCount: 80, spread: 70, origin: { y: 0.6 } });
-    setTimeout(() => confetti({ particleCount: 50, spread: 100, origin: { y: 0.5 } }), 200);
-
-    (async () => {
-      const maxRetries = 3;
-      for (let attempt = 0; attempt < maxRetries; attempt++) {
-        try {
-          await submitFeedback(SERVICE_URL, payload);
-          return;
-        } catch {
-          if (attempt < maxRetries - 1) {
-            await new Promise((r) => setTimeout(r, 1000 * 2 ** attempt));
-          }
-        }
-      }
-      setMessage('反馈提交失败，请稍后重试');
-    })();
+    setFeedbackError('');
+    setFeedbackSubmitting(true);
+    try {
+      await submitFeedback(SERVICE_URL, payload);
+      // 只有服务端确认写入后才清空输入，限流或网络失败时用户可以直接再次编辑。
+      setFeedbackOpen(false);
+      setFeedbackMd('');
+      setFeedbackDesc('');
+      setFeedbackFeature('');
+      setFeedbackContact('');
+      setMessage('反馈已提交，感谢你的帮助。');
+      confetti({ particleCount: 80, spread: 70, origin: { y: 0.6 } });
+      setTimeout(() => confetti({ particleCount: 50, spread: 100, origin: { y: 0.5 } }), 200);
+    } catch (error) {
+      // 429 不自动重试；盲目重试既不会绕过窗口，还可能放大服务压力。
+      setFeedbackError(error instanceof Error ? error.message : '反馈提交失败，请稍后重试');
+    } finally {
+      setFeedbackSubmitting(false);
+    }
   }
 
   function renderFeedbackModal() {
@@ -684,6 +682,11 @@ export function App() {
               功能建议
             </button>
           </div>
+          {feedbackError ? (
+            <p className="feedback-error" role="alert">
+              {feedbackError}
+            </p>
+          ) : null}
           {feedbackTab === 'bug' ? (
             <>
               <p className="feedback-hint">粘贴解析失败的 Markdown 内容，帮助我们改进转换质量。</p>
@@ -733,8 +736,8 @@ export function App() {
             <button type="button" className="secondary" onClick={() => setFeedbackOpen(false)}>
               取消
             </button>
-            <button type="button" disabled={!canSubmit} onClick={handleFeedbackSubmit}>
-              提交
+            <button type="button" disabled={!canSubmit || feedbackSubmitting} onClick={handleFeedbackSubmit}>
+              {feedbackSubmitting ? '提交中...' : '提交'}
             </button>
           </div>
         </section>
@@ -1153,7 +1156,10 @@ export function App() {
               type="button"
               className="header-chip guide-button feedback-button"
               data-onboarding-target="feedback-button"
-              onClick={() => setFeedbackOpen(true)}
+              onClick={() => {
+                setFeedbackError('');
+                setFeedbackOpen(true);
+              }}
             >
               <MessageSquare size={12} />
               问题反馈

@@ -220,7 +220,31 @@ PR正文包含：分类、脱敏问题摘要、基线失败证据、修改文件
 系统从第一条反馈起即按自动模式运行：Gate通过后自动进入后续节点。投产开关只控制
 Scheduler是否领取生产反馈，不引入逐条人工批准状态。
 
-## 10. 配置清单
+## 10. 阶段H：公开反馈入口 IP 限流
+
+### 交付
+
+- Render/FastAPI 可信客户端 IP 解析边界；
+- 单 worker 进程内滑动窗口限流器与 `asyncio.Lock` 并发保护；
+- 同 IP 分钟、小时、每日额度和全局小时额度；
+- `429`、`Retry-After`、`503 client_ip_unavailable` 响应契约；
+- 插件对 `429` 的非重试提示与输入保留；
+- Render 上 `CF-Connecting-IP` 的脱敏转发验收。
+
+阶段 H 不新增 Redis、数据库 migration、浏览器指纹、登录、验证码或插件内固定 Secret。
+
+### 验收顺序
+
+1. 使用可控时钟验证分钟、小时、每日、全局窗口和精确 `Retry-After`；
+2. 并发提交同一 IP，证明检查与消费原子且只有允许数量写入；
+3. 验证 IPv4、IPv4-mapped IPv6、IPv6 `/64`、非法或多值来源；
+4. 验证过期清理、10,000 个 IP 容量边界和 Supabase I/O 不持有进程锁；
+5. 验证插件收到 `429` 后不自动重试、保留输入并显示等待提示；
+6. 部署 Render 后，从 Wi-Fi 与手机流量执行正常/伪造头请求，只用 HMAC 摘要确认
+   `CF-Connecting-IP` 由可信边缘覆盖；验收后关闭临时诊断；
+7. 运行后端全量测试、扩展构建以及 Agent 全量测试和 compileall，再按本文记录真实证据。
+
+## 11. 配置清单
 
 主要配置：
 
@@ -238,15 +262,19 @@ SANDBOX_WORKER_URL / SANDBOX_WORKER_CREDENTIAL
 SANDBOX_IMAGE_DIGEST
 POLL_INTERVAL_SECONDS
 MAX_* Policy阈值
+FEEDBACK_RATE_PER_MINUTE=1
+FEEDBACK_RATE_PER_HOUR=5
+FEEDBACK_RATE_PER_DAY=10
+FEEDBACK_GLOBAL_RATE_PER_HOUR=30
 TRACE_CONTENT=false
 ```
 
 配置启动时校验；错误信息只指出缺少的配置名，不打印值。测试通过Fake和依赖注入
 提供配置，不读取生产Secret。
 
-## 11. 验证命令
+## 12. 验证命令
 
-### 11.1 自动测试与初始化
+### 12.1 自动测试与初始化
 
 ```bash
 uv sync --extra dev
@@ -264,7 +292,7 @@ cd backend && .venv/bin/python -m pytest -v
 backend/.venv/Scripts/python.exe -m pytest backend/tests -v
 ```
 
-### 11.2 Gate、复现、修复与发布
+### 12.2 Gate、复现、修复与发布
 
 ```bash
 # Fake 或真实 Provider 的 Gate-only dry run
@@ -285,7 +313,7 @@ backend/.venv/Scripts/python.exe -m pytest backend/tests -v
 `--dry-run` 同用。复现、修复、发布和恢复必须显式使用真实 Provider。可恢复错误使用
 `--resume-run-id <uuid>` 配合同一个阶段开关，不重新领取 feedback。
 
-### 11.3 评估与生产 Scheduler
+### 12.3 评估与生产 Scheduler
 
 ```bash
 .venv/bin/python -m agent.evals.runner --provider fake
@@ -298,7 +326,7 @@ backend/.venv/Scripts/python.exe -m pytest backend/tests -v
 全部通过时才领取反馈。Docker Worker 的构建、启动和隔离验收命令见
 [agent/README.md](../../agent/README.md)。
 
-## 12. 进度记录
+## 13. 进度记录
 
 ### 阶段 A 实施检查点
 
@@ -959,6 +987,29 @@ Cloud，使真实 Gate 调用具备严格结构化输出、有限重试、真实
   本地全部通过。修复合并为 `d29a412` 并完成 Vercel 部署；维护者复核最新 PR 运行与多条
   `cannot_reproduce` 页面，工具调用和 Sandbox observation 均已恢复，页面展示正常。
 
+### 阶段 H 实施检查点
+
+**状态：本地实现与自动验证完成，Render 可信 IP 验收待执行（2026-08-18）**
+
+- 维护者已接受进程内滑动窗口方案和默认额度：同 IP 每 60 秒 1 次、每小时 5 次、每天
+  10 次，全局每小时 30 次；
+- 已接受 IPv6 `/64` 聚合、无可信 IP 时 `503` 失败关闭、Supabase 写入失败不返还额度，
+  以及 Render 重启或重新部署后计数清空；
+- `backend/app/feedback_rate_limit.py` 已实现公网 IP 规范化、IPv4-mapped IPv6、IPv6
+  `/64`、分钟/小时/每日/全局滑动窗口、容量清理和单进程 `asyncio.Lock`；锁内不执行
+  Supabase I/O，数据库失败不回滚已消费额度；
+- `/feedback` 已接入 `CF-Connecting-IP` 失败关闭、`429/Retry-After`、`503` 和脱敏 `502`；
+  插件等待成功后才清空表单，`429` 不自动重试并在弹窗内保留输入、显示等待提示；
+- 新增限流/API 聚焦测试 17 条，与现有 API 合跑为 22 passed；Agent 为 305 passed、5
+  skipped，compileall 通过；Windows Node 下扩展 `tsc + vite build` 成功，Node 20.17.0
+  低于 Vite 推荐的 20.19+，仅产生版本警告；
+- 开发机后端全量曾因未安装 `mmdc` 得到 70 passed、1 failed；随后使用包含 Mermaid
+  CLI、Chromium 和 Pandoc 的后端生产 Docker 镜像复验，后端全量为 71 passed、1 个
+  Starlette/httpx 弃用警告，无 failure 或 error；
+- 当前生产 IP 候选为 `CF-Connecting-IP`，仍须在部署后完成 Wi-Fi/手机流量与伪造头
+  的脱敏验证；该运行验证是阶段 H 完成条件，不以本地自动测试冒充已通过；
+- 实现未增加依赖、数据库 migration、Redis、验证码或浏览器指纹。
+
 | 阶段 | 状态 | 验收日期 | 证据 |
 |---|---|---|---|
 | A 基线、配置与持久化 | Implemented | 2026-08-10 | Agent 30 passed；Backend 42 passed；Supabase migration/RLS/RPC/claim 验收通过 |
@@ -968,5 +1019,6 @@ Cloud，使真实 Gate 调用具备严格结构化输出、有限重试、真实
 | E 修复与独立验证 | Completed | 2026-08-11；Mermaid 平台能力更新 2026-08-12 | 历史 Agent 217 passed/Docker 4 passed/Backend 44 passed；固定渲染器完成中文流程图“基线失败 -> 修复通过”，真实 run 最终生成 validated patch |
 | F GitHub PR | Completed | 2026-08-12 | Agent 全量回归通过；真实 App 最小权限预检通过；run `f11032d7-...` 幂等创建 PR #1，数据库与 Artifact 一致，维护者已人工合并 |
 | G 评估与投产 | Completed | 2026-08-13；公式闭环复验 2026-08-16 | 12 条真实 Gate 评估、Fake 发布 E2E、PR/Render/插件回放通过；独立 ECS Worker/Scheduler 常驻；生产 `rejected_irrelevant`、Mermaid `cannot_reproduce` 与公式自动修复 PR #2 验收通过 |
+| H 公开反馈入口 IP 限流 | Implemented locally | 未验收 | 限流/API/插件与自动测试已完成；生产 Docker 运行时后端全量 71 passed；Render 可信 IP 验收尚未执行 |
 
 状态只在完成对应验收后更新。已有代码不因存在文件或历史提交自动视为通过。
