@@ -311,6 +311,17 @@ textarea {
     white;
 }
 
+.preview-card {
+  background:
+    linear-gradient(90deg, rgba(245, 243, 255, 0.9), rgba(255, 255, 255, 0.96)),
+    white;
+}
+
+.preview-card .action-card-icon {
+  background: #7c3aed;
+  box-shadow: 0 8px 18px rgba(124, 58, 237, 0.22);
+}
+
 .action-card:disabled {
   cursor: not-allowed;
 }
@@ -670,22 +681,23 @@ textarea {
 }
 
 .action-card-grid.folder-action-grid {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .action-card.compact {
-  gap: 4px;
-  height: 72px;
+  gap: 5px;
+  height: 68px;
 }
 
 .action-card.compact .action-card-icon {
-  height: 30px;
-  width: 30px;
+  height: 26px;
+  width: 26px;
 }
 
 .action-card.compact .action-card-icon svg {
-  height: 16px;
-  width: 16px;
+  height: 15px;
+  width: 15px;
 }
 
 .action-card.compact strong {
@@ -1122,5 +1134,390 @@ textarea {
   .dialog-preview .preview {
     max-height: 420px;
     min-height: 280px;
+  }
+
+  /* Keep the four folder actions on a single row even in the narrow side panel. */
+  .action-card-grid.folder-action-grid {
+    gap: 6px;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .folder-action-grid .action-card.compact {
+    gap: 4px;
+    height: 64px;
+    padding: 6px 4px;
+  }
+
+  .folder-action-grid .action-card.compact .action-card-icon {
+    height: 24px;
+    width: 24px;
+  }
+
+  .folder-action-grid .action-card.compact strong {
+    font-size: 11px;
+  }
+
+  .folder-action-grid .action-card.compact small {
+    display: none;
+  }
+}
+
+/* Standalone document preview window (chrome.windows.create). */
+.preview-window {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.preview-doc {
+  background: #f1f5f9;
+  height: 100vh;
+  overflow: hidden;
+  padding: 0;
+}
+
+.preview-doc-header {
+  align-items: center;
+  background: white;
+  border-bottom: 1px solid #e2e8f0;
+  display: flex;
+  flex-shrink: 0;
+  gap: 16px;
+  justify-content: space-between;
+  padding: 14px 24px;
+}
+
+.preview-doc-heading {
+  align-items: baseline;
+  display: flex;
+  gap: 12px;
+  min-width: 0;
+}
+
+.preview-doc-heading h1 {
+  color: #172033;
+  font-size: 18px;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preview-doc-count {
+  color: #64748b;
+  flex-shrink: 0;
+  font-size: 13px;
+}
+
+.preview-doc-modes {
+  background: #eef2f7;
+  border-radius: 999px;
+  display: inline-flex;
+  flex-shrink: 0;
+  padding: 3px;
+  position: relative;
+}
+
+/* Sliding highlight that glides under the active tab. Each tab is 1/3 of the
+   track; the thumb translates to the active third for a smooth transition. */
+.preview-doc-modes-thumb {
+  background: white;
+  border-radius: 999px;
+  box-shadow: 0 1px 2px rgb(15 23 42 / 12%);
+  left: 3px;
+  position: absolute;
+  top: 3px;
+  transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+  width: calc((100% - 6px) / 3);
+  will-change: transform;
+  z-index: 0;
+}
+
+.preview-doc-modes.mode-preview .preview-doc-modes-thumb {
+  transform: translateX(0);
+}
+
+.preview-doc-modes.mode-split .preview-doc-modes-thumb {
+  transform: translateX(100%);
+}
+
+.preview-doc-modes.mode-markdown .preview-doc-modes-thumb {
+  transform: translateX(200%);
+}
+
+.preview-doc-modes button {
+  background: transparent;
+  border: none;
+  border-radius: 999px;
+  color: #475569;
+  cursor: pointer;
+  flex: 1;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 6px 14px;
+  position: relative;
+  transition: color 0.2s;
+  white-space: nowrap;
+  z-index: 1;
+}
+
+.preview-doc-modes button:hover {
+  color: #172033;
+}
+
+.preview-doc-modes button.active {
+  color: #2563eb;
+}
+
+.preview-window-empty {
+  align-items: center;
+  color: #64748b;
+  display: flex;
+  flex: 1;
+  justify-content: center;
+  min-height: 240px;
+  text-align: center;
+}
+
+.preview-doc-layout {
+  display: grid;
+  flex: 1;
+  gap: 0;
+  grid-template-columns: 240px minmax(0, 1fr);
+  min-height: 0;
+}
+
+.preview-doc-toc {
+  background: white;
+  border-right: 1px solid #e2e8f0;
+  overflow: auto;
+  padding: 18px 14px 24px;
+}
+
+.preview-doc-toc-title {
+  color: #94a3b8;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  margin: 0 0 10px;
+  padding-left: 8px;
+  text-transform: uppercase;
+}
+
+.preview-doc-toc-empty {
+  color: #94a3b8;
+  font-size: 13px;
+  padding-left: 8px;
+}
+
+.preview-doc-toc ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* Nested lists indent progressively so the tree depth reads visually. */
+.preview-doc-toc-list .preview-doc-toc-list {
+  padding-left: 14px;
+}
+
+.toc-node-row {
+  align-items: center;
+  border-radius: 6px;
+  display: flex;
+  gap: 2px;
+}
+
+.toc-node-row:hover {
+  background: #eff6ff;
+}
+
+.toc-node-toggle {
+  align-items: center;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: #94a3b8;
+  cursor: pointer;
+  display: inline-flex;
+  flex-shrink: 0;
+  height: 22px;
+  justify-content: center;
+  padding: 0;
+  width: 18px;
+}
+
+.toc-node-toggle svg {
+  transition: transform 0.18s ease;
+}
+
+.toc-node-toggle.open svg {
+  transform: rotate(90deg);
+}
+
+.toc-node-toggle-empty {
+  cursor: default;
+}
+
+.toc-node-label {
+  background: transparent;
+  border: none;
+  color: #334155;
+  cursor: pointer;
+  flex: 1;
+  font-size: 13px;
+  line-height: 1.4;
+  min-width: 0;
+  overflow: hidden;
+  padding: 5px 6px 5px 0;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.toc-node-row:hover .toc-node-label {
+  color: #2563eb;
+}
+
+.preview-doc-toc .toc-level-1 > .toc-node-row .toc-node-label {
+  font-weight: 700;
+}
+
+.preview-doc-toc .toc-level-4 > .toc-node-row .toc-node-label,
+.preview-doc-toc .toc-level-5 > .toc-node-row .toc-node-label,
+.preview-doc-toc .toc-level-6 > .toc-node-row .toc-node-label {
+  color: #64748b;
+}
+
+.preview-doc-panes {
+  animation: preview-pane-fade 0.26s ease;
+  display: grid;
+  gap: 16px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  min-height: 0;
+  padding: 16px 20px;
+}
+
+/* Panes remount on mode change (key={mode}); fade + lift them in so the
+   split/preview/markdown switch feels smooth instead of a hard cut. */
+@keyframes preview-pane-fade {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.preview-doc-layout.mode-preview .preview-doc-panes,
+.preview-doc-layout.mode-markdown .preview-doc-panes {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.preview-doc-col {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+
+.preview-doc-col-label {
+  color: #64748b;
+  flex-shrink: 0;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.preview-doc-render-scroll {
+  background: white;
+  border: 1px solid #d9e2ec;
+  border-radius: 10px;
+  flex: 1;
+  overflow: auto;
+  padding: 32px 40px;
+}
+
+.preview-doc-render-scroll .preview {
+  border: none;
+  margin: 0 auto;
+  max-width: 720px;
+  min-height: 0;
+  padding: 0;
+}
+
+.preview-doc-edit-scroll {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 16px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.preview-doc-block {
+  display: flex;
+  flex-direction: column;
+}
+
+.preview-doc-block-label {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.preview-doc-block-index {
+  align-items: center;
+  background: #2563eb;
+  border-radius: 999px;
+  color: white;
+  display: inline-flex;
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 700;
+  height: 24px;
+  justify-content: center;
+  width: 24px;
+}
+
+.preview-title-input {
+  background: white;
+  border: 1px solid #d9e2ec;
+  border-radius: 8px;
+  color: #172033;
+  flex: 1;
+  font-size: 14px;
+  font-weight: 600;
+  min-width: 0;
+  padding: 6px 10px;
+}
+
+.preview-source {
+  background: white;
+  border: 1px solid #d9e2ec;
+  border-radius: 8px;
+  line-height: 1.55;
+  min-height: 220px;
+  padding: 14px;
+  resize: vertical;
+  width: 100%;
+}
+
+@media (max-width: 900px) {
+  .preview-doc-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .preview-doc-toc {
+    border-bottom: 1px solid #e2e8f0;
+    border-right: none;
+    max-height: 160px;
+  }
+
+  .preview-doc-panes {
+    grid-template-columns: minmax(0, 1fr);
   }
 }

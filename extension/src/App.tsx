@@ -3,6 +3,7 @@ import {
   ChevronRight,
   CloudUpload,
   Code2,
+  Columns2,
   Download,
   Eye,
   FileText,
@@ -24,7 +25,16 @@ import confetti from 'canvas-confetti';
 import { checkHealth, convertToDocx, downloadDocx, submitFeedback } from './api';
 import { createDialog, createFolder, moveDialogBetweenFolders } from './folders';
 import { MarkdownPreview } from './preview';
-import { loadFolders, loadOnboardingCompleted, saveFolders, saveOnboardingCompleted } from './storage';
+import {
+  forgetPreviewWindow,
+  getPreviewWindow,
+  loadFolders,
+  loadOnboardingCompleted,
+  rememberPreviewWindow,
+  saveFolders,
+  saveOnboardingCompleted,
+  subscribeToFolders,
+} from './storage';
 import type { MarkdownDialog, MarkdownFolder, ServiceStatus } from './types';
 
 const CONVERSION_REQUEST_FILENAME = 'md-to-word.docx';
@@ -131,7 +141,7 @@ const ONBOARDING_STEPS: OnboardingStep[] = [
   },
   {
     title: '选择导出内容和顺序',
-    body: '点击左侧圆圈加入导出队列。圆圈里的数字就是合并导出时的顺序。',
+    body: '点击左侧圆圈加入导出队列。圆圈里的数字既是合并导出的顺序,也是"全部预览"的顺序——按编号选好后点"全部预览",就会按这个顺序拼接成一份文档预览。',
     target: 'export-order',
     view: 'folder-detail',
   },
@@ -139,6 +149,12 @@ const ONBOARDING_STEPS: OnboardingStep[] = [
     title: '批量选择',
     body: '文件夹里有多个对话框时，可以一键全选或取消全选，然后按顺序合并成一个 Word 文档。',
     target: 'select-all',
+    view: 'folder-detail',
+  },
+  {
+    title: '全部预览',
+    body: '点击"预览全部"会打开一个大窗口,把选中的内容按编号顺序拼成一份完整文档预览(未选时预览整个文件夹)。',
+    target: 'preview-window',
     view: 'folder-detail',
   },
   {
@@ -220,6 +236,11 @@ export function App() {
       }
     });
   }, []);
+
+  // Sync edits made in the standalone preview window (both contexts share
+  // one chrome.storage). This keeps the side panel in step when a dialog is
+  // edited from the popup.
+  useEffect(() => subscribeToFolders(setFolders), []);
 
   useEffect(() => {
     if (!onboardingStep?.view) {
@@ -467,6 +488,68 @@ export function App() {
     setExpandedSourceDialogId('');
     setPreviewDialogId(id);
     setMessage(`正在预览 Word 格式：${dialog.title}`);
+  }
+
+  async function handleOpenPreviewWindow() {
+    if (!openFolder) {
+      setMessage('请先进入一个文件夹再预览。');
+      return;
+    }
+    const orderedIds = exportSelectionIds.length > 0 ? exportSelectionIds : openFolder.dialogs.map((d) => d.id);
+    const hasContent = orderedIds.some(
+      (id) => openFolder.dialogs.find((dialog) => dialog.id === id)?.markdown.trim(),
+    );
+    if (!hasContent) {
+      setMessage('这个文件夹还没有可预览的内容。');
+      return;
+    }
+
+    const params = new URLSearchParams({ folder: openFolder.id });
+    // Only pass an explicit selection; an empty list means "preview all".
+    if (exportSelectionIds.length > 0) {
+      params.set('dialogs', exportSelectionIds.join(','));
+    }
+    const url = `preview.html?${params.toString()}`;
+    const doneMessage =
+      exportSelectionIds.length > 0
+        ? `已在预览窗口打开选中的 ${exportSelectionIds.length} 项。`
+        : '已在预览窗口打开本文件夹全部内容。';
+
+    if (typeof chrome !== 'undefined' && chrome.windows?.create) {
+      const fullUrl = chrome.runtime.getURL(url);
+      // One preview window per folder: reuse an existing one if it is still
+      // open, refreshing its URL so a new selection takes effect, otherwise
+      // create it and remember the window/tab for next time.
+      const existing = await getPreviewWindow(openFolder.id);
+      if (existing) {
+        try {
+          await chrome.windows.get(existing.windowId);
+          if (existing.tabId != null && chrome.tabs?.update) {
+            await chrome.tabs.update(existing.tabId, { url: fullUrl });
+          }
+          await chrome.windows.update(existing.windowId, { focused: true });
+          setMessage(doneMessage);
+          return;
+        } catch {
+          // The window was closed since we stored it; fall through to create.
+          await forgetPreviewWindow(openFolder.id);
+        }
+      }
+
+      const created = await chrome.windows.create({
+        url: fullUrl,
+        type: 'popup',
+        width: 1100,
+        height: 860,
+      });
+      if (created?.id != null) {
+        await rememberPreviewWindow(openFolder.id, created.id, created.tabs?.[0]?.id);
+      }
+      setMessage(doneMessage);
+      return;
+    }
+
+    window.open(url, '_blank', 'width=1100,height=860');
   }
 
   async function handleHealthCheck() {
@@ -872,6 +955,19 @@ export function App() {
             </span>
             <strong>新建对话框</strong>
             <small>创建空白 Markdown 输入框</small>
+          </button>
+          <button
+            type="button"
+            className="action-card preview-card compact"
+            data-onboarding-target="preview-window"
+            onClick={handleOpenPreviewWindow}
+            title="在新窗口预览"
+          >
+            <span className="action-card-icon">
+              <Columns2 aria-hidden="true" size={22} />
+            </span>
+            <strong>预览全部</strong>
+            <small>{exportSelectionIds.length > 0 ? '预览选中项' : '大窗口两栏预览'}</small>
           </button>
           <label
             className="action-card upload-dropzone compact"
