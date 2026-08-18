@@ -1016,6 +1016,12 @@ Cloud，使真实 Gate 调用具备严格结构化输出、有限重试、真实
   15:41:03 UTC 立即重试返回 `429` 和 `Retry-After: 50`，证明同一身份的分钟窗口生效；
 - 维护者接受上述不记录 IP 的黑盒证据替代临时 HMAC 诊断，避免为一次性验收新增 Secret、
   IP 派生日志和再次部署；该决定不放宽解析器对单个可路由 IP 的强制校验；
+- 2026-08-19 维护者确认生产插件人工验收全部通过：首次反馈提交成功，立即重试显示限流
+  提示且不自动重试，失败后输入仍保留；测试数据清理后生产 Scheduler 已恢复运行；
+- Edge 商店补丁版本从 `0.3.2` 升至 `0.3.3`，版本源码位于
+  `extension/public/manifest.json`，`extension/dist/manifest.json` 由构建生成；Windows
+  Node 20.17.0 下 `tsc + vite build` 成功，两个 manifest 均为 `0.3.3`。发布构建已准备，
+  不在商店审核完成前声称已发布；
 - 实现未增加依赖、数据库 migration、Redis、验证码或浏览器指纹。
 
 | 阶段 | 状态 | 验收日期 | 证据 |
@@ -1027,6 +1033,6 @@ Cloud，使真实 Gate 调用具备严格结构化输出、有限重试、真实
 | E 修复与独立验证 | Completed | 2026-08-11；Mermaid 平台能力更新 2026-08-12 | 历史 Agent 217 passed/Docker 4 passed/Backend 44 passed；固定渲染器完成中文流程图“基线失败 -> 修复通过”，真实 run 最终生成 validated patch |
 | F GitHub PR | Completed | 2026-08-12 | Agent 全量回归通过；真实 App 最小权限预检通过；run `f11032d7-...` 幂等创建 PR #1，数据库与 Artifact 一致，维护者已人工合并 |
 | G 评估与投产 | Completed | 2026-08-13；公式闭环复验 2026-08-16 | 12 条真实 Gate 评估、Fake 发布 E2E、PR/Render/插件回放通过；独立 ECS Worker/Scheduler 常驻；生产 `rejected_irrelevant`、Mermaid `cannot_reproduce` 与公式自动修复 PR #2 验收通过 |
-| H 公开反馈入口 IP 限流 | Completed | 2026-08-18 | 限流/API/插件与自动测试完成；生产 Docker 后端全量 71 passed；Render 黑盒验证伪造头不能绕过、Wi-Fi/手机身份不同、分钟窗口与 `Retry-After` 正确 |
+| H 公开反馈入口 IP 限流 | Completed | 2026-08-18；插件人工验收 2026-08-19 | 限流/API/插件与自动测试完成；生产 Docker 后端全量 71 passed；Render 黑盒验证伪造头不能绕过、Wi-Fi/手机身份不同、分钟窗口与 `Retry-After` 正确；插件限流提示与输入保留人工验收通过，`0.3.3` 发布构建已准备 |
 
 状态只在完成对应验收后更新。已有代码不因存在文件或历史提交自动视为通过。

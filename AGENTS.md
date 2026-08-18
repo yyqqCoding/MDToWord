@@ -152,6 +152,17 @@ Backend deploys to Render from `backend/`.
 
 Extension is not deployed to Render. Build and load `extension/dist` in browser extensions.
 
+### Extension Store Release
+
+- Edge/Chrome 商店版本的唯一源码是 `extension/public/manifest.json`；
+  `extension/dist/manifest.json` 是构建结果，不得只修改后者。
+- 发布前运行 `cd extension && npm run build`，并确认源码 manifest 与
+  `extension/dist/manifest.json` 的 `version` 完全一致。
+- `extension/dist/` 和压缩包是被 Git 忽略的发布产物，不纳入提交。商店压缩包由维护者
+  从 `extension/dist` 的内容生成，确保 `manifest.json` 位于压缩包根目录。
+- 只有商店审核并实际上架后才能在文档中写“已发布”；构建完成但尚未上传时记录为
+  “发布构建已准备”。
+
 Docker 有两个互相独立的用途：
 
 - Render 根据 `backend/Dockerfile` 构建并运行公开转换后端，容器内包含 Pandoc、Mermaid
