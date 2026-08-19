@@ -1,8 +1,9 @@
 import asyncio
-from copy import deepcopy
 import json
 import logging
+import math
 from collections.abc import Awaitable, Callable
+from copy import deepcopy
 from decimal import Decimal
 from typing import Any
 
@@ -180,6 +181,7 @@ class OpenAICompatibleProvider:
             },
         }
         for attempt in range(self._max_transport_retries + 1):
+            response: httpx.Response | None = None
             try:
                 response = await self._client.post(
                     self._endpoint,
@@ -213,7 +215,7 @@ class OpenAICompatibleProvider:
             if not retryable or attempt >= self._max_transport_retries:
                 raise error
             # 本地兼容网关的上游 5xx 往往持续数秒；短于 1 秒的重试只会重复击中故障窗。
-            await self._sleep(min(1.0 * (4**attempt), 10.0))
+            await self._sleep(_transport_retry_delay(attempt, response))
 
         raise AssertionError("transport retry loop must return or raise")
 
@@ -316,6 +318,27 @@ def _http_error(response: httpx.Response) -> ModelProviderError:
     return InvalidModelResponseError(
         f"model request was rejected with status {status}"
     )
+
+
+def _transport_retry_delay(
+    attempt: int,
+    response: httpx.Response | None,
+) -> float:
+    """使用有界退避；429若给出秒数形式 Retry-After，则尊重更长等待。"""
+
+    delay = min(1.0 * (4**attempt), 10.0)
+    if response is None or response.status_code != 429:
+        return delay
+    raw = response.headers.get("Retry-After")
+    if raw is None:
+        return delay
+    try:
+        requested = float(raw)
+    except ValueError:
+        return delay
+    if not math.isfinite(requested) or requested < 0:
+        return delay
+    return min(max(delay, requested), 10.0)
 
 
 def _detail_tokens(usage: dict[str, object], group: str, name: str) -> int:

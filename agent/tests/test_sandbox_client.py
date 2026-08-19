@@ -82,3 +82,66 @@ def test_http_sandbox_client_never_echoes_worker_response_body():
             return str(exc_info.value)
 
     assert "do-not-print" not in asyncio.run(scenario())
+
+
+def test_http_sandbox_client_retries_transient_failure_with_same_job_id():
+    submission = _submission()
+    seen_keys: list[str] = []
+    delays: list[float] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen_keys.append(request.headers["idempotency-key"])
+        if len(seen_keys) == 1:
+            return httpx.Response(503, text="temporary")
+        now = datetime.now(UTC)
+        result = SandboxResult(
+            job_id=submission.job.job_id,
+            status=SandboxStatus.COMPLETED,
+            exit_code=0,
+            started_at=now,
+            finished_at=now,
+            duration_ms=0,
+        )
+        return httpx.Response(200, json=result.model_dump(mode="json"))
+
+    async def record_sleep(seconds: float) -> None:
+        delays.append(seconds)
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            sandbox = HttpSandboxClient(
+                "http://sandbox.internal",
+                credential="worker-secret",
+                client=client,
+                sleep=record_sleep,
+            )
+            return await sandbox.submit(submission)
+
+    result = asyncio.run(scenario())
+
+    assert result.job_id == submission.job.job_id
+    assert seen_keys == [str(submission.job.job_id)] * 2
+    assert delays == [0.5]
+
+
+def test_http_sandbox_client_does_not_retry_invalid_success_body():
+    requests = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        del request
+        requests += 1
+        return httpx.Response(200, text="not-a-sandbox-result")
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            sandbox = HttpSandboxClient(
+                "http://sandbox.internal",
+                credential="worker-secret",
+                client=client,
+            )
+            with pytest.raises(SandboxUnavailableError):
+                await sandbox.submit(_submission())
+
+    asyncio.run(scenario())
+    assert requests == 1

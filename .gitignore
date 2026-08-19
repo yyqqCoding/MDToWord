@@ -224,5 +224,6 @@ __marimo__/
 
 # Project docs (local only)
 docs/*
+!docs/AgentGuide/
 !docs/AgentRequirements/
 !docs/AgentProblem/

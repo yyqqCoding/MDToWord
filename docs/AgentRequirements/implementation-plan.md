@@ -1024,6 +1024,29 @@ Cloud，使真实 Gate 调用具备严格结构化输出、有限重试、真实
   不在商店审核完成前声称已发布；
 - 实现未增加依赖、数据库 migration、Redis、验证码或浏览器指纹。
 
+### 2026-08-20 小范围健壮性维护
+
+**状态：实现、Agent全量回归与真实Docker隔离验证完成**
+
+- 四份提示词补充“只使用输入事实、区分普通技术文字与注入、测试必须因用户可观察行为
+  失败、修复不得针对测试名/反馈ID/完整样例硬编码”等规则，版本更新为`gate-v8`、
+  `reproduction-plan-v4`、`test-generation-v5`和`fix-generation-v4`；没有增加工具或可写
+  范围；
+- 模型Provider在原有1秒/4秒有界退避上支持数值`Retry-After`，仅用于429且最多等待10秒；
+  非法、负数和超限值不能让单并发Scheduler无限等待；
+- Sandbox Worker HTTP入口改为在读取和解析最多71 MB请求体前校验Bearer认证；
+  Sandbox Client对连接异常和408/429/5xx默认额外重试一次，始终复用同一`job_id`与
+  `Idempotency-Key`，无效200、认证、非法请求和冲突不重试；
+- 新增Provider `Retry-After`、Sandbox同ID重试、无效成功响应不重试和Worker认证早于JSON
+  解析的聚焦测试。Provider/Client/Worker/HTTP为22 passed，分类、复现、修复与补丁Policy
+  回归为95 passed，本次相关聚焦验证合计117 passed，Agent compileall通过；
+- 根`.venv`已从Windows解释器恢复为WSL/Linux CPython 3.11.15；实际虚拟环境放在WSL
+  文件系统，项目内`.venv`保持为入口，依赖按`uv.lock`和`dev`可选组安装。此前受Windows
+  权限语义影响的严格umask、目录/文件权限和符号链接测试均已通过；
+- 使用当前`agent/sandbox/Dockerfile`构建本地镜像，并以不可变`sha256`镜像ID运行真实
+  Docker集成测试，5 passed；随后携带同一镜像ID执行Agent完整测试，结果为314 passed，
+  无failure或skipped，`python -m compileall -q agent`通过。
+
 | 阶段 | 状态 | 验收日期 | 证据 |
 |---|---|---|---|
 | A 基线、配置与持久化 | Implemented | 2026-08-10 | Agent 30 passed；Backend 42 passed；Supabase migration/RLS/RPC/claim 验收通过 |

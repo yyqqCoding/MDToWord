@@ -21,8 +21,8 @@ from agent.tools.source import SourceFileResult
 from agent.workspace.edits import Edit, EditMode
 
 
-REPRODUCTION_PLAN_PROMPT_VERSION = "reproduction-plan-v3"
-TEST_GENERATION_PROMPT_VERSION = "test-generation-v4"
+REPRODUCTION_PLAN_PROMPT_VERSION = "reproduction-plan-v4"
+TEST_GENERATION_PROMPT_VERSION = "test-generation-v5"
 DEFAULT_REPRODUCTION_TIMEOUT_SECONDS = 180.0
 
 

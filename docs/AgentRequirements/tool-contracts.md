@@ -233,6 +233,10 @@ Worker 对已完成 `job_id` 持久化结构化结果；相同请求重试直接
 容器。运行时 workspace diff 与授权补丁不一致时返回 `security_rejected`，不能把该次
 执行结果交给后续验证器。
 
+Controller侧Sandbox Client对连接异常或Worker返回408、429、5xx默认只额外重试一次，
+且必须复用相同`job_id`和`Idempotency-Key`。无效200响应、401、400和409不重试，避免把
+确定性错误变成重复请求。
+
 ## 8. 最终验证结果
 
 `ValidationResult` 是 Publisher 唯一接受的发布凭据：

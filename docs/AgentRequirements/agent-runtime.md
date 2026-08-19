@@ -240,11 +240,13 @@ context_too_large, provider_unavailable, safety_refusal
 ```
 
 认证错误不重试；限流和短暂故障指数退避有限重试；非法结构只做一次格式修正。
+429响应带秒数形式`Retry-After`时，Provider在10秒上限内尊重更长等待；非法或负数使用
+本地退避，超过10秒则截断为10秒，避免单次模型调用无限占住单并发Scheduler。
 
-阶段 B3 已实现 OpenAI 兼容 Chat Completions Provider。Gate 使用
-`response_format=json_schema` 和 `strict=true`，Prompt 版本为 `gate-v2`，并始终传入空
-工具集合。Provider 真实 usage 累计到 `agent_runs`；若响应不含成本，则按本地配置单价
-估算，未配置单价时成本保持 `0`。
+当前OpenAI兼容Chat Completions Provider使用`response_format=json_schema`和
+`strict=true`，并始终传入空工具集合。当前Prompt版本为`gate-v8`、
+`reproduction-plan-v4`、`test-generation-v5`和`fix-generation-v4`。Provider真实usage
+累计到`agent_runs`；若响应不含成本，则按本地配置单价估算，未配置单价时成本保持`0`。
 
 ## 9. 预算与停止条件
 

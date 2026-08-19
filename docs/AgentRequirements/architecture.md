@@ -27,9 +27,9 @@ Sandbox Worker。CLI 默认仍只执行 Gate；维护者显式使用 `--reproduc
 `--repair` 执行完整 D+E，使用 `--publish` 才允许 GitHub App 执行完整 D+E+F。
 生产 Scheduler 另受默认关闭的投产开关保护；系统始终不自动合并或部署。
 
-当前 Render 只部署公开转换后端；Agent Controller 与 Sandbox Worker 尚未作为 Render
-服务部署。开发环境的 Worker 使用本地 Docker Desktop/WSL，常驻自动处理反馈时应改为
-独立私有主机上的 Docker Engine 和内网 Worker。详见
+当前 Render 只部署公开转换后端；Agent Controller 与 Sandbox Worker 不作为 Render
+服务部署。生产环境已将 Scheduler 与 Worker 部署到独立私有 Linux ECS，Worker 只监听
+本机端口并使用该主机的 Docker Engine；开发环境仍使用本地 Docker Desktop/WSL。详见
 [deployment-and-operations.md](deployment-and-operations.md)。
 
 ## 2. 部署单元

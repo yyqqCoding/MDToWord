@@ -224,6 +224,9 @@ Controller 在执行前按固定顺序检查：
 Sandbox Worker部署在独立Linux执行环境，通过内部认证接口接收Controller Job。
 接口不暴露公网，不接受命令字符串。每个Job使用新容器和新workspace，结束后销毁。
 
+Worker HTTP入口必须在读取和解析请求体之前校验Bearer认证；未认证请求不得触发JSON或
+Base64大对象解析。请求体仍有71 MB硬上限，认证通过后再校验Job Schema、过期时间和哈希。
+
 阶段 C 的 Worker 使用独立启动入口，只读取 `SANDBOX_*` 配置；不得把 Supabase、模型、
 Langfuse 或 GitHub 凭据注入 Worker 进程。Controller 与 Worker 共享的内部认证凭据只
 用于 `/v1/jobs`，不进入任务容器。
@@ -261,6 +264,8 @@ Langfuse 或 GitHub 凭据注入 Worker 进程。Controller 与 Worker 共享的
 - 测试前后的 workspace diff 必须与已授权 patch 集合一致，运行时文件篡改视为
   `security_rejected`；
 - 最终验证必须使用与修复循环不同的新容器。
+- Controller遇到连接异常或408、429、5xx时，只允许使用相同`job_id`和幂等键进行一次
+  有界重试；认证、冲突、非法请求或无效成功响应不得重试。
 
 ## 10. 密钥与GitHub
 

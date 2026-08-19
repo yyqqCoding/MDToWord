@@ -12,7 +12,6 @@ from agent.domain.errors import (
     SandboxAuthenticationError,
     SandboxJobConflictError,
 )
-from agent.sandbox.docker_runner import DockerRunner
 from agent.sandbox.worker import FileJobStore, SandboxWorker
 
 
@@ -29,6 +28,12 @@ class WorkerRequestHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         if self.path != "/v1/jobs":
             self._send(HTTPStatus.NOT_FOUND, {"error": "not_found"})
+            return
+        try:
+            # 先认证再读取和解析最多 71 MB 的 Base64 请求体。
+            self.server.worker.authenticate(self.headers.get("Authorization"))
+        except SandboxAuthenticationError as exc:
+            self._send(HTTPStatus.UNAUTHORIZED, {"error": exc.error_code})
             return
         length_text = self.headers.get("Content-Length", "")
         try:
@@ -47,9 +52,6 @@ class WorkerRequestHandler(BaseHTTPRequestHandler):
                 payload,
                 idempotency_key=self.headers.get("Idempotency-Key"),
             )
-        except SandboxAuthenticationError as exc:
-            self._send(HTTPStatus.UNAUTHORIZED, {"error": exc.error_code})
-            return
         except SandboxJobConflictError as exc:
             self._send(HTTPStatus.CONFLICT, {"error": exc.error_code})
             return
@@ -81,6 +83,9 @@ class WorkerRequestHandler(BaseHTTPRequestHandler):
 
 def build_server(environ: dict[str, str] | None = None) -> WorkerHTTPServer:
     """只读取 SANDBOX_* 配置组装 Worker，避免业务 Secret 进入执行边界。"""
+
+    # 请求处理器的单元测试不需要加载Docker和观测适配器；真正组装Worker时再导入。
+    from agent.sandbox.docker_runner import DockerRunner
 
     values = environ if environ is not None else cast(dict[str, str], os.environ)
     credential = values.get("SANDBOX_WORKER_CREDENTIAL", "")

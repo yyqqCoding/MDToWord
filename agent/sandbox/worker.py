@@ -100,6 +100,13 @@ class SandboxWorker:
         self._store = store
         self._lock = threading.RLock()
 
+    def authenticate(self, authorization: str | None) -> None:
+        """在解析请求体前也可调用，避免未认证请求消耗大对象解析资源。"""
+
+        supplied = authorization or ""
+        if not hmac.compare_digest(supplied, self._expected_authorization):
+            raise SandboxAuthenticationError("sandbox worker authentication failed")
+
     def execute(
         self,
         authorization: str | None,
@@ -107,10 +114,8 @@ class SandboxWorker:
         *,
         idempotency_key: str | None = None,
     ) -> SandboxResult:
-        supplied = authorization or ""
         # 必须先认证再解析大体积 JSON/Base64，避免未授权请求消耗解析资源。
-        if not hmac.compare_digest(supplied, self._expected_authorization):
-            raise SandboxAuthenticationError("sandbox worker authentication failed")
+        self.authenticate(authorization)
         artifacts = SandboxArtifacts.from_wire(payload)
         if idempotency_key is not None and idempotency_key != str(artifacts.job.job_id):
             raise SandboxJobConflictError("idempotency key does not match job id")

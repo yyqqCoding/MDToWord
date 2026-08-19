@@ -230,6 +230,48 @@ def test_transient_provider_failure_uses_bounded_backoff_before_success():
     assert delays == [1.0, 4.0]
 
 
+def test_rate_limit_respects_bounded_retry_after_seconds():
+    request_count = 0
+    delays: list[float] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal request_count
+        del request
+        request_count += 1
+        if request_count == 1:
+            return httpx.Response(
+                429,
+                headers={"Retry-After": "7"},
+                json={"error": {"message": "slow down"}},
+            )
+        return httpx.Response(
+            200,
+            json=_response(json.dumps(_classification_payload())),
+        )
+
+    async def record_sleep(seconds: float) -> None:
+        delays.append(seconds)
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await _run_async(
+                OpenAICompatibleProvider(
+                    api_key="secret",
+                    model="model",
+                    base_url="https://models.example/v1",
+                    client=client,
+                    max_transport_retries=1,
+                    sleep=record_sleep,
+                )
+            )
+
+    result = asyncio.run(scenario())
+
+    assert result.output.intent.value == "bug_report"
+    assert request_count == 2
+    assert delays == [7.0]
+
+
 @pytest.mark.parametrize(
     ("status", "expected_error"),
     [(401, ModelAuthError), (429, ModelRateLimitError)],

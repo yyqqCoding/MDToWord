@@ -4,6 +4,10 @@
 Agent 服务自动判断、复现并修复后端缺陷，在隔离沙箱中完成确定性验证，最后向
 GitHub 创建 Pull Request，由维护者人工审核和合并。
 
+如果希望先按实际运行顺序理解系统，或准备面试讲解，可以阅读
+[AgentGuide](../AgentGuide/README.md)。AgentGuide使用直白语言解释当前实现，但不替代本目录
+的接口、安全规则和验收标准。
+
 ## 已确认决策
 
 - Agent 运行在自建服务中，不使用 GitHub Actions 执行任务；

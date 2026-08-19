@@ -13,7 +13,7 @@ from agent.providers.base import ModelMessage, ModelProvider, StructuredModelRes
 from agent.tools.source import SourceFileResult
 
 
-FIX_GENERATION_PROMPT_VERSION = "fix-generation-v3"
+FIX_GENERATION_PROMPT_VERSION = "fix-generation-v4"
 DEFAULT_REPAIR_TIMEOUT_SECONDS = 180.0
 
 
