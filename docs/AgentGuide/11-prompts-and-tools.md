@@ -201,3 +201,38 @@ Gate节点              → 没有工具
 - [Provider结构化输出](../../agent/providers/openai_compatible.py)
 - [工具授权表](../../agent/tools/authorization.py)
 - [本地Policy](../../agent/workspace/patch_policy.py)
+
+## 9. 结合源码看当前模型调用方式
+
+当前Provider在[agent/providers/openai_compatible.py](../../agent/providers/openai_compatible.py)
+中强制使用严格JSON Schema：
+
+```python
+request_body = {
+    "model": self.model,
+    "messages": messages,
+    "response_format": {
+        "type": "json_schema",
+        "json_schema": {
+            "name": _schema_name(response_schema),
+            "strict": True,
+            "schema": _strict_response_schema(response_schema),
+        },
+    },
+}
+```
+
+而且当前端口不接受模型工具名：
+
+```python
+if tools:
+    raise InvalidModelResponseError(
+        "openai-compatible structured provider does not accept tool names"
+    )
+```
+
+因此当前不是“把六个工具全部交给模型，让模型自己挑”。实际流程是Graph先确定节点，节点
+按本地授权调用源码读取、编辑或Sandbox，模型只返回该节点要求的结构化计划或编辑。
+
+格式错误时Provider只把脱敏后的字段错误追加给模型，再完整生成一次；业务跨字段规则则由
+`reproduction.py`、`repair.py`和Patch Policy继续检查。两种重试不要混为一谈。

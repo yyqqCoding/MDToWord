@@ -88,3 +88,33 @@ Supabase，避免数据库延迟阻塞其他请求。
 - [extension/src/api.ts](../../extension/src/api.ts)
 - [backend/app/main.py](../../backend/app/main.py)
 - [backend/app/feedback_rate_limit.py](../../backend/app/feedback_rate_limit.py)
+
+## 7. 结合源码看反馈入口
+
+插件在[extension/src/api.ts](../../extension/src/api.ts)的`submitFeedback()`中发起普通HTTP
+请求。它不会直接连接Supabase：
+
+```typescript
+const response = await fetch(`${trimTrailingSlash(serviceUrl)}/feedback`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(payload),
+});
+```
+
+Render后端在[backend/app/main.py](../../backend/app/main.py)的`feedback()`中先取得可信IP，
+再消费限流额度，最后才调用Supabase写入函数：
+
+```python
+ip_key = resolve_cloudflare_client_ip(
+    request.headers.get("CF-Connecting-IP")
+)
+decision = await limiter.consume(ip_key)
+if not decision.allowed:
+    return JSONResponse(status_code=429, ...)
+
+await _insert_feedback(payload)
+```
+
+这里的顺序很重要：超限请求不会进入`_insert_feedback()`。限流实现和方案选择见
+[反馈入口限流](15-feedback-rate-limiting.md)。

@@ -146,3 +146,37 @@ UMask=0077
 - [补丁Policy](../../agent/workspace/patch_policy.py)
 - [安全权威要求](../AgentRequirements/security-and-sandbox.md)
 - [生产systemd配置](../../deploy/agent/systemd)
+
+## 10. 结合源码看三层权限
+
+第一层是节点工具表：[agent/tools/authorization.py](../../agent/tools/authorization.py)
+
+```python
+_AUTHORIZED = {
+    ToolNode.GATE: frozenset(),
+    ToolNode.REPRODUCTION_INSPECT: frozenset(
+        {ToolName.SEARCH_SOURCE, ToolName.READ_SOURCE_FILE}
+    ),
+    ToolNode.TEST_EDIT: frozenset({ToolName.SUBMIT_TEST_EDITS}),
+    ToolNode.FIX_EDIT: frozenset({ToolName.SUBMIT_FIX_EDITS}),
+}
+```
+
+第二层是路径Policy：[agent/workspace/patch_policy.py](../../agent/workspace/patch_policy.py)
+
+```python
+normalized = normalize_repository_path(path)
+if phase == "test":
+    allowed = normalized in self._test_exact or _has_prefix(
+        normalized, self._test_prefixes
+    )
+elif phase == "fix":
+    allowed = normalized in self._fix_exact
+if not allowed:
+    raise PatchPolicyError("edit path is not allowed for this phase")
+```
+
+第三层是操作系统权限。例如
+[mdtoword-worker.service](../../deploy/agent/systemd/mdtoword-worker.service)使用独立用户、
+`ProtectSystem=strict`、`NoNewPrivileges=true`和唯一可写目录。模型提示词、Python Policy和
+systemd分别解决不同层次的问题，不能互相替代。

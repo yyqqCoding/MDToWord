@@ -111,3 +111,41 @@ PRODUCTION_SCHEDULER_ENABLED=true
 - [Supabase Repository](../../agent/repositories/supabase.py)
 - [领取函数Migration](../../agent/migrations/001_agent_foundation.sql)
 - [Scheduler systemd服务](../../deploy/agent/systemd/mdtoword-scheduler.service)
+
+## 8. 结合源码看领取顺序
+
+[agent/scheduler.py](../../agent/scheduler.py)的`_claim_and_run()`把“先恢复、再领取、单并发”
+写成了明确顺序：
+
+```python
+async with self._run_lock:
+    resumable = await self._run_repository.find_resumable()
+    if resumable is not None:
+        return await self._controller.resume(resumable.id)
+
+    claimed = await self._feedback_repository.claim_next(
+        now=datetime.now(UTC),
+        lease_seconds=self._lease_seconds,
+        max_attempts=self._max_attempts,
+    )
+    if claimed is None:
+        return None
+    return await self._controller.start(claimed)
+```
+
+常驻轮询也不是Linux cron，而是同一服务里的循环：
+
+```python
+while not stop_event.is_set():
+    await self.run_once()
+    try:
+        await asyncio.wait_for(
+            stop_event.wait(),
+            timeout=self._poll_interval_seconds,
+        )
+    except TimeoutError:
+        continue
+```
+
+真正的并发领取由[001_agent_foundation.sql](../../agent/migrations/001_agent_foundation.sql)中的
+数据库函数完成；Python锁只保证当前Scheduler单并发，不能代替数据库行锁。

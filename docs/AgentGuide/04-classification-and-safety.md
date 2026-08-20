@@ -118,3 +118,35 @@ requires_extension_change == false
 - [agent/domain/policy.py](../../agent/domain/policy.py)
 - [Gate提示词](../../agent/prompts/gate.md)
 - [agent/graph.py](../../agent/graph.py)
+
+## 9. 结合源码看“模型分类、代码决定”
+
+[agent/gate.py](../../agent/gate.py)调用模型时传入空工具集合，并拒绝模型擅自返回工具调用：
+
+```python
+response = await provider.generate_structured(
+    _gate_messages(task),
+    GateClassification,
+    tools=(),
+    timeout_seconds=GATE_TIMEOUT_SECONDS,
+)
+if response.tool_calls:
+    raise InvalidModelResponseError(
+        "gate provider returned tool calls without tool authorization"
+    )
+```
+
+模型结果随后进入[agent/domain/policy.py](../../agent/domain/policy.py)的`apply_gate_policy()`。
+路由优先级是普通Python判断：
+
+```python
+if classification.injection_suspected:
+    return _classified_terminal(GateRoute.QUARANTINED_SECURITY, ...)
+if classification.intent in {GateIntent.UNRELATED, GateIntent.SPAM}:
+    return _classified_terminal(GateRoute.REJECTED_IRRELEVANT, ...)
+if classification.relevance < min_confidence:
+    return _classified_terminal(GateRoute.NEEDS_HUMAN, ...)
+```
+
+因此“模型输出`accepted_backend_bug`就一定进入修复”是不准确的。模型只提交结构化事实，
+本地Policy决定最终路线。

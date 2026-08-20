@@ -143,3 +143,33 @@ validated_patch_sha256, pr_url, error_code
 - 不要说“Agent自动合并和部署”，它只创建PR；
 - 不要说“Langfuse保存业务状态”，Supabase才是事实来源；
 - 不要说“网站逐节点实时更新”，它是运行结束后的推送触发读取。
+
+## 19. 面试时怎样结合源码讲
+
+不要从几千行`graph.py`第一行开始读。选一条主线，每说一个设计就展示一段能直接证明它的
+代码：
+
+| 要说明的设计 | 打开的函数 |
+|---|---|
+| 先恢复再领取、单并发 | [scheduler.py](../../agent/scheduler.py)的`_claim_and_run()` |
+| 模型没有Gate工具 | [gate.py](../../agent/gate.py)的`execute_feedback_gate()` |
+| 状态图由代码控制 | [graph.py](../../agent/graph.py)的`build_gate_graph()` |
+| 模型只提交结构化编辑 | [reproduction.py](../../agent/reproduction.py)的`generate_reproduction_test()` |
+| Docker无网络、非root | [docker_runner.py](../../agent/sandbox/docker_runner.py)的`_docker_argv()` |
+| 最终补丁绑定哈希 | [validation.py](../../agent/workspace/validation.py)的`materialize_validated_files()` |
+| PR幂等和基线检查 | [github.py](../../agent/publishing/github.py)的`publish()` |
+
+例如回答“是ReAct还是Plan-and-Execute”时，可以直接展示下面两处：
+
+```python
+# 先生成结构化复现计划
+response = await provider.generate_structured(
+    messages, ReproductionPlan, tools=(), timeout_seconds=timeout_seconds
+)
+
+# 执行后由固定条件边决定修订还是结束
+return "revise" if state.reproduction_round < 2 else "finish"
+```
+
+因此准确说法是“LangGraph编排的受控Plan–Execute，加最多两轮的反馈修订循环”，而不是
+“直接调用了一个通用ReAct Agent”。

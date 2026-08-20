@@ -167,3 +167,39 @@ Worker在全新Docker容器中执行固定pytest命令。Agent主进程只根据
 - [agent/tools/source.py](../../agent/tools/source.py)
 - [agent/tools/edits.py](../../agent/tools/edits.py)
 - [agent/graph.py](../../agent/graph.py)
+
+## 11. 结合源码看复现循环
+
+[agent/reproduction.py](../../agent/reproduction.py)的`plan_reproduction()`先让模型返回
+`ReproductionPlan`，但仍不给模型工具：
+
+```python
+response = await provider.generate_structured(
+    messages,
+    ReproductionPlan,
+    tools=(),
+    timeout_seconds=timeout_seconds,
+)
+_reject_model_tool_calls(response)
+response.output.validate_source_paths(allowed_source_paths)
+response.output.validate_task_oracle(task)
+```
+
+计划通过后，[agent/graph.py](../../agent/graph.py)中的`generate_test_edit()`才按
+`plan.files_to_read`读取源码。也就是说，模型先声明要看哪些文件，受信代码再检查路径并读取，
+不是模型拿到仓库后自由浏览。
+
+最多两轮由条件边直接限制：
+
+```python
+def route_after_reproduction(state: AgentState) -> str:
+    if report.disposition in {
+        ReproductionDisposition.REPRODUCED,
+        ReproductionDisposition.SECURITY_REJECTED,
+    }:
+        return "finish"
+    return "revise" if state.reproduction_round < 2 else "finish"
+```
+
+这段流程具有“执行、观察、修订”的ReAct特点，但不是预置ReAct Agent：模型不选择工具，
+执行和条件边都由Graph控制。

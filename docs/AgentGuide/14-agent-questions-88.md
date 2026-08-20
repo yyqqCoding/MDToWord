@@ -537,6 +537,11 @@ Word查看。只有这些证据分别成立，才能说明完整链路正常。
 
 ## 代码入口
 
+阅读这88个问题时，不需要相信文档结论。可以用下面的入口检查回答是否仍符合当前实现。
+最关键的判断方法是看“模型调用时传了什么”和“条件边由谁返回”。例如Gate源码明确传
+`tools=()`，Graph源码明确由Python函数返回`revise/finish/publish`，这两处可以直接证明模型
+既不能自由拿工具，也不能决定状态跳转。
+
 - [LangGraph State](../../agent/state.py)
 - [LangGraph节点](../../agent/graph.py)
 - [Scheduler](../../agent/scheduler.py)
@@ -548,3 +553,5 @@ Word查看。只有这些证据分别成立，才能说明完整链路正常。
 - [Docker Runner](../../agent/sandbox/docker_runner.py)
 - [发布模块](../../agent/publishing/github.py)
 - [追踪网站通知](../../agent/operations/site_notify.py)
+- [反馈入口限流](../../backend/app/feedback_rate_limit.py)
+- [反馈API](../../backend/app/main.py)

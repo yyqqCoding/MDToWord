@@ -115,3 +115,36 @@ Render部署main的新版本
 - [agent/publishing](../../agent/publishing)
 - [agent/graph.py](../../agent/graph.py)
 - [GitHub发布测试](../../agent/tests/test_github_publisher.py)
+
+## 8. 结合源码看幂等发布
+
+[agent/publishing/github.py](../../agent/publishing/github.py)的`publish()`先用固定分支和隐藏
+marker查找已有PR，再检查`main`是否仍等于验证时的`base_sha`：
+
+```python
+branch = _branch_name(request)
+marker = _publication_marker(request)
+
+existing = await self._find_existing_pull(branch, marker, headers)
+if existing is not None:
+    return existing
+
+current_sha = await self._read_ref_sha(self._main_branch, headers)
+if current_sha != request.validation.base_sha:
+    return PublicationResult(
+        disposition=PublicationDisposition.STALE_BASE,
+        branch=branch,
+    )
+```
+
+marker同时绑定反馈ID和已验证补丁哈希：
+
+```python
+return (
+    "<!-- mdtoword-agent "
+    f"feedback={request.feedback_id} "
+    f"patch={request.validation.validated_patch_sha256} -->"
+)
+```
+
+所以网络超时后恢复时不会只按PR标题猜测，而是用确定性分支和补丁哈希确认是不是同一次发布。

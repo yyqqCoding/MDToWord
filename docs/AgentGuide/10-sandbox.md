@@ -235,3 +235,40 @@ stdout和stderr分别最多4 KiB，并清理控制字符和疑似密钥。Agent�
 - [Job和Result结构](../../agent/sandbox/contracts.py)
 - [Sandbox镜像](../../agent/sandbox/Dockerfile)
 - [真实Docker测试](../../agent/tests/test_docker_integration.py)
+
+## 13. 结合源码看Docker限制
+
+[agent/sandbox/docker_runner.py](../../agent/sandbox/docker_runner.py)没有拼接Shell字符串，而是
+生成固定参数数组：
+
+```python
+return (
+    self._docker_binary, "run", "--rm",
+    f"--name={container_name}",
+    "--network=none",
+    "--read-only",
+    "--cap-drop=ALL",
+    "--security-opt=no-new-privileges",
+    f"--memory={job.limits.memory_bytes}",
+    f"--cpus={job.limits.cpus}",
+    f"--pids-limit={job.limits.pids}",
+    "--user=65532:65532",
+    self._image_digest,
+    *command,
+)
+```
+
+`command`也由`JobType`映射为固定pytest或compileall命令，Job结构里没有任意命令字段。
+
+[agent/sandbox/worker.py](../../agent/sandbox/worker.py)用`job_id`和请求指纹保证幂等：
+
+```python
+stored = self._store.read(artifacts.job.job_id)
+if stored is not None:
+    if stored.request_fingerprint != fingerprint:
+        raise SandboxJobConflictError(...)
+    return stored.result
+```
+
+因此Controller因网络失败用同一`job_id`重试时，Worker返回已有结果；如果有人复用ID但改变
+补丁内容，则直接冲突，不会执行第二份任务。

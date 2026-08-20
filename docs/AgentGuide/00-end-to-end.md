@@ -128,3 +128,41 @@ Render部署
 ```
 
 保留人工合并是刻意设计：自动测试可以检查DOCX结构，但不能完全替代在Word中查看版式。
+
+## 7. 结合源码看主流程
+
+主流程定义在[agent/graph.py](../../agent/graph.py)的`build_gate_graph()`。下面只保留节点注册和
+连线，可以直接看出模型没有控制整个流程，流程由LangGraph固定：
+
+```python
+builder = StateGraph(AgentState)
+builder.add_node("start_gate", start_gate)
+builder.add_node("classify_gate", classify_gate)
+builder.add_node("route_feedback", route_feedback)
+
+builder.add_node("prepare_source", prepare_source)
+builder.add_node("plan_reproduction", create_reproduction_plan)
+builder.add_node("generate_test_edit", generate_test_edit)
+builder.add_node("run_reproduction_in_sandbox", run_reproduction_in_sandbox)
+builder.add_node("classify_reproduction", classify_reproduction)
+```
+
+修复阶段继续在同一张图中注册`generate_fix_edit`、`run_target_validation`、
+`validate_final`和`publish_pull_request`。条件边也是Python函数返回固定名称，不是模型生成
+下一个节点：
+
+```python
+builder.add_conditional_edges(
+    "classify_reproduction",
+    route_after_reproduction,
+    {"revise": "generate_test_edit", "finish": "finish_reproduction"},
+)
+```
+
+阅读源码时建议按这个顺序：
+
+1. [backend/app/main.py](../../backend/app/main.py)的`feedback()`：反馈怎样写入Supabase；
+2. [agent/scheduler.py](../../agent/scheduler.py)的`run_once()`：Agent怎样领取；
+3. [agent/graph.py](../../agent/graph.py)的`build_gate_graph()`：状态怎样流转；
+4. [agent/sandbox/docker_runner.py](../../agent/sandbox/docker_runner.py)的`execute()`：怎样验证；
+5. [agent/publishing/github.py](../../agent/publishing/github.py)的`publish()`：怎样创建PR。

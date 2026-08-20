@@ -188,3 +188,38 @@ Scheduler启动后先调用`find_resumable()`。发现未完成运行后：
 - [agent/state.py](../../agent/state.py)
 - [agent/graph.py](../../agent/graph.py)
 - [agent/controller.py](../../agent/controller.py)
+
+## 8. 结合源码看State和Checkpoint
+
+[agent/state.py](../../agent/state.py)中的`AgentState`只保存小字段和文件引用：
+
+```python
+class AgentState(BaseModel):
+    run_id: UUID
+    feedback_id: UUID
+    claim_token: UUID
+    status: AgentRunStatus
+    base_sha: str | None = None
+    task_artifact_ref: str | None = None
+    source_snapshot_ref: str | None = None
+    test_patch_ref: str | None = None
+    fix_patch_ref: str | None = None
+    reproduction_round: int = Field(default=0, ge=0)
+    repair_round: int = Field(default=0, ge=0)
+```
+
+可以看到用户Markdown、源码压缩包和补丁正文没有直接放进State，而是保存`*_ref`。
+
+Graph编译时注入checkpointer：[agent/graph.py](../../agent/graph.py)
+
+```python
+return builder.compile(
+    checkpointer=checkpointer,
+    interrupt_after=list(interrupt_after) if interrupt_after else None,
+    name="feedback-agent",
+)
+```
+
+恢复入口在[agent/controller.py](../../agent/controller.py)的`resume()`。它先读取原
+`agent_runs`，再使用同一个`run_id`继续Graph；发布失败还会只重开发布状态，不重新运行模型
+和Sandbox。

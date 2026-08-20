@@ -131,3 +131,39 @@ Publisher不会重新相信模型输出，也不会随意组合之前的文件�
 - [agent/domain/repair.py](../../agent/domain/repair.py)
 - [agent/workspace/validation.py](../../agent/workspace/validation.py)
 - [agent/graph.py](../../agent/graph.py)
+
+## 9. 结合源码看修复和最终补丁
+
+[agent/repair.py](../../agent/repair.py)要求模型返回`FixGenerationResult`，并在模型结果之外
+再次检查修复范围：
+
+```python
+response = await provider.generate_structured(
+    messages,
+    FixGenerationResult,
+    tools=(),
+    timeout_seconds=timeout_seconds,
+)
+if response.tool_calls:
+    raise InvalidModelResponseError(...)
+_validate_fix_result(response.output)
+```
+
+`_validate_fix_result()`当前只允许修改两个后端文件。随后
+[agent/workspace/validation.py](../../agent/workspace/validation.py)把测试补丁和修复补丁应用到
+同一个原始快照，并生成唯一最终diff：
+
+```python
+test_files = _declared_patch_files(snapshot_root, "test.patch", test_patch)
+fix_files = _declared_patch_files(snapshot_root, "fix.patch", fix_patch)
+if set(test_files).intersection(fix_files):
+    raise PatchPolicyError("test and fix patches must change disjoint files")
+
+return _materialize_patch_set(
+    snapshot_root,
+    (("test.patch", test_patch), ("fix.patch", fix_patch)),
+)
+```
+
+最终发布前还会重新计算`validated.patch`的SHA-256和文件列表，所以Publisher拿到的不是模型
+刚生成的编辑，而是已经通过独立验证的确定字节内容。

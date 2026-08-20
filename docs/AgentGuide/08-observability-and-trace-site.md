@@ -135,3 +135,35 @@ Agent执行`flush()`只能保证客户端已经发送，Langfuse服务端建立�
 - [Trace抓取](../../trace-site/src/lib/server/capture.ts)
 - [Supabase读取边界](../../trace-site/src/lib/server/supabase.ts)
 - [Langfuse数据投影](../../trace-site/src/lib/server/langfuse.ts)
+
+## 9. 结合源码看“推信号、站点再拉数据”
+
+[agent/operations/site_notify.py](../../agent/operations/site_notify.py)只发送`run_id`和终态：
+
+```python
+response = await self._client.post(
+    self._endpoint,
+    json={"run_id": str(outcome.run_id), "status": outcome.status.value},
+    headers={"x-webhook-secret": self._secret},
+    timeout=self._timeout_seconds,
+)
+```
+
+Vercel在[route.ts](../../trace-site/src/app/api/hooks/run-finished/route.ts)校验后立即安排后台抓取，
+并先返回`202`：
+
+```typescript
+after(async () => {
+  try {
+    await captureRunTrace(id, { retry: true });
+  } catch {
+    // 抓不到时由详情页按需补抓。
+  }
+  revalidatePath(`/runs/${id}`);
+});
+
+return NextResponse.json({ accepted: true }, { status: 202 });
+```
+
+这两段代码说明：Agent推送的不是完整Trace；`captureRunTrace()`才会读取Supabase摘要和
+Langfuse调用树。站点慢或抓取失败不会阻塞Agent继续领取反馈。

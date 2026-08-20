@@ -194,3 +194,36 @@ Sandbox累计时间默认最多900秒
 - 为小流量反馈入口立即引入Redis。
 
 系统优先把已有链路的状态、权限、错误和恢复写清楚，再根据真实故障增加最小改动。
+
+## 14. 结合源码看有限重试
+
+模型传输重试在
+[agent/providers/openai_compatible.py](../../agent/providers/openai_compatible.py)中只接受限流、
+超时和普通传输错误：
+
+```python
+retryable = type(error) in {
+    ModelRateLimitError,
+    ModelProviderError,
+    ModelTimeoutError,
+}
+if not retryable or attempt >= self._max_transport_retries:
+    raise error
+await self._sleep(_transport_retry_delay(attempt, response))
+```
+
+Sandbox重试在[agent/sandbox/client.py](../../agent/sandbox/client.py)中使用更小集合，并始终复用
+原Job：
+
+```python
+_RETRYABLE_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
+
+headers={
+    "Authorization": "Bearer " + self._credential.get_secret_value(),
+    "Idempotency-Key": str(artifacts.job.job_id),
+}
+```
+
+复现、修复轮次则不在网络Client里重试，而是在
+[agent/graph.py](../../agent/graph.py)的条件边中检查`reproduction_round`和`repair_round`。这能
+区分三类完全不同的失败：请求没送达、返回结构不合规、业务测试没有达到目标。
