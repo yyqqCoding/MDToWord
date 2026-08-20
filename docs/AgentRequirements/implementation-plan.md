@@ -1046,6 +1046,10 @@ Cloud，使真实 Gate 调用具备严格结构化输出、有限重试、真实
 - 使用当前`agent/sandbox/Dockerfile`构建本地镜像，并以不可变`sha256`镜像ID运行真实
   Docker集成测试，5 passed；随后携带同一镜像ID执行Agent完整测试，结果为314 passed，
   无failure或skipped，`python -m compileall -q agent`通过。
+- 首次部署该安全增强时，Worker已正常启动并对无凭据探针返回`401`，旧部署审计仍只接受
+  认证前的`400`，因此按fail-safe保持Scheduler关闭。就绪契约已改为只接受`401`，既验证
+  HTTP监听与认证边界，又不在curl参数或日志中携带Worker Secret；新增脚本级回归测试锁定
+  `401`通过、旧`400`失败。
 
 | 阶段 | 状态 | 验收日期 | 证据 |
 |---|---|---|---|

@@ -130,8 +130,9 @@ sudo bash /opt/mdtoword/deploy/agent/deploy.sh
 重启 Worker 以加载本次代码并执行只读审计；随后调用 `enable` 再次审计并要求维护者输入
 `ENABLE`，最后输出 Worker 与 Scheduler 状态。任一步失败都会保持 Scheduler 关闭。脚本
 不会创建、复制或输出 Secret，也不会覆盖两份环境文件。审计会等待 Worker 最多 30 秒完成
-端口绑定，并只输出活动状态数量，不读取反馈正文、联系方式或 Artifact；Worker 超时未
-就绪时会直接附带 systemd 状态和最近日志。
+端口绑定；未携带凭据的就绪请求必须返回 `401`，同时证明 HTTP 服务和认证边界已经生效，
+且不会把 Worker Secret 放进 curl 参数或日志。审计只输出活动状态数量，不读取反馈正文、
+联系方式或 Artifact；Worker 超时未就绪时会直接附带 systemd 状态和最近日志。
 
 常用命令：
 
