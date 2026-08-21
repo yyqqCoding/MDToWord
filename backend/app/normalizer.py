@@ -273,6 +273,7 @@ def _repair_math_content(content: str) -> str:
     repaired = _wrap_underbrace_parentheses_for_word(repaired)
     repaired = _expand_tall_square_brackets(repaired)
     repaired = _expand_tall_norm_delimiters(repaired)
+    repaired = re.sub(r"\s*\\notag\s*", "", repaired)
     return _escape_visible_set_braces(repaired)
 
 
