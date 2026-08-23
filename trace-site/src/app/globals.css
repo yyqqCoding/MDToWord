@@ -31,8 +31,8 @@
 
 /*
  * 字号阶梯 —— text-xs (12px) 是硬性下限，不再使用 10px / 11px。
- *   text-2xl  页面标题
- *   text-xl   KPI 数字
+ *   text-3xl / lg:text-4xl  页面标题（tracking-tight，经 PageHeader 统一给出）
+ *   text-3xl  KPI 数字、运行详情的结论标题（句子标题不再往上加档）
  *   text-base 卡片标题、重要数值
  *   text-sm   正文、表格、标签（主力字号）
  *   text-xs   仅用于密集等宽内容：瀑布节点名、diff 行、哈希
@@ -135,6 +135,43 @@ html[lang="zh-CN"] .text-xs:not(.font-mono) {
   }
 }
 
+/* 阶段切换方向过渡：往后的阶段从右滑入，往前的从左滑入 */
+@keyframes slide-forward {
+  from {
+    opacity: 0;
+    transform: translateX(16px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes slide-back {
+  from {
+    opacity: 0;
+    transform: translateX(-16px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/*
+ * 重放光标：细线从左扫到右。容器宽度 = 计时段总宽，线固定在其右缘，
+ * 容器从 -100% 平移到 0 —— 只动 transform；结束后仅剩终点处一根细线，
+ * 不会像填充条那样把整条时间轴盖住。
+ */
+@keyframes cursor-slide {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
 /* 统一缓动：起步快、收尾稳，接近原生控件的手感 */
 .anim-rise {
   animation: rise 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
@@ -156,6 +193,14 @@ html[lang="zh-CN"] .text-xs:not(.font-mono) {
 
 .anim-slide-in {
   animation: slide-in 0.35s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.anim-slide-forward {
+  animation: slide-forward 0.32s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.anim-slide-back {
+  animation: slide-back 0.32s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 /* ------------------------------------------------------------------ */
@@ -215,6 +260,31 @@ html[lang="zh-CN"] .text-xs:not(.font-mono) {
   transition:
     color 0.2s ease,
     background-color 0.2s ease;
+}
+
+/* ------------------------------------------------------------------ */
+/* 滚动显现                                                            */
+/* ------------------------------------------------------------------ */
+/*
+ * 进入视口才播放入场动画（Reveal 组件）。初始隐藏只在 html.has-js 下生效
+ * （layout 内联脚本首帧前写入），无 JS / SSR 直出时内容永远完整可见。
+ *
+ * is-visible 播放关键帧后，组件会在 animationend 摘掉全部动画类：
+ * fill-mode: both 会永久钉住 transform，不摘会压住 .lift:hover 的上浮。
+ * 终态关键帧与自然态相同，摘除不产生跳变。
+ */
+html.has-js .reveal {
+  opacity: 0;
+}
+
+html.has-js .reveal.is-visible {
+  opacity: 1;
+  animation: rise 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* 表格行等密集元素用纯淡入，不动 transform */
+html.has-js .reveal.reveal-fade.is-visible {
+  animation: fade 0.35s ease both;
 }
 
 /* ------------------------------------------------------------------ */
@@ -313,7 +383,7 @@ html[lang="zh-CN"] .text-xs:not(.font-mono) {
 /* 品牌点缀                                                             */
 /* ------------------------------------------------------------------ */
 
-/* 侧栏品牌字的慢速光泽流动：全站唯一一处渐变文字，9s 往返，克制 */
+/* 顶部头部品牌字的慢速光泽流动：全站唯一一处渐变文字，9s 往返，克制 */
 .brand-sheen {
   background: linear-gradient(
     100deg,
@@ -345,6 +415,15 @@ html[lang="zh-CN"] .text-xs:not(.font-mono) {
     animation-duration: 0.01ms !important;
     animation-delay: 0ms !important;
     transition-duration: 0.01ms !important;
+  }
+
+  /* 滚动显现直接呈现终态：不隐藏、不播放 */
+  html.has-js .reveal {
+    opacity: 1;
+  }
+
+  html.has-js .reveal.is-visible {
+    animation: none;
   }
 
   .lift:hover {

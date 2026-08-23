@@ -156,12 +156,15 @@ export function StageDetail({
   stage,
   stageIndex,
   stageCount,
+  direction = "none",
   run,
   calls,
 }: {
   stage: StageView;
   stageIndex: number;
   stageCount: number;
+  /** 切换方向：往后的阶段从右滑入，往前的从左滑入；首次渲染原地淡入。 */
+  direction?: "none" | "forward" | "back";
   run: RunPublic;
   calls: Observation[];
 }) {
@@ -175,9 +178,15 @@ export function StageDetail({
   const spanEnd =
     calls.length > 0 ? Math.max(...calls.map((c) => c.startMs + c.durationMs)) : 1;
   const spanTotal = Math.max(spanEnd - spanStart, 1);
+  const enterClass =
+    direction === "forward"
+      ? "anim-slide-forward"
+      : direction === "back"
+        ? "anim-slide-back"
+        : "anim-fade";
 
   return (
-    <div key={stage.key} className="anim-fade grid gap-5 lg:grid-cols-[1fr_1.1fr]">
+    <div key={stage.key} className={`${enterClass} grid gap-5 lg:grid-cols-[1fr_1.1fr]`}>
       <div>
         <p className="text-xs tracking-wide text-ink-faint">
           阶段 {stageIndex + 1} / {stageCount}

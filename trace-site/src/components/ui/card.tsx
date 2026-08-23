@@ -1,5 +1,8 @@
+"use client";
+
 import clsx from "clsx";
 import { Spotlight } from "@/components/ui/spotlight";
+import { useReveal } from "@/components/ui/reveal";
 
 export function Card({
   children,
@@ -18,21 +21,32 @@ export function Card({
   spotlight?: boolean;
 }) {
   const classes = clsx(
-    "anim-rise panel rounded-xl border border-line bg-surface",
+    "panel rounded-xl border border-line bg-surface",
     interactive ? "lift hover:border-line-strong" : "transition-colors duration-200",
     className,
   );
   const style = delay ? { animationDelay: `${delay}ms` } : undefined;
 
   if (spotlight) {
+    // 聚光主卡目前只出现在首页首屏，保持 mount 即播的入场；
+    // Spotlight 自持内部 ref，不与 useReveal 组合。
     return (
-      <Spotlight as="section" className={classes} style={style}>
+      <Spotlight as="section" className={clsx(classes, "anim-rise")} style={style}>
         {children}
       </Spotlight>
     );
   }
+
+  // 进入视口才播放入场（见 useReveal）：首屏以下的卡片不再在用户看到之前
+  // 就把动画播完。动画类挂在本元素上，overflow-hidden 等裁剪语义不受影响。
+  const reveal = useReveal<HTMLElement>({ delay });
   return (
-    <section className={classes} style={style}>
+    <section
+      ref={reveal.ref}
+      className={clsx(reveal.classes, classes)}
+      style={reveal.style}
+      onAnimationEnd={reveal.onAnimationEnd}
+    >
       {children}
     </section>
   );

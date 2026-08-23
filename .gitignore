@@ -227,3 +227,5 @@ docs/*
 !docs/AgentGuide/
 !docs/AgentRequirements/
 !docs/AgentProblem/
+# 前端（trace-site 等）设计文档入库管理
+!docs/WebRequirements/

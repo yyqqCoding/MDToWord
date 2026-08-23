@@ -1,4 +1,7 @@
+"use client";
+
 import Link from "next/link";
+import { Reveal } from "@/components/ui/reveal";
 import { StatusBadge } from "@/components/ui/badge";
 import { describeOutcome } from "@/lib/run-graph";
 import {
@@ -36,10 +39,14 @@ export function RunTable({ runs }: { runs: RunListItem[] }) {
           {runs.map((item, index) => {
             const outcome = describeOutcome(item);
             return (
-              <tr
+              /* 行用纯淡入（不动 transform），错峰延迟封顶，避免深处
+                 的行滚入视口后还要等一长串 index 延迟 */
+              <Reveal
+                as="tr"
                 key={item.id}
-                className="group anim-fade row-hover relative border-b border-line/60 hover:bg-raised/70"
-                style={{ animationDelay: `${index * 60}ms` }}
+                variant="fade"
+                delay={Math.min(index * 30, 240)}
+                className="group row-hover relative border-b border-line/60 hover:bg-raised/70"
               >
                 <td className="relative px-5 py-3.5">
                   {/* 悬停时左侧主色指示条从中间展开 */}
@@ -79,7 +86,7 @@ export function RunTable({ runs }: { runs: RunListItem[] }) {
                 <td className="px-5 py-3.5 font-mono text-sm text-ink-muted transition-colors duration-200 group-hover:text-ink">
                   {formatInteger(item.total_tokens)}
                 </td>
-              </tr>
+              </Reveal>
             );
           })}
         </tbody>

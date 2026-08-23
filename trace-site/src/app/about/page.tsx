@@ -9,6 +9,8 @@ import {
   SquareStack,
   XCircle,
 } from "lucide-react";
+import { PageHeader } from "@/components/shell/PageHeader";
+import { Reveal } from "@/components/ui/reveal";
 import { Spotlight } from "@/components/ui/spotlight";
 import { RUN_STAGES } from "@/lib/run-graph";
 
@@ -80,9 +82,11 @@ function SectionHeader({
   delay?: number;
 }) {
   return (
-    <header
-      className="anim-rise mb-6 flex items-start justify-between gap-4"
-      style={delay ? { animationDelay: `${delay}ms` } : undefined}
+    /* 本页各 section 大多在首屏以下，标题随区块进入视口再入场 */
+    <Reveal
+      as="header"
+      delay={delay}
+      className="mb-6 flex items-start justify-between gap-4"
     >
       <div>
         <h2 className="text-lg font-semibold text-ink">{title}</h2>
@@ -91,22 +95,23 @@ function SectionHeader({
         )}
       </div>
       {aside}
-    </header>
+    </Reveal>
   );
 }
 
 export default function AboutPage() {
   return (
     <div className="mx-auto w-full max-w-4xl px-5 py-7 lg:px-8">
-      <header className="anim-rise">
-        <h1 className="text-2xl font-semibold text-ink">项目说明</h1>
-        <p className="mt-2.5 max-w-2xl text-base leading-relaxed text-ink-muted">
-          用户提交一条反馈，Agent 自动分类、复现、修复、验证，最后提交 Pull Request。
-          这一页讲清楚它能做什么、不能做什么，以及为什么站点上看不到原始内容。
-        </p>
-      </header>
+      {/* 文档式版面：无网格纹理；间距由各 section 的 mt 控制，头部不额外留 mb */}
+      <PageHeader
+        title="项目说明"
+        description="用户提交一条反馈，Agent 自动分类、复现、修复、验证，最后提交 Pull Request。这一页讲清楚它能做什么、不能做什么，以及为什么站点上看不到原始内容。"
+        className=""
+      />
 
-      {/* 处理流程：竖向轨道，主色填充沿轨道向下生长，节点错峰入场 */}
+      {/* 处理流程：竖向轨道，主色填充沿轨道向下生长，节点错峰入场。
+          该区块位于首屏内且编排与 mount 绑定（连接线生长、逐项延迟），
+          保持 mount 即播；下方首屏外的区块才走 Reveal。 */}
       <section className="mt-14">
         <SectionHeader
           title="处理流程"
@@ -157,22 +162,27 @@ export default function AboutPage() {
         />
         <ul className="border-y border-line/60">
           {MASKING.map((row, index) => (
-            <li
+            <Reveal
+              as="li"
               key={row.source}
-              className="anim-fade row-hover grid gap-1 border-b border-line/60 px-2 py-4 last:border-b-0 hover:bg-raised/40 sm:grid-cols-[12rem_1fr] sm:gap-6"
-              style={{ animationDelay: `${100 + index * 50}ms` }}
+              variant="fade"
+              delay={index * 50}
+              className="row-hover grid gap-1 border-b border-line/60 px-2 py-4 last:border-b-0 hover:bg-raised/40 sm:grid-cols-[12rem_1fr] sm:gap-6"
             >
               <span className="text-sm text-ink">{row.source}</span>
               <span className="text-sm leading-relaxed text-ink-muted">{row.kept}</span>
-            </li>
+            </Reveal>
           ))}
         </ul>
-        <p className="anim-fade mt-6 border-l-2 border-accent/60 pl-4 text-sm leading-relaxed text-ink-muted"
-          style={{ animationDelay: "380ms" }}
+        <Reveal
+          as="p"
+          variant="fade"
+          delay={120}
+          className="mt-6 border-l-2 border-accent/60 pl-4 text-sm leading-relaxed text-ink-muted"
         >
           因此本站展示的是<span className="text-ink">执行结构与判定依据</span>，
           而不是内容本身。这是设计选择，不是数据缺失。
-        </p>
+        </Reveal>
       </section>
 
       {/* 能力边界：保留卡片，但只在整页一个区块使用盒子 */}
@@ -182,22 +192,22 @@ export default function AboutPage() {
           description="五条硬约束，写进执行路径而不是靠自觉"
           delay={60}
         />
+        {/* 网格子项由外层 Reveal 承担入场，内层 Spotlight 只负责聚光边框；
+            h-full 保证同一行卡片等高 */}
         <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
           {BOUNDARIES.map((item, index) => {
             const Icon = item.icon;
             return (
-              <Spotlight
-                key={item.title}
-                className="anim-rise lift panel group rounded-xl border border-line bg-surface p-5 hover:border-accent/40"
-                style={{ animationDelay: `${100 + index * 60}ms` }}
-              >
-                <Icon
-                  aria-hidden
-                  className="size-5 text-accent transition-transform duration-200 group-hover:scale-110"
-                />
-                <p className="mt-3.5 text-sm font-medium text-ink">{item.title}</p>
-                <p className="mt-1.5 text-sm leading-relaxed text-ink-muted">{item.detail}</p>
-              </Spotlight>
+              <Reveal key={item.title} delay={index * 60}>
+                <Spotlight className="lift panel group h-full rounded-xl border border-line bg-surface p-5 hover:border-accent/40">
+                  <Icon
+                    aria-hidden
+                    className="size-5 text-accent transition-transform duration-200 group-hover:scale-110"
+                  />
+                  <p className="mt-3.5 text-sm font-medium text-ink">{item.title}</p>
+                  <p className="mt-1.5 text-sm leading-relaxed text-ink-muted">{item.detail}</p>
+                </Spotlight>
+              </Reveal>
             );
           })}
         </div>
@@ -210,10 +220,10 @@ export default function AboutPage() {
           {SOURCES.map((item, index) => {
             const Icon = item.icon;
             return (
-              <div
+              <Reveal
                 key={item.title}
-                className="anim-rise group flex items-center gap-3.5"
-                style={{ animationDelay: `${100 + index * 60}ms` }}
+                delay={index * 60}
+                className="group flex items-center gap-3.5"
               >
                 <span className="panel flex size-10 shrink-0 items-center justify-center rounded-lg border border-line bg-surface transition-colors duration-200 group-hover:border-accent/40">
                   <Icon
@@ -225,7 +235,7 @@ export default function AboutPage() {
                   <p className="text-sm font-medium text-ink">{item.title}</p>
                   <p className="mt-0.5 text-sm text-ink-muted">{item.detail}</p>
                 </div>
-              </div>
+              </Reveal>
             );
           })}
         </div>

@@ -2,10 +2,11 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { Check, ChevronDown, ChevronRight, ExternalLink, FlaskConical, Minus } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, ExternalLink, Minus } from "lucide-react";
 import clsx from "clsx";
 import { Card, CardHeader } from "@/components/ui/card";
-import { CountUp } from "@/components/ui/count-up";
+import { MockBanner } from "@/components/ui/mock-banner";
+import { StatCard } from "@/components/ui/stat-card";
 import { MetaBadge, StatusBadge } from "@/components/ui/badge";
 import { StageChips } from "@/components/run/StageChips";
 import { StageDetail } from "@/components/run/StageDetail";
@@ -67,46 +68,6 @@ function CheckLine({
   );
 }
 
-function Stat({
-  label,
-  value,
-  count,
-  note,
-  noteTitle,
-  delay,
-}: {
-  label: string;
-  /** 静态展示值（耗时、"+12 −3" 这类复合文案）；与 count 二选一。 */
-  value?: string;
-  /** 整数值：水合后从 0 滚到终值；无 JS 时直接渲染终值。 */
-  count?: number;
-  note?: string;
-  noteTitle?: string;
-  /** 入场延迟,四张统计卡错峰出现。 */
-  delay?: number;
-}) {
-  return (
-    <div
-      className="lift panel anim-rise rounded-xl border border-line bg-surface px-5 py-4 hover:border-accent/40"
-      style={delay ? { animationDelay: `${delay}ms` } : undefined}
-    >
-      <p className="text-sm text-ink-faint">{label}</p>
-      <p className="mt-1.5 font-mono text-2xl leading-none text-ink">
-        {count !== undefined ? (
-          <CountUp value={count} className="tabular-nums" />
-        ) : (
-          value
-        )}
-      </p>
-      {note && (
-        <p className="mt-1.5 text-sm text-ink-faint" title={noteTitle}>
-          {note}
-        </p>
-      )}
-    </div>
-  );
-}
-
 export function RunDetail({ data }: { data: RunDetailData }) {
   const { run, trace, narrative, diff, isMock } = data;
   const stages = useMemo(() => deriveStages(run, trace), [run, trace]);
@@ -119,8 +80,22 @@ export function RunDetail({ data }: { data: RunDetailData }) {
     return done >= 0 ? done : 0;
   }, [stages]);
 
-  const [activeIndex, setActiveIndex] = useState(initialIndex);
+  // 阶段切换记录方向：相邻切换给内容一个"往左/往右走"的空间隐喻，
+  // 跨多阶段跳转同样按前后方向滑入，而不是原地淡入。
+  const [active, setActive] = useState<{
+    index: number;
+    dir: "none" | "forward" | "back";
+  }>({ index: initialIndex, dir: "none" });
+  const activeIndex = active.index;
   const [showEnv, setShowEnv] = useState(false);
+
+  const selectStage = (index: number) => {
+    setActive((prev) =>
+      index === prev.index
+        ? prev
+        : { index, dir: index > prev.index ? "forward" : "back" },
+    );
+  };
 
   const outcome = describeOutcome(outcomeInputOf(run));
   const wallClock = runDurationMs(run.started_at, run.finished_at);
@@ -158,10 +133,9 @@ export function RunDetail({ data }: { data: RunDetailData }) {
   return (
     <div className="px-5 py-7 lg:px-8">
       {isMock && (
-        <p className="anim-fade mb-6 flex items-center gap-2.5 rounded-lg border border-warn/40 bg-warn/10 px-4 py-2.5 text-sm text-warn">
-          <FlaskConical aria-hidden className="size-4 shrink-0" />
+        <MockBanner>
           构造数据：结构与字段对齐真实契约，数值、哈希和时间均为构造值。
-        </p>
+        </MockBanner>
       )}
 
       <nav className="anim-fade mb-4 flex items-center gap-2 text-sm text-ink-faint">
@@ -172,10 +146,10 @@ export function RunDetail({ data }: { data: RunDetailData }) {
         <span className="font-mono">{run.run_ref}</span>
       </nav>
 
-      {/* ① 结论 */}
+      {/* ① 结论。运行标题是句子而非页面名，升到 text-3xl 即可，不再往上加档 */}
       <div className="anim-rise mb-5 flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0">
-          <h1 className="text-2xl font-semibold leading-snug text-ink">
+          <h1 className="text-3xl font-semibold leading-snug tracking-tight text-ink">
             {narrative?.title ?? "反馈自动修复运行"}
           </h1>
           <p className="mt-2.5 max-w-3xl text-base leading-relaxed text-ink-muted">
@@ -192,26 +166,26 @@ export function RunDetail({ data }: { data: RunDetailData }) {
         className="anim-rise mb-3 grid grid-cols-2 gap-4 lg:grid-cols-4"
         style={{ animationDelay: "60ms" }}
       >
-        <Stat
+        <StatCard
           label="总耗时"
           value={wallClock !== null ? formatDuration(wallClock) : "进行中"}
           note={formatDateTime(run.started_at)}
           noteTitle={formatDateTimeFull(run.started_at)}
           delay={0}
         />
-        <Stat
+        <StatCard
           label="Token"
           count={run.total_tokens}
           note={`${run.model_calls} 次模型调用`}
           delay={50}
         />
-        <Stat
+        <StatCard
           label="代码改动"
           value={diffLines ? `+${diffLines.added} −${diffLines.removed}` : "无补丁"}
           note={validation ? `${validation.changed_files.length} 个文件` : undefined}
           delay={100}
         />
-        <Stat
+        <StatCard
           label="工具调用"
           count={run.tool_calls}
           note={trace && trace.attempts > 1 ? `恢复 ${trace.attempts} 次` : "沙箱与外部操作"}
@@ -272,12 +246,12 @@ export function RunDetail({ data }: { data: RunDetailData }) {
           selectedKey={activeStage?.key ?? null}
           onSelect={(key) => {
             const index = stages.findIndex((s) => s.key === key);
-            if (index >= 0) setActiveIndex(index);
+            if (index >= 0) selectStage(index);
           }}
         />
       </div>
 
-      {/* ③ 阶段详情 */}
+      {/* ③ 阶段详情。方向随切换而变：往后的阶段从右滑入，往前的从左滑入 */}
       {activeStage && (
         <Card className="mb-6" delay={120}>
           <div className="p-5">
@@ -285,6 +259,7 @@ export function RunDetail({ data }: { data: RunDetailData }) {
               stage={activeStage}
               stageIndex={activeIndex}
               stageCount={stages.length}
+              direction={active.dir}
               run={run}
               calls={callsByStage.get(activeStage.key) ?? []}
             />

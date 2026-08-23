@@ -1,7 +1,9 @@
 import Link from "next/link";
-import { ArrowRight, FlaskConical } from "lucide-react";
+import { ArrowRight } from "lucide-react";
+import { PageHeader } from "@/components/shell/PageHeader";
 import { Card, CardHeader } from "@/components/ui/card";
-import { CountUp } from "@/components/ui/count-up";
+import { MockBanner } from "@/components/ui/mock-banner";
+import { StatCard } from "@/components/ui/stat-card";
 import { RunTable } from "@/components/run/RunTable";
 import { StageChips } from "@/components/run/StageChips";
 import { deriveStages } from "@/lib/run-graph";
@@ -20,36 +22,6 @@ import { fallbackTitle } from "@/content/cases";
 
 export const revalidate = 300;
 
-function Kpi({
-  label,
-  value,
-  count,
-  delay,
-}: {
-  label: string;
-  /** 静态展示值（耗时等复合文案）；与 count 二选一。 */
-  value?: string;
-  /** 整数值：水合后从 0 滚到终值；无 JS 时直接渲染终值。 */
-  count?: number;
-  delay: number;
-}) {
-  return (
-    <div
-      className="anim-rise lift panel rounded-xl border border-line bg-surface px-5 py-4 hover:border-line-strong"
-      style={{ animationDelay: `${delay}ms` }}
-    >
-      <p className="text-sm text-ink-faint">{label}</p>
-      <p className="mt-2 font-mono text-3xl leading-none text-ink">
-        {count !== undefined ? (
-          <CountUp value={count} className="tabular-nums" />
-        ) : (
-          value
-        )}
-      </p>
-    </div>
-  );
-}
-
 export default async function HomePage() {
   const [stats, runs] = await Promise.all([getOverviewStats(), getRunList(8)]);
   // 精选案例取最近一次产出 PR 的运行，由 getFeaturedRunDetail 直接按
@@ -61,29 +33,26 @@ export default async function HomePage() {
   return (
     <div className="px-5 py-7 lg:px-8">
       {!usingRealData && (
-        <p className="anim-fade mb-6 flex items-center gap-2.5 rounded-lg border border-warn/40 bg-warn/10 px-4 py-2.5 text-sm text-warn">
-          <FlaskConical aria-hidden className="size-4 shrink-0" />
+        <MockBanner>
           构造数据：未配置 Supabase，当前展示的是结构对齐真实契约的示例数据。
-        </p>
+        </MockBanner>
       )}
 
-      <header className="anim-rise relative mb-7">
-        {/* 网格背景向边缘溶解，只给首屏头部加纹理，不出横向滚动条 */}
-        <div aria-hidden className="grid-backdrop" />
-        <div className="relative">
-          <h1 className="text-2xl font-semibold text-ink">概览</h1>
-          <p className="mt-2 max-w-3xl text-base leading-relaxed text-ink-muted">
-            用户提交一条反馈，Agent 自动分类、复现、修复、验证，最后提交 Pull Request。
-            每一步都留有可审计的执行证据。
-          </p>
-        </div>
-      </header>
+      <PageHeader
+        title="概览"
+        description="用户提交一条反馈，Agent 自动分类、复现、修复、验证，最后提交 Pull Request。每一步都留有可审计的执行证据。"
+        backdrop
+      />
 
       <div className="mb-7 grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <Kpi label="总运行数" count={stats.totalRuns} delay={60} />
-        <Kpi label="产出 PR" count={stats.pullRequests} delay={110} />
-        <Kpi label="平均耗时" value={formatDuration(stats.averageDurationMs)} delay={160} />
-        <Kpi label="TOKEN 合计" count={stats.totalTokens} delay={210} />
+        <StatCard label="总运行数" count={stats.totalRuns} delay={60} />
+        <StatCard label="产出 PR" count={stats.pullRequests} delay={110} />
+        <StatCard
+          label="平均耗时"
+          value={formatDuration(stats.averageDurationMs)}
+          delay={160}
+        />
+        <StatCard label="TOKEN 合计" count={stats.totalTokens} delay={210} />
       </div>
 
       {featured && (
@@ -114,6 +83,7 @@ export default async function HomePage() {
               </p>
             )}
             <div className="mt-5">
+              {/* 静态呈现终态即可；重放动画经维护者验收后撤下（见设计文档 C 节） */}
               <StageChips stages={stages} />
             </div>
           </div>

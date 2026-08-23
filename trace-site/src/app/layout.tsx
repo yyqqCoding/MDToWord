@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { MobileNav, Sidebar } from "@/components/shell/Sidebar";
+import { Header } from "@/components/shell/Header";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -11,13 +11,18 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="zh-CN">
+      <head>
+        {/* 首帧前打标：滚动显现的初始隐藏只在该标记下生效，无 JS 时内容完整可见 */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `document.documentElement.classList.add("has-js");`,
+          }}
+        />
+      </head>
       <body className="antialiased">
-        <div className="flex min-h-dvh">
-          <Sidebar />
-          <div className="flex min-w-0 flex-1 flex-col">
-            <MobileNav />
-            <main className="min-w-0 flex-1">{children}</main>
-          </div>
+        <div className="flex min-h-dvh flex-col">
+          <Header />
+          <main className="min-w-0 flex-1">{children}</main>
         </div>
       </body>
     </html>
