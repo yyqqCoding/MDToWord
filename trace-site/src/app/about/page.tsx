@@ -58,6 +58,11 @@ const BOUNDARIES = [
     detail: "绝不自动合并、绝不自动部署，最终由人审核。",
   },
   {
+    icon: Github,
+    title: "前端与功能需求只建 Issue",
+    detail: "只公开脱敏摘要，不自动修改扩展，也不公开用户原文。",
+  },
+  {
     icon: XCircle,
     title: "复现不了就放弃",
     detail: "进入 cannot_reproduce，不提交空修复凑数。",
@@ -67,7 +72,7 @@ const BOUNDARIES = [
 const SOURCES = [
   { icon: Database, title: "Supabase", detail: "运行摘要、状态与用量" },
   { icon: SquareStack, title: "Langfuse", detail: "逐次调用的执行 Trace" },
-  { icon: Github, title: "GitHub", detail: "已合并 PR 的公开 diff" },
+  { icon: Github, title: "GitHub", detail: "公开 PR diff 与脱敏 Issue 链接" },
 ];
 
 function SectionHeader({
@@ -105,7 +110,7 @@ export default function AboutPage() {
       {/* 文档式版面：无网格纹理；间距由各 section 的 mt 控制，头部不额外留 mb */}
       <PageHeader
         title="项目说明"
-        description="用户提交一条反馈，Agent 自动分类、复现、修复、验证，最后提交 Pull Request。这一页讲清楚它能做什么、不能做什么，以及为什么站点上看不到原始内容。"
+        description="Agent 安全分类反馈：后端缺陷进入自动修复 PR，功能需求与前端缺陷进入脱敏 Issue。这一页说明能力边界和公开内容边界。"
         className=""
       />
 

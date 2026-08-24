@@ -106,6 +106,7 @@ const OBSERVATION_STAGE: Record<string, StageKey> = {
   "validate-docx": "validate",
 
   "publish-pr": "publish",
+  "publish-issue": "publish",
   finalize: "publish",
 };
 
@@ -176,7 +177,7 @@ function fieldEvidence(run: RunPublic): Record<StageKey, boolean> {
     reproduce: run.reproduction !== null,
     repair: run.repair !== null,
     validate: run.validation !== null,
-    publish: run.pr_url !== null,
+    publish: run.pr_url !== null || run.issue_url !== null,
   };
 }
 
@@ -235,7 +236,11 @@ export function deriveStages(run: RunPublic, trace: RunTrace | null): StageView[
   const evidence = fieldEvidence(run);
   const failures = fieldFailures(run);
   const isTerminal = TERMINAL_STATUSES.has(run.status);
-  const activeIndex = RUN_STAGES.findIndex((s) => s.runStatus === run.status);
+  const activeIndex = RUN_STAGES.findIndex(
+    (stage) =>
+      stage.runStatus === run.status ||
+      (run.status === "publishing_issue" && stage.key === "publish"),
+  );
 
   // run 整体失败但没有具体阶段信号时，把断点标在最后一个有证据的阶段之后
   const lastWithEvidence = RUN_STAGES.reduce(
@@ -249,12 +254,20 @@ export function deriveStages(run: RunPublic, trace: RunTrace | null): StageView[
 
   return RUN_STAGES.map((stage, index) => {
     const seen = observed[stage.key];
+    const label =
+      stage.key === "publish" && run.route === "issue_required"
+        ? "创建 Issue"
+        : stage.label;
+    const hint =
+      stage.key === "publish" && run.route === "issue_required"
+        ? "只发布脱敏摘要，交由维护者人工处理"
+        : stage.hint;
 
     if (seen) {
       return {
         key: stage.key,
-        label: stage.label,
-        hint: stage.hint,
+        label,
+        hint,
         observationName: seen.name,
         state: seen.failed ? "failed" : "done",
         durationMs: seen.durationMs,
@@ -279,8 +292,8 @@ export function deriveStages(run: RunPublic, trace: RunTrace | null): StageView[
 
     return {
       key: stage.key,
-      label: stage.label,
-      hint: stage.hint,
+      label,
+      hint,
       observationName: stage.observationName,
       state,
       durationMs: null,
@@ -306,6 +319,7 @@ export interface OutcomeInput {
   status: RunStatus;
   route: GateRoute | null;
   pr_url: string | null;
+  issue_url: string | null;
   reproductionDisposition?: string | null;
 }
 
@@ -314,6 +328,7 @@ export function outcomeInputOf(run: RunPublic): OutcomeInput {
     status: run.status,
     route: run.route,
     pr_url: run.pr_url,
+    issue_url: run.issue_url,
     reproductionDisposition: run.reproduction?.disposition ?? null,
   };
 }
@@ -323,6 +338,21 @@ export function outcomeInputOf(run: RunPublic): OutcomeInput {
  * 而是结合 route 与 pr_url 讲清楚"发生了什么、为什么"。
  */
 export function describeOutcome(run: OutcomeInput): OutcomeView {
+  // 业务 route 比通用 completed 更具体，必须先判定，避免安全拦截显示成“已结束”。
+  if (run.route === "quarantined_security") {
+    return {
+      label: "安全拦截",
+      detail: "检测到提示词注入或越权内容，未调用任何工具或 Publisher。",
+      tone: "serious",
+    };
+  }
+  if (run.route === "rejected_irrelevant") {
+    return {
+      label: "已忽略",
+      detail: "Gate 判定为无关内容或垃圾信息，未进入后续流程。",
+      tone: "neutral",
+    };
+  }
   switch (run.status) {
     case "completed":
       if (run.pr_url) {
@@ -332,10 +362,17 @@ export function describeOutcome(run: OutcomeInput): OutcomeView {
           tone: "good",
         };
       }
-      if (run.route === "rejected_irrelevant") {
+      if (run.issue_url) {
         return {
-          label: "判定为无关反馈",
-          detail: "Gate 判定该反馈与转换质量无关，未进入复现流程。",
+          label: "已创建 Issue",
+          detail: "需求或前端缺陷已脱敏提交，等待维护者人工处理。",
+          tone: "good",
+        };
+      }
+      if (run.route === "issue_required") {
+        return {
+          label: "需要创建 Issue",
+          detail: "分类已经完成；当前运行未获得真实 GitHub 写入授权。",
           tone: "neutral",
         };
       }

@@ -20,10 +20,15 @@ import type { RunTrace } from "@/lib/types";
 
 const ALLOWED_RESOURCES = new Set(["agent_run_public", "agent_run_traces"]);
 
+interface RequestOptions {
+  revalidate?: number | false;
+  tags?: readonly string[];
+}
+
 async function request<T>(
   resource: string,
   query: string,
-  init?: { revalidate?: number | false },
+  init?: RequestOptions,
 ): Promise<T[]> {
   if (!supabaseConfig) throw new Error("supabase is not configured");
   if (!ALLOWED_RESOURCES.has(resource)) {
@@ -40,7 +45,10 @@ async function request<T>(
     next:
       init?.revalidate === false
         ? undefined
-        : { revalidate: init?.revalidate ?? 300 },
+        : {
+            revalidate: init?.revalidate ?? 300,
+            tags: init?.tags ? [...init.tags] : undefined,
+          },
     cache: init?.revalidate === false ? "no-store" : undefined,
     signal: AbortSignal.timeout(4000),
   });
@@ -54,14 +62,14 @@ async function request<T>(
 
 export async function selectRuns<T>(
   query: string,
-  options?: { revalidate?: number | false },
+  options?: RequestOptions,
 ): Promise<T[]> {
   return request<T>("agent_run_public", query, options);
 }
 
 export async function selectTraces<T>(
   query: string,
-  options?: { revalidate?: number | false },
+  options?: RequestOptions,
 ): Promise<T[]> {
   return request<T>("agent_run_traces", query, options);
 }

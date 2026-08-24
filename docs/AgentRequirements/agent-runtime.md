@@ -16,16 +16,16 @@ Graph State 使用版本化的 Pydantic/TypedDict Schema，只保存恢复流程
 ```text
 schema_version
 run_id, feedback_id, trace_id, claim_token, dry_run
-status, route, category, risk
+status, route, category, area, risk
 base_sha, extension_version
 task_artifact_ref, source_snapshot_ref
-gate_result
+gate_result, issue_draft_ref
 reproduction_plan
 test_patch_ref, reproduction_result
 fix_patch_ref, validation_result
 reproduction_round, repair_round
 model_calls, tool_calls, token_usage, cost
-validated_patch_sha256, pr_url
+validated_patch_sha256, pr_url, issue_url
 last_error
 ```
 
@@ -44,7 +44,8 @@ START
   -> start_trace
   -> gate_feedback
   -> route_feedback
-       |- terminal_non_repair
+       |- terminal_no_publication
+       |- publish_issue -> finalize
        `- prepare_source
             -> reproduce_subgraph
             -> repair_subgraph
@@ -60,10 +61,14 @@ START
 
 ```text
 start_gate -> classify_gate -> route_feedback
-  -> prepare_source -> reproduce_subgraph
-  -> repair_subgraph -> validate_final
-  -> publish_pull_request -> finish_publication -> END
+  |- prepare_source -> reproduce_subgraph
+  |  -> repair_subgraph -> validate_final
+  |  -> publish_pull_request -> finish_publication -> END
+  `- terminal_non_repair -> END
 ```
+
+阶段 I 已在 `route_feedback` 增加 `issue_required -> publish_issue -> finish_issue_publication`
+分支。它不准备源码、不启动 Sandbox，也不复用 PR 的验证发布路径。
 
 Fake Provider 默认只执行 Gate；`--reproduce --provider configured` 执行到阶段 D，
 `--repair --provider configured` 执行完整 D+E，且两者强制 `--dry-run`。只有显式
@@ -71,6 +76,12 @@ Fake Provider 默认只执行 Gate；`--reproduce --provider configured` 执行�
 另外受默认关闭的投产开关保护。CLI 的 `completed` 表示 Graph 已到终态，不等同业务
 成功；`status`、`error_code`、`published` 与 `pr_url` 共同表达最终结果，只有
 `published=true`、`error_code=null` 且 `pr_url` 非空才代表阶段 F 发布成功。
+Issue 成功另外以 `issue_url` 非空且 `error_code=null` 表达，不能用
+`published` 或 `pr_url` 冒充。
+
+`--publish` 是 PR 与 Issue 共用的真实 GitHub 写入授权开关，但两个 Publisher 的输入、
+权限令牌和恢复节点保持分离。未提供 `--publish` 时，`issue_required` 只能产生分类结果或
+Fake Publisher 结果，不得因为 Issue 不修改代码就绕过 dry-run 边界。
 
 ### 3.2 确定性节点
 
@@ -82,6 +93,7 @@ Fake Provider 默认只执行 Gate；`--reproduce --provider configured` 执行�
 - `prepare_source`
 - `validate_final`
 - `publish_pr`
+- `publish_issue`
 - `finalize`
 
 它们只接受已验证的领域对象，并由应用服务执行数据库、GitHub、Artifact 和状态操作。
@@ -109,7 +121,9 @@ Gate 分三层，顺序不可交换。
 - Bug 的 `markdown_content` 非空且 UTF-8 编码后不超过 50 KiB；
 - 去除联系方式后构造 task；
 - 计算内容指纹并检查精确重复；
-- 功能反馈可直接判定 `out_of_scope`，无需进入代码修复。
+- Bug 的 Markdown 约束不套用到 Feature；
+- 不再按 `feedback_type=feature` 短路。两类表单都必须进入无工具模型分类，才能在任何
+  GitHub 写入前识别无关内容与提示词注入。
 
 ### 4.2 无工具模型分类
 
@@ -117,13 +131,23 @@ Gate 分三层，顺序不可交换。
 
 ```text
 intent: bug_report | feature_request | unrelated | spam | unknown
-category: 后端类别 | extension_ui | visual_quality | unknown
+area: backend | extension | cross_component | none | unknown
+category: 后端类别 | feature_request | irrelevant_content |
+          prompt_injection | visual_quality | extension_ui | unknown
 relevance: 0..1
 sufficient_information: bool
 injection_suspected: bool
 requires_extension_change: bool
 reason: 简短说明
+issue_title: string|null
+issue_summary: string|null
 ```
+
+`issue_title` 与 `issue_summary` 是候选脱敏摘要，不是直接 GitHub 写入凭据。只有本地 Policy
+最终选择 `issue_required` 时二者才必须非空；其他路由必须为 null。标题为单行且不超过
+80 字符，摘要不超过 600 字符，只复述明确需求与现象，不生成用户未提出的验收条件。
+这些跨字段规则既写进 Gate Prompt，也由本地 Policy 分别给出可执行校验错误。实现时须
+同步 bump `GATE_PROMPT_VERSION`；阶段 I 当前版本为 `gate-v9`。
 
 ### 4.3 本地路由
 
@@ -138,7 +162,33 @@ injection_suspected == false
 requires_extension_change == false
 ```
 
-模型给出的“允许自动化”结论没有授权效力。注入、无关内容和前端范围外判定始终优先。
+模型给出的“允许自动化”或“允许发布”结论没有授权效力。路由优先级固定为：
+
+```text
+injection_suspected
+  -> quarantined_security / category=prompt_injection
+unrelated | spam
+  -> rejected_irrelevant / category=irrelevant_content
+feature_request + area in {backend, extension, cross_component} + 信息充分
+  -> issue_required / enhancement
+bug_report + area=extension + 信息充分
+  -> issue_required / bug
+bug_report + backend allowlist
+  -> accepted_backend_bug
+其他未知、低置信度或信息不足
+  -> needs_human
+```
+
+前端展示、视觉、交互和布局需求统一归为 `feature_request + extension`；前端/扩展 Bug 为
+`bug_report + extension`。二者均不启动 Sandbox。`out_of_scope` 仅在读取历史 checkpoint
+或数据库记录时兼容，新分类不得返回。
+
+Policy 负责把模型分类规范成稳定 `GateResult`：注入 → `none/prompt_injection`，无关或垃圾
+→ `none/irrelevant_content`，功能/视觉需求 → `<area>/feature_request`，前端/扩展 Bug →
+`extension/extension_ui`。模型给出这些已知意图却保留 `unknown` 时，Policy 必须规范化或
+以逐字段消息拒绝，不能把歧义留给数据库和展示站。
+
+注入、无关内容和 Issue 分流始终优先于后端复现判定。
 在这些高优先级规则通过后，非空 Bug Markdown 的描述若包含明确后端转换报错或 Pandoc
 失败签名，本地确定性证据可将模型不稳定的类别或低 `relevance` 校正为
 `conversion_crash` 并进入有界复现；没有明确错误证据时仍按阈值转人工。唯一的充分性
@@ -220,6 +270,11 @@ drawing Oracle 已确认复现时，Controller 额外向修复模型提供只读
 只有 `ValidationResult.passed=true` 才有边进入 `publish_pr`。发布节点不是模型工具，
 模型无法提前或直接触发。
 
+Issue 分支与上述 PR 分支相互独立：`issue_required` 不需要 `base_sha`、测试补丁、修复补丁
+或 `ValidationResult`，只接受 Gate 产生且通过本地 Policy 的 `IssueDraft`。受信
+`publish_issue` 节点再次脱敏并校验固定仓库、标签与幂等 marker；成功后写入
+`issue_opened/issue_url`，失败以 `issue_publication_failed` 终结并保留可恢复 checkpoint。
+
 ## 8. Provider 边界
 
 `ModelProvider` 对 Runtime 暴露统一能力：
@@ -244,7 +299,7 @@ context_too_large, provider_unavailable, safety_refusal
 本地退避，超过10秒则截断为10秒，避免单次模型调用无限占住单并发Scheduler。
 
 当前OpenAI兼容Chat Completions Provider使用`response_format=json_schema`和
-`strict=true`，并始终传入空工具集合。当前Prompt版本为`gate-v8`、
+`strict=true`，并始终传入空工具集合。当前Prompt版本为`gate-v9`、
 `reproduction-plan-v4`、`test-generation-v5`和`fix-generation-v4`。Provider真实usage
 累计到`agent_runs`；若响应不含成本，则按本地配置单价估算，未配置单价时成本保持`0`。
 
@@ -273,7 +328,9 @@ LangGraph 节点可能因恢复而重新执行。所有副作用使用稳定的
 - Sandbox Client 重复提交返回同一 Job 或已完成结果；
 - Artifact 使用原子临时文件加 rename；
 - PR 创建前按 feedback、branch 和 patch hash 查重；
+- Issue 创建前按 `run_ref` 与内容指纹 marker 查重；
 - 发布失败只允许同 run 恢复 `publication_*` checkpoint，不重新执行模型或 Sandbox；
+- Issue 发布失败只恢复 `issue_publication_*` checkpoint，不重新执行 Gate；
 - finalize 使用目标状态条件更新。
 
 运行恢复时先从外部系统查询 operation 状态，不能无条件重复副作用。Graph、Prompt、

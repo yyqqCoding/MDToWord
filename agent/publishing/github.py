@@ -16,6 +16,9 @@ from agent.domain.errors import (
     PublicationError,
 )
 from agent.publishing.contracts import (
+    IssuePublicationRequest,
+    IssuePublicationResult,
+    IssuePublisher,
     PublicationDisposition,
     PublicationRequest,
     PublicationResult,
@@ -26,6 +29,11 @@ from agent.telemetry.masking import mask_text
 
 _REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _SHA = re.compile(r"^[0-9a-f]{40}$")
+_UNSAFE_ISSUE_TEXT = re.compile(
+    r"(?:ignore (?:all |previous )?instructions|system prompt|developer message|"
+    r"忽略(?:以上|之前|所有)?指令|系统提示词|开发者消息|调用工具)",
+    re.IGNORECASE,
+)
 _API_HEADERS = {
     "Accept": "application/vnd.github+json",
     "X-GitHub-Api-Version": "2022-11-28",
@@ -48,6 +56,7 @@ class GitHubAppTokenProvider:
         client: httpx.AsyncClient,
         api_url: str = "https://api.github.com",
         now: Callable[[], datetime] | None = None,
+        permissions: dict[str, str] | None = None,
     ) -> None:
         if not _REPOSITORY.fullmatch(repository):
             raise PublicationAuthenticationError(
@@ -61,6 +70,22 @@ class GitHubAppTokenProvider:
         self._client = client
         self._api_url = api_url.rstrip("/")
         self._now = now or (lambda: datetime.now(UTC))
+        self._permissions = dict(
+            permissions
+            or {
+                "contents": "write",
+                "pull_requests": "write",
+            }
+        )
+        allowed_names = {"contents", "pull_requests", "issues"}
+        if (
+            not self._permissions
+            or any(name not in allowed_names for name in self._permissions)
+            or any(level not in {"read", "write"} for level in self._permissions.values())
+        ):
+            raise PublicationAuthenticationError(
+                "GitHub App requested permissions are invalid"
+            )
         self._cached_token: str | None = None
         self._expires_at: datetime | None = None
         self._lock = asyncio.Lock()
@@ -92,10 +117,7 @@ class GitHubAppTokenProvider:
                 headers={"Authorization": f"Bearer {app_jwt}"},
                 json={
                     "repositories": [self._repository.split("/", 1)[1]],
-                    "permissions": {
-                        "contents": "write",
-                        "pull_requests": "write",
-                    },
+                    "permissions": self._permissions,
                 },
             )
             token = token_payload.get("token")
@@ -106,15 +128,13 @@ class GitHubAppTokenProvider:
                 )
             permissions = token_payload.get("permissions")
             allowed_permissions = {
-                "contents": "write",
-                "pull_requests": "write",
+                **self._permissions,
                 # GitHub App 固有的 metadata:read 可能出现在令牌响应中。
                 "metadata": "read",
             }
             if (
                 not isinstance(permissions, dict)
-                or permissions.get("contents") != "write"
-                or permissions.get("pull_requests") != "write"
+                or any(permissions.get(name) != level for name, level in self._permissions.items())
                 or any(
                     allowed_permissions.get(str(name)) != level
                     for name, level in permissions.items()
@@ -452,6 +472,106 @@ class GitHubPullRequestPublisher(PullRequestPublisher):
         return response
 
 
+class GitHubIssuePublisher(IssuePublisher):
+    """只允许在固定仓库创建或复用脱敏 Issue，不暴露其他 Issue 写操作。"""
+
+    def __init__(
+        self,
+        repository: str,
+        *,
+        token_provider: InstallationTokenProvider,
+        client: httpx.AsyncClient,
+        api_url: str = "https://api.github.com",
+    ) -> None:
+        if not _REPOSITORY.fullmatch(repository):
+            raise PublicationError("GITHUB_REPOSITORY must use owner/name format")
+        self._repository = repository
+        self._token_provider = token_provider
+        self._client = client
+        self._api_url = api_url.rstrip("/")
+
+    async def publish_issue(
+        self,
+        request: IssuePublicationRequest,
+    ) -> IssuePublicationResult:
+        token = await self._token_provider.get_token()
+        headers = {**_API_HEADERS, "Authorization": f"Bearer {token}"}
+        marker = _issue_marker(request)
+        existing = await self._find_existing(marker, headers)
+        if existing is not None:
+            return existing
+
+        title, body, label = build_issue_content(request, marker=marker)
+        try:
+            response = await self._request(
+                "POST",
+                f"/repos/{self._repository}/issues",
+                headers=headers,
+                json={"title": title, "body": body, "labels": [label]},
+            )
+        except PublicationError:
+            # POST 可能已经成功但响应丢失；marker 是唯一恢复依据。
+            recovered = await self._find_existing(marker, headers)
+            if recovered is None:
+                raise
+            return recovered
+        return _issue_result(_json_object(response))
+
+    async def _find_existing(
+        self,
+        marker: str,
+        headers: dict[str, str],
+    ) -> IssuePublicationResult | None:
+        for page in range(1, 11):
+            response = await self._request(
+                "GET",
+                f"/repos/{self._repository}/issues",
+                headers=headers,
+                params={"state": "all", "per_page": "100", "page": str(page)},
+            )
+            try:
+                items = response.json()
+            except ValueError as exc:
+                raise PublicationError("GitHub returned invalid JSON") from exc
+            if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
+                raise PublicationError("GitHub returned an unexpected response shape")
+            for item in items:
+                if marker in str(item.get("body", "")):
+                    return _issue_result(item, reused=True)
+            if len(items) < 100:
+                return None
+        raise PublicationError("GitHub issue lookup exceeded the bounded page limit")
+
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        headers: dict[str, str],
+        **kwargs: object,
+    ) -> httpx.Response:
+        try:
+            response = await self._client.request(
+                method,
+                f"{self._api_url}{path}",
+                headers=headers,
+                **kwargs,
+            )
+        except httpx.HTTPError as exc:
+            raise PublicationError(
+                f"GitHub issue publication failed: {type(exc).__name__}"
+            ) from exc
+        if response.status_code in {401, 403}:
+            raise PublicationAuthenticationError(
+                f"GitHub issue authentication failed with status {response.status_code}"
+            )
+        if response.status_code >= 400:
+            raise PublicationError(
+                f"GitHub issue publication failed with status {response.status_code}"
+            )
+        return response
+
+
 def build_pull_request_body(request: PublicationRequest, *, marker: str | None = None) -> str:
     """只使用结构化验证摘要生成正文，绝不拼接用户描述或 Markdown。"""
 
@@ -513,6 +633,52 @@ def build_pull_request_body(request: PublicationRequest, *, marker: str | None =
     return body
 
 
+def build_issue_content(
+    request: IssuePublicationRequest,
+    *,
+    marker: str | None = None,
+) -> tuple[str, str, str]:
+    """生成唯一允许公开的 Issue 载荷，并在最终边界再次扫描敏感模式。"""
+
+    draft = request.draft
+    evidence = request.evidence
+    label = "bug" if draft.intent.value == "bug_report" else "enhancement"
+    trace = evidence.trace_url or "not configured"
+    visible_body = "\n".join(
+        (
+            "## Sanitized feedback summary",
+            "",
+            draft.summary,
+            "",
+            "## Classification",
+            "",
+            f"- Intent: `{draft.intent.value}`",
+            f"- Area: `{draft.area.value}`",
+            f"- Category: `{draft.category.value}`",
+            "",
+            "## Agent metadata",
+            "",
+            f"- Run reference: `{request.run_ref}`",
+            f"- Graph / Policy: `{evidence.graph_version}` / `{evidence.policy_version}`",
+            f"- Provider / Model: `{evidence.provider}` / `{evidence.model}`",
+            f"- Usage: {evidence.model_calls} model calls, {evidence.tool_calls} tool calls, "
+            f"{evidence.total_tokens} tokens",
+            f"- Trace: {trace}",
+            "",
+            "> This issue was generated from a sanitized user suggestion. It does not contain the original submission.",
+        )
+    )
+    for value in (draft.title, visible_body):
+        if mask_text(value, max_length=len(value), redact_phone=True) != value:
+            raise PublicationError("issue content contains a sensitive pattern")
+        if _UNSAFE_ISSUE_TEXT.search(value):
+            raise PublicationError("issue content contains an instruction pattern")
+    body = f"{visible_body}\n\n{marker or _issue_marker(request)}"
+    if len(body.encode("utf-8")) > 20_000:
+        raise PublicationError("issue body exceeds publication limit")
+    return draft.title, body, label
+
+
 def _branch_name(request: PublicationRequest) -> str:
     return (
         f"agent/feedback-{str(request.feedback_id)[:8]}-"
@@ -536,6 +702,34 @@ def _publication_marker(request: PublicationRequest) -> str:
         "<!-- mdtoword-agent "
         f"feedback={request.feedback_id} "
         f"patch={request.validation.validated_patch_sha256} -->"
+    )
+
+
+def _issue_marker(request: IssuePublicationRequest) -> str:
+    return (
+        "<!-- mdtoword-agent-issue "
+        f"run-ref={request.run_ref} fingerprint={request.content_fingerprint} -->"
+    )
+
+
+def _issue_result(
+    payload: dict[str, object],
+    *,
+    reused: bool = False,
+) -> IssuePublicationResult:
+    number = payload.get("number")
+    url = payload.get("html_url")
+    if (
+        not isinstance(number, int)
+        or number < 1
+        or not isinstance(url, str)
+        or not url.startswith("https://")
+    ):
+        raise PublicationError("GitHub issue response is invalid")
+    return IssuePublicationResult(
+        issue_number=number,
+        issue_url=url,
+        reused=reused,
     )
 
 

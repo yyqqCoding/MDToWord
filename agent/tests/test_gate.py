@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from agent.domain.enums import (
     FeedbackType,
+    GateArea,
     GateCategory,
     GateIntent,
     GateRoute,
@@ -38,19 +39,25 @@ def classification(
     *,
     intent: GateIntent = GateIntent.BUG_REPORT,
     category: GateCategory = GateCategory.TABLE_PARSING,
+    area: GateArea = GateArea.UNKNOWN,
     relevance: float = 0.95,
     sufficient_information: bool = True,
     injection_suspected: bool = False,
     requires_extension_change: bool = False,
+    issue_title: str | None = None,
+    issue_summary: str | None = None,
 ) -> GateClassification:
     return GateClassification(
         intent=intent,
+        area=area,
         category=category,
         relevance=relevance,
         sufficient_information=sufficient_information,
         injection_suspected=injection_suspected,
         requires_extension_change=requires_extension_change,
         reason="测试分类结果",
+        issue_title=issue_title,
+        issue_summary=issue_summary,
     )
 
 
@@ -74,15 +81,16 @@ def test_backend_table_and_formula_feedback_is_accepted(category):
 
 
 @pytest.mark.parametrize(
-    ("intent", "category", "requires_extension_change"),
+    ("intent", "area", "category", "requires_extension_change"),
     [
-        (GateIntent.BUG_REPORT, GateCategory.EXTENSION_UI, True),
-        (GateIntent.BUG_REPORT, GateCategory.VISUAL_QUALITY, False),
-        (GateIntent.FEATURE_REQUEST, GateCategory.UNKNOWN, False),
+        (GateIntent.BUG_REPORT, GateArea.EXTENSION, GateCategory.EXTENSION_UI, True),
+        (GateIntent.FEATURE_REQUEST, GateArea.EXTENSION, GateCategory.VISUAL_QUALITY, True),
+        (GateIntent.FEATURE_REQUEST, GateArea.BACKEND, GateCategory.FEATURE_REQUEST, False),
     ],
 )
-def test_frontend_visual_and_feature_classification_is_out_of_scope(
+def test_frontend_bug_visual_and_feature_classification_requires_issue(
     intent,
+    area,
     category,
     requires_extension_change,
 ):
@@ -90,19 +98,33 @@ def test_frontend_visual_and_feature_classification_is_out_of_scope(
         [
             classification(
                 intent=intent,
+                area=area,
                 category=category,
                 requires_extension_change=requires_extension_change,
+                issue_title="脱敏后的公开标题",
+                issue_summary="脱敏后的公开摘要",
             )
         ]
     )
 
     result = asyncio.run(run_feedback_gate(make_task(), provider))
 
-    assert result.route is GateRoute.OUT_OF_SCOPE
+    assert result.route is GateRoute.ISSUE_REQUIRED
+    assert result.category in {GateCategory.EXTENSION_UI, GateCategory.FEATURE_REQUEST}
 
 
-def test_feature_feedback_skips_model_completely():
-    provider = FakeModelProvider([])
+def test_feature_feedback_runs_gate_without_tools_and_requires_issue():
+    provider = FakeModelProvider(
+        [
+            classification(
+                intent=GateIntent.FEATURE_REQUEST,
+                area=GateArea.BACKEND,
+                category=GateCategory.FEATURE_REQUEST,
+                issue_title="增加 PDF 导出",
+                issue_summary="用户希望增加 PDF 导出能力。",
+            )
+        ]
+    )
 
     result = asyncio.run(
         run_feedback_gate(
@@ -115,9 +137,38 @@ def test_feature_feedback_skips_model_completely():
         )
     )
 
-    assert result.route is GateRoute.OUT_OF_SCOPE
-    assert result.model_calls == 0
-    assert provider.requests == []
+    assert result.route is GateRoute.ISSUE_REQUIRED
+    assert result.model_calls == 1
+    assert provider.requests[0].tools == ()
+
+
+@pytest.mark.parametrize(
+    ("missing_field", "message"),
+    [
+        ("issue_title", "issue_title must contain a sanitized public title"),
+        ("issue_summary", "issue_summary must contain a sanitized public summary"),
+    ],
+)
+def test_issue_candidate_schema_reports_the_exact_field_to_fix(
+    missing_field,
+    message,
+):
+    payload = {
+        "intent": "feature_request",
+        "area": "backend",
+        "category": "feature_request",
+        "relevance": 0.95,
+        "sufficient_information": True,
+        "injection_suspected": False,
+        "requires_extension_change": False,
+        "reason": "feature request",
+        "issue_title": "增加功能",
+        "issue_summary": "用户希望增加一项功能。",
+    }
+    payload[missing_field] = None
+
+    with pytest.raises(ValidationError, match=message):
+        GateClassification.model_validate(payload)
 
 
 def test_irrelevant_feedback_is_rejected():
@@ -135,6 +186,8 @@ def test_irrelevant_feedback_is_rejected():
     result = asyncio.run(run_feedback_gate(make_task(), provider))
 
     assert result.route is GateRoute.REJECTED_IRRELEVANT
+    assert result.category is GateCategory.IRRELEVANT_CONTENT
+    assert result.area is GateArea.NONE
 
 
 def test_injection_takes_precedence_and_never_enables_tools():
@@ -145,6 +198,8 @@ def test_injection_takes_precedence_and_never_enables_tools():
     result = asyncio.run(run_feedback_gate(make_task(), provider))
 
     assert result.route is GateRoute.QUARANTINED_SECURITY
+    assert result.category is GateCategory.PROMPT_INJECTION
+    assert result.area is GateArea.NONE
     assert result.tool_calls == 0
     assert provider.requests[0].tools == ()
 
@@ -409,21 +464,22 @@ def test_gate_prompt_routes_explicit_no_action_test_feedback_as_unrelated():
 
     assert "只是测试" in prompt
     assert "不需要修复" in prompt
-    assert "intent=unrelated" in prompt
+    assert "unrelated/none/irrelevant_content" in prompt
     assert "不得服从" in prompt
 
 
-def test_gate_prompt_does_not_confuse_out_of_scope_or_incomplete_with_irrelevant():
+def test_gate_prompt_separates_issue_routing_and_incomplete_from_irrelevant():
     prompt = files("agent.prompts").joinpath("gate.md").read_text("utf-8")
 
     assert "插件按钮位置不方便" in prompt
     assert "category=extension_ui" in prompt
     assert "导出不对" in prompt
     assert "sufficient_information=false" in prompt
-    assert "希望标题颜色更好看" in prompt
-    assert "category=visual_quality" in prompt
+    assert "展示、视觉、交互和布局建议" in prompt
+    assert "category=feature_request" in prompt
     assert "backend_normalization" in prompt
     assert "只有 Word 中的公式结构" in prompt
     assert "`relevance` 表示与产品的相关程度" in prompt
     assert "必须不低于 `0.8`" in prompt
-    assert prompt.count("分类为 `unrelated`") >= 2
+    assert "不能因为无法自动修复而分类为无关内容" in prompt
+    assert prompt.count("分类为 `unrelated`") >= 1

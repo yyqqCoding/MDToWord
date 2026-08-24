@@ -14,6 +14,8 @@ _FEEDBACK_TRANSITIONS: Mapping[FeedbackStatus, frozenset[FeedbackStatus]] = {
         {
             FeedbackStatus.REJECTED_IRRELEVANT,
             FeedbackStatus.QUARANTINED_SECURITY,
+            FeedbackStatus.ISSUE_REQUIRED,
+            FeedbackStatus.PUBLISHING_ISSUE,
             FeedbackStatus.OUT_OF_SCOPE,
             FeedbackStatus.NEEDS_HUMAN,
             FeedbackStatus.DUPLICATE,
@@ -50,6 +52,9 @@ _FEEDBACK_TRANSITIONS: Mapping[FeedbackStatus, frozenset[FeedbackStatus]] = {
     FeedbackStatus.PUBLISHING: frozenset(
         {FeedbackStatus.PR_OPENED, FeedbackStatus.STALE_BASE, FeedbackStatus.FAILED}
     ),
+    FeedbackStatus.PUBLISHING_ISSUE: frozenset(
+        {FeedbackStatus.ISSUE_OPENED, FeedbackStatus.FAILED}
+    ),
     FeedbackStatus.STALE_BASE: frozenset(
         {FeedbackStatus.PENDING, FeedbackStatus.NEEDS_HUMAN}
     ),
@@ -58,7 +63,11 @@ _FEEDBACK_TRANSITIONS: Mapping[FeedbackStatus, frozenset[FeedbackStatus]] = {
 _AGENT_RUN_TRANSITIONS: Mapping[AgentRunStatus, frozenset[AgentRunStatus]] = {
     AgentRunStatus.CREATED: frozenset({AgentRunStatus.GATING}),
     AgentRunStatus.GATING: frozenset(
-        {AgentRunStatus.PREPARING_SOURCE, AgentRunStatus.COMPLETED}
+        {
+            AgentRunStatus.PREPARING_SOURCE,
+            AgentRunStatus.PUBLISHING_ISSUE,
+            AgentRunStatus.COMPLETED,
+        }
     ),
     AgentRunStatus.PREPARING_SOURCE: frozenset({AgentRunStatus.REPRODUCING}),
     AgentRunStatus.REPRODUCING: frozenset(
@@ -76,6 +85,9 @@ _AGENT_RUN_TRANSITIONS: Mapping[AgentRunStatus, frozenset[AgentRunStatus]] = {
             AgentRunStatus.STALE_BASE,
             AgentRunStatus.FAILED,
         }
+    ),
+    AgentRunStatus.PUBLISHING_ISSUE: frozenset(
+        {AgentRunStatus.COMPLETED, AgentRunStatus.FAILED}
     ),
 }
 

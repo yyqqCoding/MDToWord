@@ -1,8 +1,8 @@
-# MD To Word 用户反馈自动修复 Agent
+# MD To Word 用户反馈处理 Agent
 
 本目录是 Agent 项目的唯一权威设计来源。系统读取真实用户反馈，使用自托管
-Agent 服务自动判断、复现并修复后端缺陷，在隔离沙箱中完成确定性验证，最后向
-GitHub 创建 Pull Request，由维护者人工审核和合并。
+Agent 服务自动判断：后端缺陷在隔离沙箱中复现、修复和确定性验证后创建 Pull Request；
+功能需求与前端/扩展缺陷创建脱敏 GitHub Issue，由维护者人工处理。
 
 如果希望先按实际运行顺序理解系统，或准备面试讲解，可以阅读
 [AgentGuide](../AgentGuide/README.md)。AgentGuide使用直白语言解释当前实现，但不替代本目录
@@ -15,8 +15,10 @@ GitHub 创建 Pull Request，由维护者人工审核和合并。
 - 使用 LangGraph 组织可恢复的状态图，在复现和修复阶段使用有限 ReAct 循环；
 - 使用 Docker Worker 执行模型生成的测试和修改后代码；
 - 使用 Langfuse 记录端到端 Trace、模型用量、工具调用、耗时和结果；
-- 反馈通过安全与相关性门禁后自动进入复现和修复，不设置人工批准节点；
-- 只自动修改后端，禁止修改 `extension/`；前端问题只分类为超出范围；
+- 后端缺陷通过安全与相关性门禁后自动进入复现和修复，不设置人工批准节点；
+- 只自动修改后端，禁止修改 `extension/`；前端问题不进入自动修复；
+- 相关且信息充分的功能需求，以及前端/扩展缺陷，创建脱敏 GitHub Issue 交由维护者处理；
+- `out_of_scope` 只兼容历史运行，新反馈不再产生该路由；
 - 验证通过后自动创建 PR，但绝不自动合并；
 - 用户只提交原 Markdown 和问题描述，不采集 `expected_behavior`；
 - 插件版本从 `extension/dist/manifest.json` 读取，不逐条向用户采集版本；
@@ -75,6 +77,9 @@ GitHub 创建 Pull Request，由维护者人工审核和合并。
   指纹或临时 IP 诊断日志；分钟/小时/每日/全局窗口、并发、失败关闭、插件 `429` 行为、
   伪造头防绕过以及 Wi-Fi/手机流量身份区分均已验证。维护者又于 2026-08-19 完成生产
   插件人工验收；Edge 商店 `0.3.3` 发布构建已准备，尚不记为商店已发布。
+- 阶段 I 的功能需求/前端缺陷 Issue 路由、细分类别和 Trace Site 统计正确性已于
+  2026-08-24 完成本地实现与自动测试；migration、GitHub App Issues 权限、真实 Issue
+  验收和生产部署仍待维护者执行。
 
 可直接执行的配置和命令见 [agent/README.md](../../agent/README.md)。阶段划分、历史检查点
 和验收证据以 [implementation-plan.md](implementation-plan.md) 为准；本文档中的目标
@@ -90,10 +95,9 @@ GitHub 创建 Pull Request，由维护者人工审核和合并。
 Supabase feedback
   -> 自托管 Agent Controller
   -> Feedback Gate
-  -> LangGraph 复现与修复
-  -> Docker Sandbox 确定性验证
-  -> GitHub Pull Request
-  -> 维护者审核与合并
+      |- 后端缺陷 -> LangGraph 复现与修复 -> Docker Sandbox -> GitHub Pull Request
+      `- 功能需求/前端缺陷 -> 脱敏 GitHub Issue
+  -> 维护者人工处理
 ```
 
 ## 设计状态

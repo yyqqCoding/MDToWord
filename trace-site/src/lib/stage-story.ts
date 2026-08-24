@@ -46,6 +46,7 @@ const ROUTE_TEXT: Record<string, string> = {
   accepted_backend_bug: "受理为后端缺陷",
   rejected_irrelevant: "判定为无关",
   quarantined_security: "安全隔离",
+  issue_required: "创建人工处理 Issue",
   out_of_scope: "超出范围",
   needs_human: "转人工",
   duplicate: "重复反馈",

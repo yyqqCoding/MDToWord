@@ -1,4 +1,4 @@
-import type { GateCategory } from "@/lib/types";
+import type { GateArea, GateCategory, GateRoute } from "@/lib/types";
 
 /**
  * 人工撰写的案例说明。
@@ -33,10 +33,36 @@ const CATEGORY_TITLES: Record<GateCategory, string> = {
   backend_normalization: "后端归一化问题",
   extension_ui: "扩展界面问题",
   visual_quality: "排版观感问题",
+  feature_request: "功能需求",
+  irrelevant_content: "无关内容",
+  prompt_injection: "提示词注入",
   unknown: "未分类反馈",
 };
 
-/** 未登记案例说明时的标题，只用分类推导，不触碰用户内容。 */
-export function fallbackTitle(category: GateCategory | null): string {
+export function categoryTitle(category: GateCategory | null, area?: GateArea): string {
+  if (category === "feature_request") {
+    if (area === "backend") return "功能建议 · 后端";
+    if (area === "extension") return "功能建议 · 扩展";
+    if (area === "cross_component") return "功能建议 · 前后端";
+  }
+  if (category === "extension_ui") return "扩展缺陷";
   return CATEGORY_TITLES[category ?? "unknown"];
+}
+
+/** 未登记案例说明时的标题，只用分类推导，不触碰用户内容。 */
+export function fallbackTitle(
+  category: GateCategory | null,
+  route?: GateRoute | null,
+  area?: GateArea,
+): string {
+  if (route === "quarantined_security") return "提示词注入尝试";
+  if (route === "rejected_irrelevant") return "无关内容";
+  if (route === "needs_human" && category === "unknown") return "信息不足的反馈";
+  if (category === "feature_request") {
+    if (area === "backend") return "后端功能需求";
+    if (area === "extension") return "前端/扩展功能需求";
+    if (area === "cross_component") return "跨端功能需求";
+  }
+  if (category === "extension_ui") return "前端/扩展缺陷";
+  return categoryTitle(category, area);
 }

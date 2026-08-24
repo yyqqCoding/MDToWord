@@ -3,6 +3,7 @@ import re
 from agent.domain.content import contains_mermaid_diagram
 from agent.domain.enums import (
     FeedbackType,
+    GateArea,
     GateCategory,
     GateIntent,
     GateRoute,
@@ -49,8 +50,6 @@ def deterministic_gate_result(
     # 重复判定早于反馈类型分流，确保已有处理结果始终是唯一事实来源。
     if duplicate_found:
         return _terminal(GateRoute.DUPLICATE, "open_duplicate_found")
-    if task.feedback_type is FeedbackType.FEATURE:
-        return _terminal(GateRoute.OUT_OF_SCOPE, "feature_feedback_type")
     return None
 
 
@@ -65,6 +64,8 @@ def apply_gate_policy(
 
     if not 0 <= min_confidence <= 1:
         raise ValueError("min_confidence must be between 0 and 1")
+
+    classification = _normalize_classification(classification)
 
     if classification.injection_suspected:
         return _classified_terminal(
@@ -81,16 +82,56 @@ def apply_gate_policy(
             "irrelevant_or_spam",
             model_calls=model_calls,
         )
-    if (
+    issue_candidate = (
         classification.intent is GateIntent.FEATURE_REQUEST
-        or classification.requires_extension_change
-        or classification.category
-        in {GateCategory.EXTENSION_UI, GateCategory.VISUAL_QUALITY}
+        or (
+            classification.intent is GateIntent.BUG_REPORT
+            and classification.area is GateArea.EXTENSION
+        )
+    )
+    if issue_candidate and classification.relevance < min_confidence:
+        return _classified_terminal(
+            GateRoute.NEEDS_HUMAN,
+            classification,
+            "confidence_below_threshold",
+            model_calls=model_calls,
+        )
+    if issue_candidate and not classification.sufficient_information:
+        return _classified_terminal(
+            GateRoute.NEEDS_HUMAN,
+            classification,
+            "insufficient_information",
+            model_calls=model_calls,
+        )
+    if issue_candidate and classification.area not in {
+        GateArea.BACKEND,
+        GateArea.EXTENSION,
+        GateArea.CROSS_COMPONENT,
+    }:
+        return _classified_terminal(
+            GateRoute.NEEDS_HUMAN,
+            classification,
+            "issue_area_unknown",
+            model_calls=model_calls,
+        )
+    if issue_candidate and (
+        classification.issue_title is None or classification.issue_summary is None
     ):
         return _classified_terminal(
-            GateRoute.OUT_OF_SCOPE,
+            GateRoute.NEEDS_HUMAN,
             classification,
-            "frontend_feature_or_visual",
+            "issue_draft_missing",
+            model_calls=model_calls,
+        )
+    if issue_candidate:
+        return _classified_terminal(
+            GateRoute.ISSUE_REQUIRED,
+            classification,
+            (
+                "extension_bug_requires_issue"
+                if classification.intent is GateIntent.BUG_REPORT
+                else "feature_requires_issue"
+            ),
             model_calls=model_calls,
         )
     if (
@@ -185,12 +226,80 @@ def _classified_terminal(
 ) -> GateResult:
     return GateResult(
         route=route,
+        area=classification.area,
         category=category if category is not None else classification.category,
         risk=risk,
         policy_reason=policy_reason,
         classification=classification,
         model_calls=model_calls,
     )
+
+
+def _normalize_classification(
+    classification: GateClassification,
+) -> GateClassification:
+    """把模型的相邻类别收敛为持久化和展示使用的稳定分类。"""
+
+    if classification.injection_suspected:
+        return classification.model_copy(
+            update={
+                "area": GateArea.NONE,
+                "category": GateCategory.PROMPT_INJECTION,
+                "issue_title": None,
+                "issue_summary": None,
+            }
+        )
+    if classification.intent in {GateIntent.UNRELATED, GateIntent.SPAM}:
+        return classification.model_copy(
+            update={
+                "area": GateArea.NONE,
+                "category": GateCategory.IRRELEVANT_CONTENT,
+                "issue_title": None,
+                "issue_summary": None,
+            }
+        )
+
+    extension_signal = (
+        classification.area is GateArea.EXTENSION
+        or classification.requires_extension_change
+        or classification.category
+        in {GateCategory.EXTENSION_UI, GateCategory.VISUAL_QUALITY}
+    )
+    if classification.category is GateCategory.VISUAL_QUALITY:
+        return classification.model_copy(
+            update={
+                "intent": GateIntent.FEATURE_REQUEST,
+                "area": GateArea.EXTENSION,
+                "category": GateCategory.FEATURE_REQUEST,
+                "requires_extension_change": True,
+            }
+        )
+    if classification.intent is GateIntent.FEATURE_REQUEST:
+        return classification.model_copy(
+            update={
+                "area": (
+                    GateArea.EXTENSION
+                    if extension_signal
+                    else classification.area
+                ),
+                "category": GateCategory.FEATURE_REQUEST,
+            }
+        )
+    if classification.intent is GateIntent.BUG_REPORT and extension_signal:
+        return classification.model_copy(
+            update={
+                "area": GateArea.EXTENSION,
+                "category": GateCategory.EXTENSION_UI,
+                "requires_extension_change": True,
+            }
+        )
+    if (
+        classification.intent is GateIntent.BUG_REPORT
+        and classification.area is GateArea.UNKNOWN
+        and classification.category in BACKEND_CATEGORY_ALLOWLIST
+    ):
+        return classification.model_copy(update={"area": GateArea.BACKEND})
+    return classification
 
 
 _CONVERSION_CRASH_PATTERNS = (

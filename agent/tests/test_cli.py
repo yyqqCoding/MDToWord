@@ -19,7 +19,7 @@ def test_fake_cli_scenarios_cover_stage_b_routes():
         GateRoute.ACCEPTED_BACKEND_BUG,
         GateRoute.REJECTED_IRRELEVANT,
         GateRoute.QUARANTINED_SECURITY,
-        GateRoute.OUT_OF_SCOPE,
+        GateRoute.ISSUE_REQUIRED,
         GateRoute.NEEDS_HUMAN,
     ):
         classification = fake_classification_for_route(route)

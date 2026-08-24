@@ -3,7 +3,7 @@
 ## 1. 目标与边界
 
 一次反馈处理必须能回答：执行了哪些节点和工具、调用了哪个模型、使用多少Token和
-成本、每轮为何继续或停止、沙箱执行了什么、最终为何创建或未创建PR。
+成本、每轮为何继续或停止、沙箱执行了什么、最终为何创建或未创建PR/Issue。
 
 Langfuse负责Agent和LLM语义观测；数据库保存权威状态与用量汇总；结构化日志负责
 服务故障。Langfuse不可用不能改变业务结果。
@@ -33,6 +33,7 @@ feedback-repair-run                  root/agent
   claim-feedback                     span
   gate-feedback                      agent
     classify-intent                  generation
+  publish-issue                      tool（仅 issue_required）
   prepare-source                     span
   reproduce                          agent
     plan-reproduction                generation
@@ -47,7 +48,7 @@ feedback-repair-run                  root/agent
     run-target-tests                 tool
     run-full-tests                   tool
     validate-docx                    tool
-  publish-pr                         tool
+  publish-pr                         tool（仅 accepted_backend_bug）
   finalize                           span
 ```
 
@@ -75,7 +76,9 @@ observation 并传播确定性 Trace ID、Session ID 和最终 route。后续接
 callback 时不得再次记录同一 Provider 调用。
 
 Gate-only 运行预期包含 root `feedback-repair-run` Agent 和 `classify-intent`
-Generation。阶段 D 复现运行还会显式记录 `plan-reproduction`、`read-source-file`、
+Generation。Feature 也必须调用 Gate；旧版 `feature_feedback_type` 零调用短路只作为历史
+记录保留。`issue_required` 运行额外包含一个 `publish-issue` Tool，不含源码或 Sandbox
+observation。阶段 D 复现运行还会显式记录 `plan-reproduction`、`read-source-file`、
 `generate-test`、`submit-test-edits` 和 `run-reproduction`，工具 metadata 保存轮次。
 Telemetry 创建、更新或 flush 失败采用 fail-open，只记录脱敏 warning；Masking 回调兼容
 Langfuse v4 的 `mask(data=...)` 调用方式。默认 `TRACE_CONTENT=false`，CLI 会拒绝启用
@@ -145,13 +148,13 @@ Sandbox工具补充CPU/内存限制和容器镜像digest，不上传完整stdout
 Root observation至少包含：
 
 ```text
-run_id, feedback_hash, category, route
+run_id, feedback_hash, intent, area, category, route
 base_sha, extension_version
 provider, model
 graph_version, policy_version, sandbox_image_digest
 reproduction_rounds, repair_rounds
 changed_files, validated_patch_sha256
-final_status, error_code, pr_url
+final_status, error_code, pr_url, issue_url
 ```
 
 PR正文包含Trace URL，便于维护者从代码审查跳转到执行证据。Trace不包含完整反馈，
@@ -161,6 +164,11 @@ PR正文包含Trace URL，便于维护者从代码审查跳转到执行证据。
 分支、PR number 和是否复用；不记录 App JWT、安装令牌、PR 正文或文件内容。阶段 G
 离线评估的逐条输出只包含稳定 case ID、分类、用量和错误码，原始用例内容不写报告。
 
+阶段 I 的 `publish-issue` Tool observation 只记录 `run_ref`、内容指纹前缀、area、
+固定标签、Issue number 和是否复用；不记录 Issue 标题、摘要、正文、marker 全文、App JWT
+或安装令牌。Gate Trace 只记录 `issue_draft_present=true/false` 与字符数，不上传 draft
+内容。
+
 ## 8. 数据最小化与脱敏
 
 默认 `TRACE_CONTENT=false`。发送Langfuse前执行统一Masking：
@@ -169,6 +177,7 @@ PR正文包含Trace URL，便于维护者从代码审查跳转到执行证据。
 - 用户Markdown替换为哈希、字节数和分类摘要；
 - 源码和patch替换为路径、增删行数和SHA-256；
 - 模型输入输出只保留结构化结果摘要；
+- Issue draft 替换为 area/category、字符数和哈希，不上传标题或摘要正文；
 - stdout/stderr只保留脱敏、截断后的错误摘要；
 - 删除Authorization、Cookie、API Key、邮箱、电话和已知Secret模式；
 - 电话匹配的前后边界排除十六进制字符与连字符。SHA-256、git SHA、镜像 digest 和 UUID
@@ -201,6 +210,7 @@ MVP从数据库和Langfuse统计：
 - 一轮/两轮修复成功率；
 - Patch Policy拒绝率；
 - PR创建率与人工接受率；
+- Issue创建率、复用率、发布失败数，以及按 backend/extension/cross_component 的分布；
 - 每阶段耗时；
 - 每次运行及每个成功PR的Token和成本；
 - Provider错误、Sandbox超时和GitHub发布失败数量。
@@ -210,7 +220,8 @@ MVP从数据库和Langfuse统计：
 
 ## 11. 离线评估
 
-维护10至20条脱敏或构造用例：表格、公式、标题、崩溃、前端、功能建议、无关内容、
+维护10至20条脱敏或构造用例：表格、公式、标题、崩溃、前端 Bug、后端/前端/跨端功能
+建议、无关内容、
 信息不足和Prompt Injection。每条定义期望路由、分类、是否允许工具、Oracle类型和
 可选修改路径。
 
@@ -221,6 +232,7 @@ gate accuracy
 automatable precision
 schema compliance
 injection quarantine recall / false-positive rate
+issue routing precision / issue draft schema compliance
 reproduction success
 patch policy pass rate
 validated repair rate
@@ -249,5 +261,5 @@ false-positive rate 为 0。由于模型单价仍配置为 0，本轮 `estimated
   不 flush 就通知，站点会拿到不完整的树；
 - Trace与Artifact默认保留14天，数据库保留脱敏汇总；
 - Langfuse Cloud或自托管通过配置选择，领域代码不分支；
-- 无论Trace是否完整，最终Token、成本、状态、patch hash和PR URL必须写入数据库；
+- 无论Trace是否完整，最终Token、成本、状态、patch hash、PR URL和Issue URL必须写入数据库；
 - 定期抽样对账Provider usage、数据库汇总和Langfuse totals。

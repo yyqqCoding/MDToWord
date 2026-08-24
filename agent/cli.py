@@ -11,7 +11,7 @@ import httpx
 from agent.checkpoint import open_postgres_checkpointer
 from agent.config import AgentConfig
 from agent.controller import GateController, GateRunOutcome
-from agent.domain.enums import GateCategory, GateIntent, GateRoute
+from agent.domain.enums import GateArea, GateCategory, GateIntent, GateRoute
 from agent.domain.errors import AgentError, ConfigurationError
 from agent.domain.gate import GateClassification
 from agent.providers.fake import FakeModelProvider
@@ -29,7 +29,7 @@ _FAKE_ROUTES = (
     GateRoute.ACCEPTED_BACKEND_BUG,
     GateRoute.REJECTED_IRRELEVANT,
     GateRoute.QUARANTINED_SECURITY,
-    GateRoute.OUT_OF_SCOPE,
+    GateRoute.ISSUE_REQUIRED,
     GateRoute.NEEDS_HUMAN,
 )
 
@@ -152,6 +152,7 @@ async def _execute(args: argparse.Namespace) -> int:
                 "error_code": outcome.error_code if outcome is not None else None,
                 "published": outcome.pr_url is not None if outcome is not None else False,
                 "pr_url": outcome.pr_url if outcome is not None else None,
+                "issue_url": outcome.issue_url if outcome is not None else None,
             }
         )
         return 0
@@ -178,6 +179,7 @@ async def _execute(args: argparse.Namespace) -> int:
             "dry_run": not args.publish,
             "provider": args.provider,
             "pr_url": result.pr_url,
+            "issue_url": result.issue_url,
             "stage": (
                 "publication"
                 if args.publish
@@ -326,32 +328,39 @@ def fake_classification_for_route(route: GateRoute) -> GateClassification:
     values = {
         GateRoute.ACCEPTED_BACKEND_BUG: {
             "intent": GateIntent.BUG_REPORT,
+            "area": GateArea.BACKEND,
             "category": GateCategory.BACKEND_NORMALIZATION,
             "relevance": 0.99,
             "sufficient_information": True,
         },
         GateRoute.REJECTED_IRRELEVANT: {
             "intent": GateIntent.UNRELATED,
+            "area": GateArea.NONE,
             "category": GateCategory.UNKNOWN,
             "relevance": 0.01,
             "sufficient_information": False,
         },
         GateRoute.QUARANTINED_SECURITY: {
             "intent": GateIntent.UNKNOWN,
+            "area": GateArea.NONE,
             "category": GateCategory.UNKNOWN,
             "relevance": 0.50,
             "sufficient_information": False,
             "injection_suspected": True,
         },
-        GateRoute.OUT_OF_SCOPE: {
-            "intent": GateIntent.BUG_REPORT,
-            "category": GateCategory.EXTENSION_UI,
+        GateRoute.ISSUE_REQUIRED: {
+            "intent": GateIntent.FEATURE_REQUEST,
+            "area": GateArea.EXTENSION,
+            "category": GateCategory.FEATURE_REQUEST,
             "relevance": 0.99,
             "sufficient_information": True,
             "requires_extension_change": True,
+            "issue_title": "增加扩展功能",
+            "issue_summary": "用户希望增加一项扩展功能。",
         },
         GateRoute.NEEDS_HUMAN: {
             "intent": GateIntent.UNKNOWN,
+            "area": GateArea.UNKNOWN,
             "category": GateCategory.UNKNOWN,
             "relevance": 0.50,
             "sufficient_information": False,

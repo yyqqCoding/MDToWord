@@ -10,6 +10,7 @@ class FeedbackStatus(str, Enum):
     PENDING = "pending"
     CLAIMED = "claimed"
     GATING = "gating"
+    ISSUE_REQUIRED = "issue_required"
     REJECTED_IRRELEVANT = "rejected_irrelevant"
     QUARANTINED_SECURITY = "quarantined_security"
     OUT_OF_SCOPE = "out_of_scope"
@@ -23,8 +24,10 @@ class FeedbackStatus(str, Enum):
     FAILED = "failed"
     VALIDATED = "validated"
     PUBLISHING = "publishing"
+    PUBLISHING_ISSUE = "publishing_issue"
     STALE_BASE = "stale_base"
     PR_OPENED = "pr_opened"
+    ISSUE_OPENED = "issue_opened"
 
 
 class AgentRunStatus(str, Enum):
@@ -35,6 +38,7 @@ class AgentRunStatus(str, Enum):
     REPAIRING = "repairing"
     VALIDATING = "validating"
     PUBLISHING = "publishing"
+    PUBLISHING_ISSUE = "publishing_issue"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
@@ -72,6 +76,14 @@ class GateIntent(str, Enum):
     UNKNOWN = "unknown"
 
 
+class GateArea(str, Enum):
+    BACKEND = "backend"
+    EXTENSION = "extension"
+    CROSS_COMPONENT = "cross_component"
+    NONE = "none"
+    UNKNOWN = "unknown"
+
+
 class GateCategory(str, Enum):
     CONVERSION_CRASH = "conversion_crash"
     FORMULA_PARSING = "formula_parsing"
@@ -82,6 +94,9 @@ class GateCategory(str, Enum):
     BACKEND_NORMALIZATION = "backend_normalization"
     EXTENSION_UI = "extension_ui"
     VISUAL_QUALITY = "visual_quality"
+    FEATURE_REQUEST = "feature_request"
+    IRRELEVANT_CONTENT = "irrelevant_content"
+    PROMPT_INJECTION = "prompt_injection"
     UNKNOWN = "unknown"
 
 
@@ -89,6 +104,7 @@ class GateRoute(str, Enum):
     ACCEPTED_BACKEND_BUG = "accepted_backend_bug"
     REJECTED_IRRELEVANT = "rejected_irrelevant"
     QUARANTINED_SECURITY = "quarantined_security"
+    ISSUE_REQUIRED = "issue_required"
     OUT_OF_SCOPE = "out_of_scope"
     NEEDS_HUMAN = "needs_human"
     DUPLICATE = "duplicate"

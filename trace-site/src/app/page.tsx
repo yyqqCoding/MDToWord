@@ -20,7 +20,7 @@ import { fallbackTitle } from "@/content/cases";
  * 参考稿里的成本磁贴同样没有做：estimated_cost 恒为 0（未配置单价）。
  */
 
-export const revalidate = 300;
+export const revalidate = 60;
 
 export default async function HomePage() {
   const [stats, runs] = await Promise.all([getOverviewStats(), getRunList(8)]);
@@ -40,7 +40,7 @@ export default async function HomePage() {
 
       <PageHeader
         title="概览"
-        description="用户提交一条反馈，Agent 自动分类、复现、修复、验证，最后提交 Pull Request。每一步都留有可审计的执行证据。"
+        description="Agent 安全分类反馈：后端缺陷经复现、修复和验证后提交 PR，功能需求与前端缺陷创建脱敏 Issue。"
         backdrop
       />
 
@@ -48,7 +48,7 @@ export default async function HomePage() {
         <StatCard label="总运行数" count={stats.totalRuns} delay={60} />
         <StatCard label="产出 PR" count={stats.pullRequests} delay={110} />
         <StatCard
-          label="平均耗时"
+          label="平均运行耗时"
           value={formatDuration(stats.averageDurationMs)}
           delay={160}
         />
@@ -75,7 +75,12 @@ export default async function HomePage() {
           />
           <div className="p-5">
             <p className="text-base font-medium text-ink">
-              {featured.narrative?.title ?? fallbackTitle(featured.run.category)}
+              {featured.narrative?.title ??
+                fallbackTitle(
+                  featured.run.category,
+                  featured.run.route,
+                  featured.run.area,
+                )}
             </p>
             {featured.narrative && (
               <p className="mt-2 max-w-3xl text-sm leading-relaxed text-ink-muted">

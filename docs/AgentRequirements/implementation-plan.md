@@ -88,6 +88,9 @@ backend/tests/
 
 ### 验收
 
+> 本节记录阶段 B 当时的验收口径。阶段 I 实现后，功能需求和前端/扩展缺陷改走
+> `issue_required`；`out_of_scope` 只保留历史读取兼容。
+
 - 表格/公式样例路由为`accepted_backend_bug`；
 - 前端和功能建议路由为`out_of_scope`；
 - 无关内容路由为`rejected_irrelevant`；
@@ -245,7 +248,83 @@ Scheduler是否领取生产反馈，不引入逐条人工批准状态。
    HMAC Secret、IP 日志或诊断接口；
 7. 运行后端全量测试、扩展构建以及 Agent 全量测试和 compileall，再按本文记录真实证据。
 
-## 11. 配置清单
+## 11. 阶段I：功能需求 Issue 路由与展示数据正确性
+
+**状态：本地实现完成，待人工 migration、权限、真实验收与部署（2026-08-24）**
+
+### 设计依据
+
+- 2026-08-24 从 Supabase 公开视图直接聚合得到 51 条终态运行、2 个唯一 PR、
+  `1,092,872` Token、平均墙钟 `549,947ms`；当时概览仍显示 49，随后 15 分钟缓存到期才
+  显示 51，证明数据未丢失，错误是统计缓存新鲜度；
+- 功能建议 run `c4c6a831-...` 为 `model_calls=0 / category=unknown /
+  policy_reason=feature_feedback_type`，证明“未分类”来自确定性短路而非模型能力；
+- 注入 run `6cc6f25b-...` 已正确路由 `quarantined_security` 且 `tool_calls=0`，但公开站因
+  `status=completed + category=unknown` 显示为“未分类反馈 / 已结束”，证明 route 与展示
+  终态的映射缺失；
+- 当前 51 条运行中，5 条注入、4 条无关和 2 条 Feature 均持久化为 `category=unknown`，
+  因而必须由领域 Policy 规范最终类别，不能只在 UI 层改中文文案。
+
+### 交付
+
+- 删除 `feedback_type=feature` 的模型前短路，Bug/Feature 统一经过无工具 Gate；
+- Gate 新增 `area`、细分类别和受限 `IssueDraft`，Prompt 与本地 Policy 保持同一跨字段
+  规则并 bump Gate Prompt 版本；
+- 新增 `issue_required -> publishing_issue -> issue_opened` 分支、`IssuePublisher` 端口与
+  GitHub 适配器；
+- GitHub Issue 使用固定仓库、固定 `bug`/`enhancement` 标签、脱敏正文和
+  run_ref/fingerprint marker 保证幂等，不在公开 marker 中写完整 feedback ID；
+- 新 migration 追加 `area`、`issue_url` 和 Issue 状态兼容；migration 只提交 DDL，仍由
+  维护者审查后手工执行；
+- GitHub App 增加 `Issues: Read and write`，PR 与 Issue 分别申请精确最小权限令牌；
+- 插件功能建议表单增加“可能经脱敏后公开为 Issue”的提示，不改变提交字段；
+- Trace Site 按 intent/area/category/route 生成“反馈、类别、终态”，修复
+  `quarantined_security` 被显示为“已结束”的映射；
+- Trace Site 运行列表与概览使用统一缓存标签和 60 秒失效兜底；统计分页读取全部运行，
+  PR 按唯一 URL 计数，生产数据源失败不得静默回落到 Mock；
+- `out_of_scope` 仅保留历史读取与展示兼容，新运行不再产生，历史记录不改写、不补建 Issue。
+
+阶段 I 不扩大 Agent 的代码写入白名单，不自动修改 `extension/`，不新增多 Agent、消息
+队列或 GitHub Actions，也不自动创建新标签、关闭 Issue、分配人员或修改项目面板。
+
+### 本地实施证据（2026-08-24）
+
+- Agent 全量测试 `321 passed, 5 skipped`，`compileall` 通过；新增 Fake Issue Graph 验证
+  `issue_required` 不创建源码快照或 Sandbox Job；
+- Issue Publisher 聚焦测试覆盖固定标签、脱敏扫描、提示注入片段拒绝、开放/关闭 Issue
+  marker 复用，以及只申请 `issues:write` 的独立安装令牌；
+- Trace Site `npm test` 为 `10 passed`，`npm run typecheck` 通过；新增分页、统计和终态映射测试验证全部 run、
+  唯一 PR、全部终态平均耗时与全部 Token；
+- 扩展 `tsc` 通过；扩展 Vite build 与 Trace Site Next build 均因当前 WSL `node_modules`
+  缺少 Linux 原生可选 binding 阻断，未擅自重装依赖，不把该环境失败记为通过；
+- 未执行 `007_issue_routing_and_public_projection.sql`、未修改 GitHub App、未创建真实 Issue、
+  未部署或启用 Scheduler，验收顺序第 7～12 项仍待维护者明确执行。
+
+### 验收顺序
+
+1. 评审本阶段涉及的需求、状态机、Issue 契约、权限与公开内容边界；
+2. Fake Gate 覆盖后端/前端/跨端功能需求、前端 Bug、无关、垃圾、注入、信息不足和重复
+   反馈，验证只有 `issue_required` 能到达 Fake Issue Publisher；
+3. 验证 Issue 标题/摘要跨字段 Schema、敏感模式拒绝、固定标签、marker 查重、响应丢失
+   恢复和同 run 恢复不重复创建；
+4. 验证后端 Bug 仍进入 D→E→F，前端/扩展 Bug 与视觉需求不创建 Sandbox Job 或 PR，
+   Agent 仍拒绝任何 `extension/` 补丁；
+5. 运行 Trace Site 聚焦测试，使用构造数据验证统一标签失效、分页全量聚合、唯一 PR 计数、
+   全部终态平均耗时、生产错误态和历史 `out_of_scope` 展示；
+6. 运行 Agent 全量 pytest/compileall、Trace Site `npm test`/typecheck/build；若后端反馈契约
+   或扩展表单改变，再运行后端全量测试与扩展 build；
+7. 维护者手工审查并执行 migration，核对实施前基线运行的数量、Token、唯一 PR 与历史路由
+   在迁移前后一致；不得把迁移执行冒充自动测试；
+8. 维护者手工调整 GitHub App 权限，分别完成 PR/Issue 两种短期令牌的只读预检；
+9. 停止生产 Scheduler 后部署 Controller/Worker/Trace Site，保持 Scheduler 关闭完成审计；
+10. 使用构造或可丢弃的 Feature/前端 Bug 数据完成明确批准的真实 Issue 验收，确认公开
+    Issue 不含原始 description、Markdown、contact、邮箱、电话或密钥，且重复恢复复用同一
+    Issue；自动测试不得冒充该真实验收；
+11. 验证新运行在 `/runs` 与概览的数量、类别、终态、Token 和唯一 PR/Issue 数据与
+    Supabase 对账，正常回调后立即可见、回调丢失时不超过 60 秒；
+12. 标准 `deploy.sh` 审计通过并由维护者输入 `ENABLE` 后才恢复自动领取。
+
+## 12. 配置清单
 
 主要配置：
 
@@ -273,9 +352,9 @@ TRACE_CONTENT=false
 配置启动时校验；错误信息只指出缺少的配置名，不打印值。测试通过Fake和依赖注入
 提供配置，不读取生产Secret。
 
-## 12. 验证命令
+## 13. 验证命令
 
-### 12.1 自动测试与初始化
+### 13.1 自动测试与初始化
 
 ```bash
 uv sync --extra dev
@@ -293,7 +372,7 @@ cd backend && .venv/bin/python -m pytest -v
 backend/.venv/Scripts/python.exe -m pytest backend/tests -v
 ```
 
-### 12.2 Gate、复现、修复与发布
+### 13.2 Gate、复现、修复与发布
 
 ```bash
 # Fake 或真实 Provider 的 Gate-only dry run
@@ -301,7 +380,7 @@ backend/.venv/Scripts/python.exe -m pytest backend/tests -v
 .venv/bin/python -m agent.cli run --feedback-id <uuid> --dry-run \
   --provider configured
 
-# 阶段 D、D+E 和 D+E+F
+# 阶段 D、D+E 和真实 GitHub 发布（后端 Bug 为 PR，Issue 路由为 Issue）
 .venv/bin/python -m agent.cli run --feedback-id <uuid> --dry-run \
   --provider configured --reproduce
 .venv/bin/python -m agent.cli run --feedback-id <uuid> --dry-run \
@@ -311,10 +390,11 @@ backend/.venv/Scripts/python.exe -m pytest backend/tests -v
 ```
 
 除真实 `--publish` 外，CLI 运行必须提供 `--dry-run`；`--publish` 反而禁止与
-`--dry-run` 同用。复现、修复、发布和恢复必须显式使用真实 Provider。可恢复错误使用
+`--dry-run` 同用。它是 PR 与 Issue 共用的真实 GitHub 写入授权，不表示两个 Publisher
+共享契约或权限令牌。复现、修复、发布和恢复必须显式使用真实 Provider。可恢复错误使用
 `--resume-run-id <uuid>` 配合同一个阶段开关，不重新领取 feedback。
 
-### 12.3 评估与生产 Scheduler
+### 13.3 评估与生产 Scheduler
 
 ```bash
 .venv/bin/python -m agent.evals.runner --provider fake
@@ -327,7 +407,7 @@ backend/.venv/Scripts/python.exe -m pytest backend/tests -v
 全部通过时才领取反馈。Docker Worker 的构建、启动和隔离验收命令见
 [agent/README.md](../../agent/README.md)。
 
-## 13. 进度记录
+## 14. 进度记录
 
 ### 阶段 A 实施检查点
 
@@ -358,6 +438,9 @@ backend/.venv/Scripts/python.exe -m pytest backend/tests -v
 - 执行线上 Supabase 迁移、提交或推送代码。
 
 **Assumptions**
+
+> 以下是阶段 A 实施时的历史假设；其中 `requires_extension_change -> out_of_scope` 已由
+> 阶段 I 的 `requires_extension_change -> issue_required` 当前契约取代。
 
 - `agent/` 原有内容是无兼容要求的历史原型，已删除并按稳定方案重建；
 - `requires_extension_change` 表示当前修复必须修改扩展，命中时路由为
@@ -446,6 +529,9 @@ Agent 单元测试。领域规则不依赖 Supabase、LangGraph 或模型 SDK；
 Gate 核心，使模型只负责严格分类，最终路由完全由本地 Policy 决定。
 
 **Acceptance behavior**
+
+> 以下是阶段 B1 实施时的历史验收结果。阶段 I 不改写这些旧运行，但新运行不再产生
+> `out_of_scope`。
 
 - 表格和公式后端缺陷路由为 `accepted_backend_bug`；
 - 前端、纯视觉和功能建议路由为 `out_of_scope`；
@@ -1061,5 +1147,6 @@ Cloud，使真实 Gate 调用具备严格结构化输出、有限重试、真实
 | F GitHub PR | Completed | 2026-08-12 | Agent 全量回归通过；真实 App 最小权限预检通过；run `f11032d7-...` 幂等创建 PR #1，数据库与 Artifact 一致，维护者已人工合并 |
 | G 评估与投产 | Completed | 2026-08-13；公式闭环复验 2026-08-16 | 12 条真实 Gate 评估、Fake 发布 E2E、PR/Render/插件回放通过；独立 ECS Worker/Scheduler 常驻；生产 `rejected_irrelevant`、Mermaid `cannot_reproduce` 与公式自动修复 PR #2 验收通过 |
 | H 公开反馈入口 IP 限流 | Completed | 2026-08-18；插件人工验收 2026-08-19 | 限流/API/插件与自动测试完成；生产 Docker 后端全量 71 passed；Render 黑盒验证伪造头不能绕过、Wi-Fi/手机身份不同、分钟窗口与 `Retry-After` 正确；插件限流提示与输入保留人工验收通过，`0.3.3` 发布构建已准备 |
+| I 功能需求 Issue 路由与展示数据正确性 | Implemented locally / Pending production acceptance | 2026-08-24 | Agent 321 passed（5 skipped）且 compileall 通过；Trace Site 10 passed/typecheck 通过；扩展 tsc 通过；migration、App 权限、真实 Issue、原生 binding 环境下的生产构建与部署待完成 |
 
 状态只在完成对应验收后更新。已有代码不因存在文件或历史提交自动视为通过。

@@ -7,7 +7,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from agent.domain.enums import GateCategory, RiskLevel
+from agent.domain.enums import GateArea, GateCategory, GateIntent, RiskLevel
 from agent.domain.repair import ValidationResult
 from agent.workspace.patch_policy import PatchPolicy
 
@@ -102,3 +102,73 @@ class PublicationResult(BaseModel):
 
 class PullRequestPublisher(Protocol):
     async def publish(self, request: PublicationRequest) -> PublicationResult: ...
+
+
+class IssueDraft(BaseModel):
+    """模型生成、Policy 复核后的最小公开 Issue 内容。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    title: str = Field(min_length=1, max_length=80)
+    summary: str = Field(min_length=1, max_length=600)
+    intent: GateIntent
+    area: GateArea
+    category: GateCategory
+
+    @model_validator(mode="after")
+    def validate_issue_kind(self) -> "IssueDraft":
+        if self.intent not in {GateIntent.BUG_REPORT, GateIntent.FEATURE_REQUEST}:
+            raise ValueError("issue draft intent must be bug_report or feature_request")
+        if self.area not in {
+            GateArea.BACKEND,
+            GateArea.EXTENSION,
+            GateArea.CROSS_COMPONENT,
+        }:
+            raise ValueError("issue draft area must identify an owned component")
+        if "\n" in self.title or "\r" in self.title:
+            raise ValueError("issue title must be a single line")
+        return self
+
+
+class IssuePublicationEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    graph_version: str = Field(min_length=1, max_length=80)
+    policy_version: str = Field(min_length=1, max_length=80)
+    prompt_versions: dict[str, str]
+    provider: str = Field(min_length=1, max_length=100)
+    model: str = Field(min_length=1, max_length=200)
+    model_calls: int = Field(ge=0)
+    tool_calls: int = Field(ge=0)
+    input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+    total_tokens: int = Field(ge=0)
+    trace_url: str | None = Field(default=None, max_length=1000)
+
+
+class IssuePublicationRequest(BaseModel):
+    """不含原始用户字段、源码或 Patch 的 Issue Publisher 输入。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    feedback_id: UUID
+    content_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    run_ref: str = Field(pattern=r"^[0-9a-f]{12}$")
+    draft: IssueDraft
+    evidence: IssuePublicationEvidence
+
+
+class IssuePublicationResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    disposition: str = Field(default="issue_opened", pattern=r"^issue_opened$")
+    issue_number: int = Field(ge=1)
+    issue_url: str = Field(min_length=1, max_length=1000)
+    reused: bool = False
+
+
+class IssuePublisher(Protocol):
+    async def publish_issue(
+        self,
+        request: IssuePublicationRequest,
+    ) -> IssuePublicationResult: ...

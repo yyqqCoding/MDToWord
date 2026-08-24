@@ -14,7 +14,7 @@ from agent.domain.policy import (
 from agent.providers.base import ModelMessage, ModelProvider, StructuredModelResponse
 
 
-GATE_PROMPT_VERSION = "gate-v8"
+GATE_PROMPT_VERSION = "gate-v9"
 GATE_TIMEOUT_SECONDS = 30.0
 
 

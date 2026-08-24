@@ -26,18 +26,21 @@
 feedback 表中的 pending 反馈
   -> Agent Controller 原子领取
   -> Gate 分类、相关性和 Prompt Injection 检查
-  -> 固定 GitHub main 的 base_sha 源码快照
-  -> Docker Sandbox 复现缺陷（最多两轮）
-  -> 生成受限后端修复（最多两轮）
-  -> 全新 Sandbox 独立验证
-  -> GitHub App 创建分支和 Pull Request
-  -> 维护者人工 Review 与 Merge
-  -> Render 自动部署
-  -> 使用原 Markdown 人工回放 Word 导出
+      |- 功能需求/前端缺陷 -> GitHub App 创建脱敏 Issue -> 维护者人工处理
+      `- 后端缺陷
+           -> 固定 GitHub main 的 base_sha 源码快照
+           -> Docker Sandbox 复现缺陷（最多两轮）
+           -> 生成受限后端修复（最多两轮）
+           -> 全新 Sandbox 独立验证
+           -> GitHub App 创建分支和 Pull Request
+           -> 维护者人工 Review 与 Merge
+           -> Render 自动部署
+           -> 使用原 Markdown 人工回放 Word 导出
 ```
 
 Agent 不自动合并 PR，也不直接部署 Render。用户反馈、运行状态和 checkpoint 保存在
 Supabase/PostgreSQL；Langfuse 是可观测性副本，不是状态事实来源。
+Agent 不自动修改 `extension/`；前端/扩展 Bug、展示、视觉、交互和布局需求只创建 Issue。
 
 ## 2. Docker 的两个用途
 
@@ -71,6 +74,10 @@ Render 上部署了一个可供 Agent 创建子容器的 Docker Worker。关闭�
 
 具体命令见 [agent/README.md](../../agent/README.md)。
 
+阶段 I 中，显式 `--publish` 同时授权“后端修复创建 PR”和“功能需求/前端缺陷创建
+Issue”；不带该开关的 Gate/dry-run 不产生真实 GitHub 写入。两条发布分支使用不同的最小
+权限令牌和恢复 checkpoint。
+
 ### 7×24 小时自动处理反馈
 
 使用一台受控的独立 Linux 主机或虚拟机部署：
@@ -90,6 +97,8 @@ Controller 与 Worker 通过内网通信。Worker 端口不得暴露到公网，
 
 - `git push main` 触发 Render 构建和部署转换后端；
 - 浏览器扩展由维护者构建 `extension/dist` 并在浏览器中刷新，不部署到 Render；
+- 阶段 I 已包含功能建议表单的公开发布提示；该文案属于扩展源码变更，仍按商店发布
+  流程由维护者构建、审核和上架，不由 Agent 自动发布；
 - Agent Controller/Sandbox 不随 Render 后端部署；当前独立部署在受控 Linux ECS，由
   systemd 管理 Scheduler 与 Worker，不影响插件转换服务的独立运行；
 - 后端部署完成后必须用原始失败 Markdown 再次导出并用 Word 打开确认；自动化 DOCX
@@ -104,6 +113,10 @@ Controller 与 Worker 通过内网通信。Worker 端口不得暴露到公网，
 复现后路由为 `cannot_reproduce`，没有生成补丁或 PR。部署 Worker 权限修复后，真实公式
 反馈 `41d6c497-...` 已完成复现、修复、独立验证，并由 GitHub App 自动创建 PR #2；该证据
 只证明 Agent 发布闭环，PR 合并和后端部署仍由维护者单独执行。
+
+阶段 I 的 Issue 路由、追加 migration、插件提示与 Trace Site 数据修正截至 2026-08-24
+已完成本地实现和自动测试，但尚未执行 migration、增加 GitHub Issues 权限、创建真实
+Issue 或部署；当前生产仍运行旧语义并可能产生 `out_of_scope`。
 
 ## 6. Linux 常驻 Agent 一键安装
 
@@ -172,6 +185,15 @@ sudo mdtoword-agentctl logs
 
 历史 `failed` feedback/run 保留用于审计，不重新打开。修复部署后使用新的 `pending`
 反馈验证；如果当前代码已经解决问题，正确终态是 `cannot_reproduce`，不是创建空修复 PR。
+
+阶段 I 上线前，维护者必须在 GitHub App 设置中显式增加 `Issues: Read and write`，随后
+重新执行只读权限预检。预检分别申请 PR 权限组和 Issue 权限组：前者只能含
+`contents:write + pull_requests:write`，后者只能含 `issues:write`；任一响应出现未允许权限
+均停止 Scheduler 部署。权限变更本身不得由安装脚本、应用启动或 migration 自动执行。
+
+Issue 发布失败使用同一 run 的稳定 marker 恢复，不重新执行 Gate；历史
+`out_of_scope` 运行不批量补建 Issue。若维护者需要处理历史记录，必须逐条复核并单独批准
+真实 GitHub 写入。
 
 ## 8. 展示站点完成回调（可选）
 

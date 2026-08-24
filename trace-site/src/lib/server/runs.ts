@@ -7,6 +7,8 @@ import { fetchPullDiff } from "@/lib/server/github";
 import { CASE_NARRATIVES, fallbackTitle } from "@/content/cases";
 import { runDurationMs } from "@/lib/format";
 import { isTerminalStatus } from "@/lib/run-graph";
+import { calculateOverviewStats } from "@/lib/overview-stats";
+import { collectOffsetPages } from "@/lib/pagination";
 import { isTraceSnapshotUsable } from "@/lib/trace-snapshot";
 import { getMockRun, HERO_RUN_ID } from "@/lib/mock/hero-run";
 import { mockOverviewStats, mockRunList } from "@/lib/mock/runs";
@@ -26,7 +28,9 @@ import type {
  */
 
 const LIST_COLUMNS =
-  "id,run_ref,status,route,category,total_tokens,pr_url,started_at,finished_at";
+  "id,run_ref,status,route,area,category,total_tokens,pr_url,issue_url,started_at,finished_at";
+const RUNS_CACHE = { revalidate: 60, tags: ["runs"] } as const;
+const PAGE_SIZE = 1000;
 
 interface TraceRow {
   run_id: string;
@@ -37,54 +41,46 @@ function toListItem(run: RunPublic): RunListItem {
   return {
     id: run.id,
     run_ref: run.run_ref,
-    title: CASE_NARRATIVES[run.id]?.title ?? fallbackTitle(run.category),
+    title:
+      CASE_NARRATIVES[run.id]?.title ??
+      fallbackTitle(run.category, run.route, run.area),
     route: run.route,
+    area: run.area,
     category: run.category,
     status: run.status,
     durationMs: runDurationMs(run.started_at, run.finished_at),
     total_tokens: run.total_tokens,
     pr_url: run.pr_url,
+    issue_url: run.issue_url,
     started_at: run.started_at,
   };
 }
 
-export async function getRunList(limit = 50): Promise<RunListItem[]> {
+async function selectAllPublicRuns(columns: string): Promise<RunPublic[]> {
+  return collectOffsetPages(
+    (offset, limit) =>
+      selectRuns<RunPublic>(
+        `select=${columns}&order=started_at.desc&limit=${limit}&offset=${offset}`,
+        RUNS_CACHE,
+      ),
+    PAGE_SIZE,
+  );
+}
+
+export async function getRunList(limit?: number): Promise<RunListItem[]> {
   if (!usingRealData) return mockRunList;
-  try {
-    const rows = await selectRuns<RunPublic>(
-      `select=${LIST_COLUMNS}&order=started_at.desc&limit=${limit}`,
-      { revalidate: 300 },
-    );
-    return rows.map(toListItem);
-  } catch {
-    return mockRunList;
-  }
+  const rows = await selectAllPublicRuns(LIST_COLUMNS);
+  const selected = limit === undefined ? rows : rows.slice(0, limit);
+  return selected.map(toListItem);
 }
 
 export async function getOverviewStats(): Promise<OverviewStats> {
   if (!usingRealData) return mockOverviewStats();
-  try {
-    const rows = await selectRuns<RunPublic>(
-      `select=id,run_ref,status,route,category,total_tokens,pr_url,started_at,finished_at&order=started_at.desc&limit=500`,
-      { revalidate: 900 },
-    );
+  const rows = await selectAllPublicRuns(
+    "id,run_ref,status,route,area,category,total_tokens,pr_url,issue_url,started_at,finished_at",
+  );
 
-    const durations = rows
-      .map((row) => runDurationMs(row.started_at, row.finished_at))
-      .filter((value): value is number => value !== null);
-
-    return {
-      totalRuns: rows.length,
-      pullRequests: rows.filter((row) => row.pr_url).length,
-      averageDurationMs:
-        durations.length > 0
-          ? Math.round(durations.reduce((sum, value) => sum + value, 0) / durations.length)
-          : 0,
-      totalTokens: rows.reduce((sum, row) => sum + (row.total_tokens ?? 0), 0),
-    };
-  } catch {
-    return mockOverviewStats();
-  }
+  return calculateOverviewStats(rows);
 }
 
 export async function getRunDetail(id: string): Promise<RunDetailData | null> {
@@ -95,15 +91,11 @@ export async function getRunDetail(id: string): Promise<RunDetailData | null> {
     return null;
   }
 
-  try {
-    const [run] = await selectRuns<RunPublic>(`select=*&id=eq.${id}&limit=1`, {
-      revalidate: false,
-    });
-    if (!run) return getMockRun(id);
-    return assembleRunDetail(run);
-  } catch {
-    return getMockRun(id);
-  }
+  const [run] = await selectRuns<RunPublic>(`select=*&id=eq.${id}&limit=1`, {
+    revalidate: false,
+  });
+  if (!run) return null;
+  return assembleRunDetail(run);
 }
 
 /**
@@ -115,16 +107,12 @@ export async function getRunDetail(id: string): Promise<RunDetailData | null> {
  */
 export async function getFeaturedRunDetail(): Promise<RunDetailData | null> {
   if (!usingRealData) return getMockRun(HERO_RUN_ID);
-  try {
-    const [run] = await selectRuns<RunPublic>(
-      "select=*&pr_url=not.is.null&order=started_at.desc&limit=1",
-      { revalidate: 300 },
-    );
-    if (!run) return getMockRun(HERO_RUN_ID);
-    return assembleRunDetail(run);
-  } catch {
-    return getMockRun(HERO_RUN_ID);
-  }
+  const [run] = await selectRuns<RunPublic>(
+    "select=*&pr_url=not.is.null&order=started_at.desc&limit=1",
+    RUNS_CACHE,
+  );
+  if (!run) return null;
+  return assembleRunDetail(run);
 }
 
 /** 运行摘要 → 完整详情：Trace 快照（含按需补抓）、叙事文案、公开 PR diff。 */

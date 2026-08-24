@@ -4,7 +4,9 @@
 受限后端修复，并在全新 Docker 沙箱中重新证明基线失败、修复后目标/全量/DOCX 验证
 通过；只有验证凭据和最终补丁哈希一致时，GitHub App Publisher 才能创建固定分支、
 单个提交和 PR。真实 PR 已完成人工合并、Render 部署和 Mermaid 原样例回放。生产
-Scheduler 默认关闭，离线评估不领取数据库反馈。
+Scheduler 默认关闭，离线评估不领取数据库反馈。阶段 I 已在本地实现功能需求和前端/扩展
+缺陷的脱敏 Issue 分支；生产启用仍需维护者执行 `007` migration、增加 GitHub Issues 权限
+并完成真实验收。
 
 Controller CLI 默认仍只执行 Gate。`--reproduce` 只执行阶段 D，`--repair` 执行阶段
 D+E，`--publish` 执行完整 D+E+F；三者都必须显式使用真实 Provider。系统没有自动
@@ -35,10 +37,13 @@ backend/.venv/Scripts/python.exe -m pytest backend/tests -v
 SQL migration 为 [001_agent_foundation.sql](migrations/001_agent_foundation.sql)、
 [002_gate_runtime.sql](migrations/002_gate_runtime.sql)、
 [003_reproduction_runtime.sql](migrations/003_reproduction_runtime.sql)、
-[004_repair_runtime.sql](migrations/004_repair_runtime.sql) 和
-[005_publication_runtime.sql](migrations/005_publication_runtime.sql)。测试和应用启动都不会
+[004_repair_runtime.sql](migrations/004_repair_runtime.sql)、
+[005_publication_runtime.sql](migrations/005_publication_runtime.sql)、
+[006_trace_site_public_read.sql](migrations/006_trace_site_public_read.sql) 和
+[007_issue_routing_and_public_projection.sql](migrations/007_issue_routing_and_public_projection.sql)。测试和应用启动都不会
 自动执行 migration；数据库 owner 应在审查和备份后手工执行。升级到阶段 F/G 只需
-追加执行 `005_publication_runtime.sql`，把 `publishing` 纳入可恢复运行索引。
+追加执行 `005_publication_runtime.sql`，把 `publishing` 纳入可恢复运行索引。阶段 I 只追加
+执行 `007_issue_routing_and_public_projection.sql`；不要修改或重复执行已应用的 `006`。
 
 `AGENT_DATABASE_URL` 必须是 PostgreSQL Direct Connection 或 Session Pooler DSN，
 不是 `SUPABASE_URL`。它只属于 Agent Controller，不得提供给扩展或后端转换服务。
@@ -67,6 +72,8 @@ SQL migration 为 [001_agent_foundation.sql](migrations/001_agent_foundation.sql
 .venv/bin/python -m agent.cli run --feedback-id <uuid> --dry-run
 .venv/bin/python -m agent.cli run --feedback-id <uuid> --dry-run \
   --fake-route accepted_backend_bug
+.venv/bin/python -m agent.cli run --feedback-id <uuid> --dry-run \
+  --fake-route issue_required
 ```
 
 ## 4. 真实 Provider 与 Langfuse Cloud
@@ -192,8 +199,9 @@ Sandbox 镜像；已复现的 drawing 缺陷会读取只读受信渲染器 API�
 ## 7. 阶段 F GitHub Pull Request
 
 先手工执行 `agent/migrations/005_publication_runtime.sql`。Publisher 使用独立 GitHub App，
-App 只安装到目标仓库，并只授予 `Contents: Read and write`、
-`Pull requests: Read and write`；不得授予 Actions、Administration、Secrets 或合并权限。
+App 只安装到目标仓库。PR 分支需要 `Contents: Read and write` 与
+`Pull requests: Read and write`；阶段 I Issue 分支还需要维护者手工增加
+`Issues: Read and write`。不得授予 Actions、Administration、Secrets 或合并权限。
 在 Controller 私有 `.env` 中填写：
 
 ```text
@@ -204,9 +212,9 @@ GITHUB_MAIN_BRANCH=main
 LANGFUSE_TRACE_URL_TEMPLATE=https://<实际项目路径>/traces/{trace_id}
 ```
 
-私钥支持 dotenv 多行 PEM 或使用字面量 `\n`。运行时会签发只限当前仓库、只含
-`contents:write` 与 `pull_requests:write` 的短期安装令牌，不保存到 Artifact、数据库、
-Trace 或日志。首次发布前可只校验 App 安装和权限，不创建 GitHub 资源：
+私钥支持 dotenv 多行 PEM 或使用字面量 `\n`。运行时分别签发只限当前仓库的 PR
+(`contents:write + pull_requests:write`) 与 Issue (`issues:write`) 短期安装令牌，不保存到
+Artifact、数据库、Trace 或日志。首次发布前可只校验两种权限，不创建 GitHub 资源：
 
 ```bash
 .venv/bin/python -m agent.publishing.check
@@ -239,6 +247,13 @@ Trace 或日志。首次发布前可只校验 App 安装和权限，不创建 Gi
 自动合并接口。CLI 的 `completed` 只表示 Graph 已到终态；真实发布成功必须同时满足
 `published=true`、`error_code=null` 且 `pr_url` 非空，失败终态会在 `status` 和
 `error_code` 中明确返回。
+
+`--publish` 遇到 `issue_required` 时不读取源码、不启动 Sandbox，只把严格 `IssueDraft`
+发布为仓库已有 `bug` 或 `enhancement` 标签。正文不含原始 description、Markdown 或
+contact，并用 `run_ref + content_fingerprint` marker 在开放和关闭 Issue 中幂等复用。
+成功后 feedback 为 `issue_opened`，run 保存 `issue_url`，Artifact 新增
+`issue-publication.json`；CLI 的 `published/pr_url` 仍只表示 PR，Issue 结果单独看
+`issue_url`。
 
 ## 8. 阶段 G 评估与生产 Scheduler
 

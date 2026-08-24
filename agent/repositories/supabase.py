@@ -7,6 +7,7 @@ import httpx
 from agent.domain.enums import (
     AgentRunStatus,
     FeedbackStatus,
+    GateArea,
     GateCategory,
     GateRoute,
     RiskLevel,
@@ -26,7 +27,8 @@ from agent.domain.transitions import ensure_feedback_transition
 
 
 _OPEN_STATUS_VALUES = (
-    "pending,claimed,gating,reproducing,repairing,validating,validated,publishing,pr_opened"
+    "pending,claimed,gating,issue_required,publishing_issue,issue_opened,"
+    "reproducing,repairing,validating,validated,publishing,pr_opened"
 )
 
 
@@ -116,8 +118,10 @@ class SupabaseFeedbackRepository:
         error_code: str | None = None,
         error_message: str | None = None,
         category: GateCategory | None = None,
+        area: GateArea | None = None,
         risk: RiskLevel | None = None,
         pr_url: str | None = None,
+        issue_url: str | None = None,
     ) -> FeedbackRecord:
         current = await self.get(feedback_id)
         if current is None:
@@ -148,11 +152,15 @@ class SupabaseFeedbackRepository:
             )
         if category is not None:
             payload["category"] = category.value
+        if area is not None:
+            payload["area"] = area.value
         if risk is not None:
             payload["risk"] = risk.value
         if pr_url is not None:
             payload["pr_url"] = pr_url
-        if target is FeedbackStatus.PR_OPENED:
+        if issue_url is not None:
+            payload["issue_url"] = issue_url
+        if target in {FeedbackStatus.PR_OPENED, FeedbackStatus.ISSUE_OPENED}:
             payload["resolved_at"] = (now or datetime.now(UTC)).isoformat()
 
         response = await self._request(
@@ -208,7 +216,10 @@ class SupabaseFeedbackRepository:
             raise ClaimTokenMismatchError(
                 f"claim token does not own feedback {feedback_id}"
             )
-        if current.status is FeedbackStatus.PUBLISHING:
+        if current.status in {
+            FeedbackStatus.PUBLISHING,
+            FeedbackStatus.PUBLISHING_ISSUE,
+        }:
             return current
         if (
             current.status is not FeedbackStatus.FAILED
@@ -217,6 +228,11 @@ class SupabaseFeedbackRepository:
             raise ConcurrentFeedbackUpdateError(
                 "only a failed publication can be retried"
             )
+        target = (
+            FeedbackStatus.PUBLISHING_ISSUE
+            if current.last_error_code == "issue_publication_failed"
+            else FeedbackStatus.PUBLISHING
+        )
         response = await self._request(
             "PATCH",
             "/rest/v1/feedback",
@@ -229,7 +245,7 @@ class SupabaseFeedbackRepository:
             },
             headers={"Prefer": "return=representation"},
             json={
-                "status": FeedbackStatus.PUBLISHING.value,
+                "status": target.value,
                 "last_error_code": None,
                 "last_error_message": None,
                 "updated_at": datetime.now(UTC).isoformat(),
@@ -337,7 +353,7 @@ class SupabaseAgentRunRepository:
             "GET",
             "/rest/v1/agent_runs",
             params={
-                "status": "in.(created,gating,preparing_source,reproducing,repairing,validating,publishing)",
+                "status": "in.(created,gating,publishing_issue,preparing_source,reproducing,repairing,validating,publishing)",
                 "select": "*",
                 "order": "started_at.asc",
                 "limit": "1",
@@ -385,6 +401,7 @@ class SupabaseAgentRunRepository:
             payload={
                 "status": AgentRunStatus.COMPLETED.value,
                 "route": result.route.value,
+                "area": result.area.value,
                 "category": result.category.value,
                 "classification": result.model_dump(mode="json"),
                 "model_calls": result.model_calls,
@@ -418,6 +435,40 @@ class SupabaseAgentRunRepository:
             payload={
                 "status": AgentRunStatus.PREPARING_SOURCE.value,
                 "route": result.route.value,
+                "area": result.area.value,
+                "category": result.category.value,
+                "classification": result.model_dump(mode="json"),
+                "model_calls": result.model_calls,
+                "tool_calls": result.tool_calls,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": total_tokens,
+                "estimated_cost": str(estimated_cost),
+            },
+        )
+
+    async def mark_publishing_issue(
+        self,
+        run_id: UUID,
+        result: GateResult,
+        *,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        total_tokens: int = 0,
+        estimated_cost: Decimal = Decimal("0"),
+    ) -> AgentRunRecord:
+        existing = await self.get(run_id)
+        if existing is None:
+            raise AgentRunNotFoundError(f"agent run {run_id} does not exist")
+        if existing.status is AgentRunStatus.PUBLISHING_ISSUE:
+            return existing
+        return await self._patch(
+            run_id,
+            current=AgentRunStatus.GATING,
+            payload={
+                "status": AgentRunStatus.PUBLISHING_ISSUE.value,
+                "route": result.route.value,
+                "area": result.area.value,
                 "category": result.category.value,
                 "classification": result.model_dump(mode="json"),
                 "model_calls": result.model_calls,
@@ -681,26 +732,58 @@ class SupabaseAgentRunRepository:
             },
         )
 
+    async def complete_issue_publication(
+        self,
+        run_id: UUID,
+        *,
+        issue_url: str,
+        tool_calls: int,
+    ) -> AgentRunRecord:
+        existing = await self.get(run_id)
+        if existing is None:
+            raise AgentRunNotFoundError(f"agent run {run_id} does not exist")
+        if existing.status is AgentRunStatus.COMPLETED:
+            if existing.issue_url != issue_url:
+                raise RepositoryError("completed publication has a different issue")
+            return existing
+        return await self._patch(
+            run_id,
+            current=AgentRunStatus.PUBLISHING_ISSUE,
+            payload={
+                "status": AgentRunStatus.COMPLETED.value,
+                "issue_url": issue_url,
+                "tool_calls": tool_calls,
+                "finished_at": datetime.now(UTC).isoformat(),
+            },
+        )
+
     async def retry_publication(self, run_id: UUID) -> AgentRunRecord:
         existing = await self.get(run_id)
         if existing is None:
             raise AgentRunNotFoundError(f"agent run {run_id} does not exist")
-        if existing.status is AgentRunStatus.PUBLISHING:
+        if existing.status in {
+            AgentRunStatus.PUBLISHING,
+            AgentRunStatus.PUBLISHING_ISSUE,
+        }:
             return existing
-        if (
-            existing.status is not AgentRunStatus.FAILED
-            or not _is_publication_error(existing.error_code)
-            or existing.validation is None
-            or not bool(existing.validation.get("passed"))
+        issue_retry = existing.error_code == "issue_publication_failed"
+        if existing.status is not AgentRunStatus.FAILED or not _is_publication_error(
+            existing.error_code
         ):
-            raise RepositoryError(
-                "only a validated publication failure can be retried"
-            )
+            raise RepositoryError("only a publication failure can be retried")
+        if not issue_retry and (
+            existing.validation is None or not bool(existing.validation.get("passed"))
+        ):
+            raise RepositoryError("pull request retry requires passed validation")
         return await self._patch(
             run_id,
             current=AgentRunStatus.FAILED,
             payload={
-                "status": AgentRunStatus.PUBLISHING.value,
+                "status": (
+                    AgentRunStatus.PUBLISHING_ISSUE.value
+                    if issue_retry
+                    else AgentRunStatus.PUBLISHING.value
+                ),
                 "error_code": None,
                 "error_message": None,
                 "finished_at": None,
@@ -852,6 +935,7 @@ def _is_publication_error(error_code: str | None) -> bool:
         "publication_failed",
         "publication_auth_error",
         "publication_conflict",
+        "issue_publication_failed",
     }
 
 

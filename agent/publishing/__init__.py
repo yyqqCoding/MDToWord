@@ -1,6 +1,11 @@
-"""阶段 F GitHub 发布端口与实现。"""
+"""GitHub PR 与 Issue 的相互独立发布契约。"""
 
 from agent.publishing.contracts import (
+    IssueDraft,
+    IssuePublicationEvidence,
+    IssuePublicationRequest,
+    IssuePublicationResult,
+    IssuePublisher,
     PublicationDisposition,
     PublicationEvidence,
     PublicationFile,
@@ -10,6 +15,11 @@ from agent.publishing.contracts import (
 )
 
 __all__ = [
+    "IssueDraft",
+    "IssuePublicationEvidence",
+    "IssuePublicationRequest",
+    "IssuePublicationResult",
+    "IssuePublisher",
     "PublicationDisposition",
     "PublicationEvidence",
     "PublicationFile",

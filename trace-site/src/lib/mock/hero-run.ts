@@ -320,6 +320,7 @@ const run: RunPublic = {
   run_ref: "a7c41e93b520",
   status: "completed",
   route: "accepted_backend_bug",
+  area: "backend",
   category: "docx_structure",
   dry_run: false,
   base_sha: "c41f8a7d92b6e0533ac18f4b7e2d9506a83c7f14",
@@ -344,16 +345,19 @@ const run: RunPublic = {
   validated_patch_sha256:
     "d70b16e5a4c839f2015be7d3948ca62710f85b3d92e04c7168a5df2be1470c93",
   pr_url: "https://github.com/yyqqCoding/MDToWord/pull/1",
+  issue_url: null,
   error_code: null,
   started_at: "2026-08-11T09:14:22.000Z",
   finished_at: "2026-08-11T09:20:38.000Z",
   classification: {
     route: "accepted_backend_bug",
+    area: "backend",
     category: "docx_structure",
     risk: "low",
     policy_reason: "automatable_backend_bug",
     classification: {
       intent: "bug_report",
+      area: "backend",
       category: "docx_structure",
       relevance: 0.94,
       sufficient_information: true,

@@ -148,3 +148,7 @@ class PublicationAuthenticationError(PublicationError):
 
 class PublicationConflictError(PublicationError):
     error_code = "publication_conflict"
+
+
+class IssuePublicationError(PublicationError):
+    error_code = "issue_publication_failed"

@@ -44,6 +44,7 @@ class GateRunOutcome:
     status: AgentRunStatus
     error_code: str | None = None
     pr_url: str | None = None
+    issue_url: str | None = None
 
 
 class GateController:
@@ -221,6 +222,11 @@ class GateController:
             return _outcome_from_run(run)
         if run.status is AgentRunStatus.PUBLISHING and not self._publishing_enabled:
             return _outcome_from_run(run)
+        if (
+            run.status is AgentRunStatus.PUBLISHING_ISSUE
+            and not self._publishing_enabled
+        ):
+            return _outcome_from_run(run)
 
         feedback = await self._feedback_repository.get(run.feedback_id)
         feedback_hash = feedback.content_fingerprint if feedback is not None else "unknown"
@@ -389,6 +395,7 @@ class GateController:
                 FeedbackStatus.REPAIRING,
                 FeedbackStatus.VALIDATING,
                 FeedbackStatus.PUBLISHING,
+                FeedbackStatus.PUBLISHING_ISSUE,
             }
         ):
             await self._feedback_repository.transition(
@@ -425,6 +432,7 @@ def _is_publication_error(error_code: str | None) -> bool:
         "publication_failed",
         "publication_auth_error",
         "publication_conflict",
+        "issue_publication_failed",
     }
 
 
@@ -437,6 +445,7 @@ def _outcome_from_state(state: AgentState) -> GateRunOutcome:
         status=state.status,
         error_code=state.last_error_code,
         pr_url=state.pr_url,
+        issue_url=state.issue_url,
     )
 
 
@@ -449,4 +458,5 @@ def _outcome_from_run(run: AgentRunRecord) -> GateRunOutcome:
         status=run.status,
         error_code=run.error_code,
         pr_url=run.pr_url,
+        issue_url=run.issue_url,
     )

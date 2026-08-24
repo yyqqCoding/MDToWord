@@ -1,4 +1,4 @@
-"""阶段 F GitHub App 安装与最小权限预检；不创建分支、提交或 PR。"""
+"""GitHub App 的 PR/Issue 最小权限预检；不执行任何仓库写操作。"""
 
 import asyncio
 import json
@@ -16,15 +16,24 @@ async def check_github_app(config: AgentConfig) -> None:
     repository, *_ = config.require_stage_c_controller_settings()
     app_id, private_key, api_url, *_ = config.require_stage_f_publisher_settings()
     async with httpx.AsyncClient(timeout=30) as client:
-        provider = GitHubAppTokenProvider(
+        pr_provider = GitHubAppTokenProvider(
             repository,
             app_id=app_id,
             private_key=private_key,
             client=client,
             api_url=api_url,
         )
+        issue_provider = GitHubAppTokenProvider(
+            repository,
+            app_id=app_id,
+            private_key=private_key,
+            client=client,
+            api_url=api_url,
+            permissions={"issues": "write"},
+        )
         # 令牌仅在内存中用于权限校验，不输出、不保存，也不执行 GitHub 写操作。
-        await provider.get_token()
+        await pr_provider.get_token()
+        await issue_provider.get_token()
 
 
 def main() -> int:

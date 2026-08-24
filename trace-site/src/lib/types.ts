@@ -18,6 +18,7 @@ export type RunStatus =
   | "repairing"
   | "validating"
   | "publishing"
+  | "publishing_issue"
   | "completed"
   | "failed"
   | "cancelled"
@@ -29,6 +30,7 @@ export type GateRoute =
   | "accepted_backend_bug"
   | "rejected_irrelevant"
   | "quarantined_security"
+  | "issue_required"
   | "out_of_scope"
   | "needs_human"
   | "duplicate";
@@ -43,6 +45,16 @@ export type GateCategory =
   | "backend_normalization"
   | "extension_ui"
   | "visual_quality"
+  | "feature_request"
+  | "irrelevant_content"
+  | "prompt_injection"
+  | "unknown";
+
+export type GateArea =
+  | "backend"
+  | "extension"
+  | "cross_component"
+  | "none"
   | "unknown";
 
 export type GateIntent =
@@ -72,6 +84,7 @@ export type ExpectedFailureKind = "assertion" | "unexpected_conversion_error";
 
 export interface GateClassificationPublic {
   intent: GateIntent;
+  area: GateArea;
   category: GateCategory;
   relevance: number;
   sufficient_information: boolean;
@@ -82,6 +95,7 @@ export interface GateClassificationPublic {
 
 export interface GateResultPublic {
   route: GateRoute;
+  area: GateArea;
   category: GateCategory;
   risk: RiskLevel;
   /** 代码字面量，如 description_blank / open_duplicate_found。 */
@@ -134,6 +148,7 @@ export interface RunPublic {
   run_ref: string;
   status: RunStatus;
   route: GateRoute | null;
+  area: GateArea;
   category: GateCategory | null;
   dry_run: boolean;
   base_sha: string | null;
@@ -155,6 +170,7 @@ export interface RunPublic {
   estimated_cost: string;
   validated_patch_sha256: string | null;
   pr_url: string | null;
+  issue_url: string | null;
   error_code: string | null;
   started_at: string;
   finished_at: string | null;
@@ -258,11 +274,13 @@ export interface RunListItem {
   run_ref: string;
   title: string;
   route: GateRoute | null;
+  area: GateArea;
   category: GateCategory | null;
   status: RunStatus;
   durationMs: number | null;
   total_tokens: number;
   pr_url: string | null;
+  issue_url: string | null;
   started_at: string;
 }
 
@@ -273,4 +291,3 @@ export interface OverviewStats {
   averageDurationMs: number;
   totalTokens: number;
 }
-

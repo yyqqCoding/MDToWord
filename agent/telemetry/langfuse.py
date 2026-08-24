@@ -274,7 +274,7 @@ def _safe_model_output(output: dict[str, object]) -> dict[str, object]:
 
     safe: dict[str, object] = {}
     for key, value in output.items():
-        if key in {"reason", "hypothesis"}:
+        if key in {"reason", "hypothesis", "issue_title", "issue_summary"}:
             safe[key] = "[REDACTED_SUMMARY]"
         elif key == "edits" and isinstance(value, list):
             safe[key] = [

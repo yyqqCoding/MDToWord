@@ -8,6 +8,7 @@ from agent.domain.enums import (
     AgentRunStatus,
     FeedbackStatus,
     FeedbackType,
+    GateArea,
     GateCategory,
     GateRoute,
     RiskLevel,
@@ -33,6 +34,7 @@ class FeedbackRecord(BaseModel):
     contact: str = Field(default="", repr=False)
     status: FeedbackStatus = FeedbackStatus.PENDING
     category: str | None = None
+    area: GateArea = GateArea.UNKNOWN
     risk: RiskLevel = RiskLevel.UNKNOWN
     content_fingerprint: str = ""
     attempt_count: int = Field(default=0, ge=0)
@@ -42,6 +44,7 @@ class FeedbackRecord(BaseModel):
     last_error_code: str | None = None
     last_error_message: str | None = None
     pr_url: str | None = None
+    issue_url: str | None = None
     resolved_at: datetime | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
@@ -104,6 +107,7 @@ class AgentRunRecord(BaseModel):
     trace_id: str = Field(min_length=1, max_length=200)
     status: AgentRunStatus = AgentRunStatus.CREATED
     route: GateRoute | None = None
+    area: GateArea = GateArea.UNKNOWN
     category: GateCategory | None = None
     dry_run: bool = True
     base_sha: str | None = None
@@ -128,6 +132,7 @@ class AgentRunRecord(BaseModel):
     artifact_path: str
     task_artifact_ref: str
     pr_url: str | None = None
+    issue_url: str | None = None
     error_code: str | None = None
     error_message: str | None = None
     started_at: datetime = Field(default_factory=utc_now)

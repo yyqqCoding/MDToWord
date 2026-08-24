@@ -69,3 +69,24 @@ def test_stage_f_migration_makes_publication_resumable():
     assert "publishing" in sql
     assert "agent_runs_resumable_idx" in sql
     assert "delete" not in sql
+
+
+def test_stage_i_migration_adds_issue_state_and_fail_closed_public_projection():
+    sql = (
+        Path(__file__).parents[1]
+        / "migrations"
+        / "007_issue_routing_and_public_projection.sql"
+    ).read_text(encoding="utf-8").lower()
+
+    assert "add column if not exists area" in sql
+    assert "add column if not exists issue_url" in sql
+    assert "publishing_issue" in sql
+    assert "issue_opened" in sql
+    assert "security_invoker = true" in sql
+    assert "r.issue_url" in sql
+    assert "grant select on public.agent_run_public to service_role" in sql
+    assert "'{classification,area}'" in sql
+    assert "'{classification,issue_title}'" not in sql
+    assert "'{classification,issue_summary}'" not in sql
+    assert "update public.feedback" not in sql
+    assert "delete from" not in sql

@@ -14,7 +14,7 @@ import type { RunListItem } from "@/lib/types";
 
 export type RunFilterKey =
   | "all"
-  | "pr"
+  | "published"
   | "unfixed"
   | "failed"
   | "neutral"
@@ -22,7 +22,7 @@ export type RunFilterKey =
 
 export const RUN_FILTERS: ReadonlyArray<{ key: RunFilterKey; label: string }> = [
   { key: "all", label: "全部" },
-  { key: "pr", label: "已建 PR" },
+  { key: "published", label: "已建 PR/Issue" },
   { key: "unfixed", label: "未修复" },
   { key: "failed", label: "失败 · 拦截" },
   { key: "neutral", label: "其他结论" },
@@ -30,7 +30,7 @@ export const RUN_FILTERS: ReadonlyArray<{ key: RunFilterKey; label: string }> = 
 ];
 
 const TONE_TO_GROUP: Record<Tone, Exclude<RunFilterKey, "all">> = {
-  good: "pr",
+  good: "published",
   warn: "unfixed",
   serious: "failed",
   critical: "failed",

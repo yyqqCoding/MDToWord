@@ -3,7 +3,7 @@ from decimal import Decimal
 from typing import Protocol
 from uuid import UUID
 
-from agent.domain.enums import FeedbackStatus, GateCategory, RiskLevel
+from agent.domain.enums import FeedbackStatus, GateArea, GateCategory, RiskLevel
 from agent.domain.gate import GateResult
 from agent.domain.models import AgentRunRecord, FeedbackRecord
 from agent.domain.reproduction import ReproductionReport
@@ -42,8 +42,10 @@ class FeedbackRepository(Protocol):
         error_code: str | None = None,
         error_message: str | None = None,
         category: GateCategory | None = None,
+        area: GateArea | None = None,
         risk: RiskLevel | None = None,
         pr_url: str | None = None,
+        issue_url: str | None = None,
     ) -> FeedbackRecord: ...
 
     async def find_open_by_fingerprint(
@@ -82,6 +84,17 @@ class AgentRunRepository(Protocol):
     ) -> AgentRunRecord: ...
 
     async def mark_preparing_source(
+        self,
+        run_id: UUID,
+        result: GateResult,
+        *,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        total_tokens: int = 0,
+        estimated_cost: Decimal = Decimal("0"),
+    ) -> AgentRunRecord: ...
+
+    async def mark_publishing_issue(
         self,
         run_id: UUID,
         result: GateResult,
@@ -160,6 +173,14 @@ class AgentRunRepository(Protocol):
         run_id: UUID,
         *,
         pr_url: str,
+        tool_calls: int,
+    ) -> AgentRunRecord: ...
+
+    async def complete_issue_publication(
+        self,
+        run_id: UUID,
+        *,
+        issue_url: str,
         tool_calls: int,
     ) -> AgentRunRecord: ...
 

@@ -6,10 +6,10 @@ import { usingRealData } from "@/lib/server/env";
 import { getRunList } from "@/lib/server/runs";
 import { SITE_TIME_ZONE_LABEL } from "@/lib/format";
 
-export const revalidate = 300;
+export const revalidate = 60;
 
 export default async function RunsPage() {
-  const runs = await getRunList(100);
+  const runs = await getRunList();
 
   return (
     <div className="px-5 py-7 lg:px-8">

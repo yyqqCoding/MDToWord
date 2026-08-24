@@ -137,7 +137,7 @@ extension_sync_required: bool
 或受信断言 Policy，也只允许一次不回传测试源码的本地规则修正。
 
 `extension_sync_required` 只是审查元数据；当前修复若必须修改扩展才能成立，应在 Gate
-阶段以 `requires_extension_change=true` 路由为 `out_of_scope`，不得生成测试或补丁。
+阶段以 `requires_extension_change=true` 路由为 `issue_required`，不得生成测试或补丁。
 
 `files_needed_for_fix` 只接受 Policy `write.fix_exact` 中的路径，即
 `backend/app/normalizer.py` 与 `backend/app/pandoc_runner.py`；不确定时填空数组。
@@ -291,6 +291,56 @@ PublicationRequest
 `validated_patch_sha256` 一致、重新应用后文件集合与 `changed_files` 一致、所有路径仍
 通过 Patch Policy。输出仅有 `pr_opened` 或 `stale_base`；前者必须含 branch、commit SHA、
 PR number/URL，后者不得含任何 GitHub 写入结果。Publisher 不暴露 merge 方法。
+
+## 8.2 Issue 发布契约
+
+Issue 发布与 PR 发布是两个独立契约。它不接受 `ValidationResult`、源码、patch 或文件
+集合，也不能复用 `PublicationRequest` 的可选字段拼出“万能 Publisher”。Gate 的模型输出
+先经过本地 Policy 形成：
+
+```text
+IssueDraft
+  title: 单行，1..80 字符
+  summary: 1..600 字符
+  intent: bug_report | feature_request
+  area: backend | extension | cross_component
+  category
+```
+
+`IssueDraft` 只复述用户明确表达的需求、现象和归属，不生成实现方案或用户未提出的验收
+条件。它仍是不可信模型输出；Controller 构造受信请求时必须再次做长度、控制字符、邮箱、
+电话、Authorization、Cookie、Secret/Token 赋值和提示注入片段扫描。
+
+```text
+IssuePublicationRequest
+  feedback_id
+  content_fingerprint
+  run_ref
+  draft
+  evidence(graph_version, policy_version, prompt_versions,
+           provider, model, usage, trace_url)
+
+IssuePublicationResult
+  disposition: issue_opened
+  issue_number
+  issue_url
+  reused
+```
+
+请求结构中不得出现原始 `description`、`markdown_content` 或 `contact`。Publisher 根据
+`draft.intent` 确定标签：前端/扩展 Bug 使用仓库已有 `bug`，功能、展示、视觉、交互和
+布局需求使用仓库已有 `enhancement`；调用方和模型都不能提供任意标签名。
+
+Publisher 只允许固定仓库的 `/issues` API，不提供创建标签、关闭 Issue、编辑 Issue、
+分配人员或修改项目面板的方法。正文包含受信模板、脱敏摘要、area/category、run_ref、
+Trace URL 与固定隐藏 marker：
+
+```text
+<!-- mdtoword-agent-issue run-ref=<12-char-ref> fingerprint=<sha256> -->
+```
+
+创建前按 marker 查询开放和关闭的 Issue；命中即返回 `reused=true`。POST 成功但响应丢失时
+也按同一 marker 恢复，保证同一反馈和内容指纹最多对应一个 Issue。
 
 ## 9. 复现判定
 

@@ -16,6 +16,8 @@ _FEEDBACK_ATTENTION_STATUSES = (
     "pending",
     "claimed",
     "gating",
+    "issue_required",
+    "publishing_issue",
     "reproducing",
     "repairing",
     "validating",
@@ -25,6 +27,7 @@ _FEEDBACK_ATTENTION_STATUSES = (
 _RESUMABLE_RUN_STATUSES = (
     "created",
     "gating",
+    "publishing_issue",
     "preparing_source",
     "reproducing",
     "repairing",

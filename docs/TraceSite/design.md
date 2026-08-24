@@ -1,7 +1,7 @@
 # Agent Trace 展示站 · 设计文档
 
-状态：设计评审中，未开始实现。
-分支：`feature/agent-trace-site`。
+状态：主体已部署；阶段 I 的分类展示与统计正确性已本地实现，待 migration 与生产部署。
+阶段 I 设计分支：`feature/feature-issue-routing-design`。
 
 本文档定义 MD To Word 修复 Agent 的公开 Trace 展示站。Agent 自身的目标、状态机、
 接口和验收标准仍以 `docs/AgentRequirements/` 为唯一权威来源；本文档只描述**读取并
@@ -90,15 +90,15 @@ Langfuse」的约束一致——数据库侧保留是为了维护者排障，**�
 | 列 | 公开 | 说明 |
 |---|---|---|
 | `id` | ✅ | 作为详情页 URL |
-| `status` / `route` / `category` / `dry_run` | ✅ | 枚举值 |
+| `status` / `route` / `area` / `category` / `dry_run` | ✅ | 枚举值 |
 | `base_sha` / `extension_version` | ✅ | 公开仓库信息 |
 | `provider` / `model` | ✅ | |
 | `graph_version` / `prompt_versions` / `policy_version` | ✅ | 版本号，利于讲可复现性 |
 | `model_calls` / `tool_calls` / `*_tokens` | ✅ | |
 | `estimated_cost` | ⚠️ | 见 3.6 |
-| `validated_patch_sha256` / `pr_url` / `error_code` | ✅ | |
+| `validated_patch_sha256` / `pr_url` / `issue_url` / `error_code` | ✅ | GitHub URL 已经公开 |
 | `started_at` / `finished_at` | ✅ | |
-| `classification` | 🔪 裁剪 | 剔除 `classification.reason`（模型对用户反馈的复述，`agent/domain/gate.py:19`） |
+| `classification` | 🔪 裁剪 | 只取 intent/area/category、布尔与数值分类；剔除 `reason`、Issue title/summary |
 | `reproduction` | 🔪 裁剪 | 只取 `disposition` / `round` / `target_test_selector` / `expected_failure_kind` / `failure_code`；`failure_summary` 一律不取，见 3.3 |
 | `repair` | 🔪 裁剪 | 只取 `disposition` / `round` / `failure_code` |
 | `validation` | 🔪 裁剪 | 取 `passed` / `base_sha` / `target_test_selector` / 四个子验证对象 / `changed_files` / 各 `*_sha256`；剔除 `failure_summary` |
@@ -150,6 +150,10 @@ Trace 中 `publish-pr` 的 `input.feedback_id_prefix` 会带上这 8 个字符
 > 需要一条新 migration。按 `CLAUDE.md`，migration 必须由维护者审查后手工执行，
 > 应用启动和测试不得自动改 Schema。DDL 见
 > `agent/migrations/006_trace_site_public_read.sql`，执行方式见第 12 节。
+
+阶段 I 需要后续 migration 以追加方式重建该视图，公开新增 `area` 与 `issue_url`，并在
+classification 裁剪中加入 `area`、排除 Issue title/summary。不得直接修改已执行的
+`006`，也不得在站点启动时自动执行新 migration。
 
 ### 3.5 快照表 `public.agent_run_traces`
 
@@ -284,6 +288,27 @@ Scheduler 侧再兜一层 `except`，保证轮询循环不会被通知拖死。
 好处是：既有可读的叙事，又不存在用户内容外发路径；且案例说明可以针对外行读者优化
 措辞，而原始反馈往往零散。
 
+未登记人工案例的普通运行不能只按技术 `category` 回退为“未分类反馈”。阶段 I 使用公开
+结构化字段按固定规则生成通用标题，不触碰用户原文：
+
+| intent / area / route | “反馈”列 | “类别”列 | “终态” |
+|---|---|---|---|
+| `feature_request + backend + issue_required` | 后端功能需求 | 功能建议 · 后端 | 已创建 Issue |
+| `feature_request + extension + issue_required` | 前端/扩展功能需求 | 功能建议 · 扩展 | 已创建 Issue |
+| `feature_request + cross_component + issue_required` | 跨端功能需求 | 功能建议 · 前后端 | 已创建 Issue |
+| `bug_report + extension + issue_required` | 前端/扩展缺陷 | 扩展缺陷 | 已创建 Issue |
+| `rejected_irrelevant` | 无关内容 | 无关内容 | 已忽略 |
+| `quarantined_security` | 提示词注入尝试 | 提示词注入 | 安全拦截 |
+| `needs_human` + 未知类别 | 信息不足的反馈 | 待确认 | 转人工 |
+
+标题和终态先按 `route` 判断，再使用 intent/area/category 细化；不能先按
+`status=completed` 把 `quarantined_security` 显示成“已结束”。历史 `out_of_scope` 保持
+“历史范围外结论”，不伪装成新 Issue，也不反向推断当时的 intent。
+
+`issue_url` 可以公开并链接 GitHub，因为 Issue Publisher 已在发布前完成脱敏；站点仍不
+从 Issue 反抓正文写入 DTO。详情页可链接公开 Issue，列表使用上述通用标题，不复制 Issue
+标题或用户需求摘要。
+
 ---
 
 ## 4. 服务端接口契约
@@ -294,8 +319,8 @@ Scheduler 侧再兜一层 `except`，保证轮询循环不会被通知拖死。
 
 | 接口 | 用途 | 缓存 |
 |---|---|---|
-| `getRunList(limit)` | 列表页 / 概览 | ISR 300s，推送时失效 |
-| `getOverviewStats()` | 概览 KPI | ISR 900s，推送时失效 |
+| `getRunList(limit)` | 列表页 / 概览 | 统一 `runs` tag，最多 60s，推送时失效 |
+| `getOverviewStats()` | 概览 KPI | 统一 `runs` tag，最多 60s，推送时失效 |
 | `getRunDetail(id)` | 详情页主数据 | run 行 no-store；快照 600s |
 | `fetchPullDiff(prUrl)` | GitHub 公开 PR diff | 86400s |
 | `POST /api/hooks/run-finished` | Agent 运行完成回调 | 无 |
@@ -309,6 +334,9 @@ Scheduler 侧再兜一层 `except`，保证轮询循环不会被通知拖死。
   列表与首页的 ISR 缓存在应答前失效，详情页在抓取完成后失效 ——
   **即使这次没抓到快照，列表刷新也照做**，运行本身应当立刻出现，
   调用明细可以晚一步由按需补抓补上。
+
+阶段 I 必须同时失效 `runs` 数据 tag 与 `/`、`/runs` 路径。`revalidatePath` 不能替代共享
+查询 tag；回调丢失时 60 秒 TTL 是正确性兜底，而不是依赖访客等待 15 分钟统计缓存。
 - `/api/cron/snapshot` 以 `CRON_SECRET` 校验（`Authorization: Bearer` 或
   `x-cron-secret`）。已无定时调度，仅供维护者手动批量回填。
 
@@ -333,8 +361,12 @@ Scheduler 侧再兜一层 `except`，保证轮询循环不会被通知拖死。
 
 ### 4.2 未配置数据源时的行为
 
-Supabase 未配置时整体回落到构造数据，站点仍可运行，页面顶部显示「未配置 Supabase」
-横幅。这样本地做视觉迭代不需要任何密钥，也避免了「没配好就白屏」。
+Supabase **未配置**时整体回落到构造数据，站点仍可运行，页面顶部显示「未配置
+Supabase」横幅。这样本地做视觉迭代不需要任何密钥，也避免了「没配好就白屏」。
+
+Supabase 已配置但查询失败时不得回落到 Mock：生产错误不能伪装成一组看似可信的运行与
+统计。页面应显示明确的“数据暂时不可用”错误态并允许重试，服务端只记录稳定错误类型，
+不回显响应体、URL 查询串或密钥。
 
 密钥通过 `trace-site/.env.local`（已被忽略）或 Vercel 项目环境变量注入，
 配置名以 `.env.example` 为准。任何密钥都不得提交、记录或通过聊天传递。
@@ -368,8 +400,13 @@ Supabase 未配置时整体回落到构造数据，站点仍可运行，页面�
 
 ### 5.1 `/` 概览
 
-- KPI 磁贴（4 个）：总运行数、产出 PR 数、平均耗时、Token 合计。无 sparkline、无环比。
+- KPI 磁贴（4 个）：总运行数、产出 PR 数、平均运行耗时、Token 合计。无 sparkline、无环比。
   Token 磁贴的副标注明「模型单价未配置，暂不估算成本」。
+- 总运行数是全部 `agent_runs` 尝试数；产出 PR 是唯一非空 `pr_url` 数；平均运行耗时是
+  全部已有 `finished_at` 的终态运行墙钟平均值，包含失败、拦截与无关反馈；Token 合计是
+  全部运行的 `total_tokens` 之和。Issue 不混入 PR 指标，详情与列表单独展示 Issue 链接。
+- 统计必须分页读取全部公开运行或使用等价的受信聚合查询，不得用 `limit=500` 的数组长度
+  冒充总数。当前数据量低，优先复用显式分页，不为四个 KPI 新增数据库聚合服务。
 - 精选案例卡：hero case 标题 + 说明 + 只读阶段芯片条，直达详情页。
 - 最近运行表（6 列）：run_ref、反馈、类别、终态、耗时、Token。
 - 结果分布图：M4 补，运行量足够时才有意义。
@@ -377,7 +414,7 @@ Supabase 未配置时整体回落到构造数据，站点仍可运行，页面�
 ### 5.2 `/runs` 列表
 
 筛选条件一行排布于表格上方：route / category / status / 时间范围。
-表格列：run_ref、类别、路由、终态、耗时、token、成本、时间、PR。
+表格列：run_ref、反馈、类别、终态、耗时、token，并在有结果时提供 PR 或 Issue 链接。
 空态与筛选无结果态分别设计文案。
 
 ### 5.3 `/runs/[id]` 详情（核心页）
@@ -426,6 +463,7 @@ Supabase 未配置时整体回落到构造数据，站点仍可运行，页面�
 真实 diff，数据源是 GitHub 公开 API 的已合并 PR，**不是** Agent 的受控 artifact。
 公开仓库的 PR diff 本就是公开信息，这样既能展示最有说服力的一屏，又完全绕开脱敏边界。
 未产出 PR 的运行此处不渲染 —— 语义上本就不该有 diff。
+Issue 运行不渲染代码 diff；结果区域提供公开 Issue 链接与“交由维护者人工处理”说明。
 
 **⑥ 底部三卡**
 测试汇总（`full_validation` 四个计数 + 四道验证逐项）、补丁策略检查、结果。
@@ -546,7 +584,7 @@ Vercel Hobby + Supabase 免费层足以承载当前运行量。
 - run 详情：`no-store`，每次读库。详情页是单条查询，代价可控，
   换来「跑完立刻能看到结论」。
 - 快照：600s。快照不可变，但「尚未回填」是会变的否定结果，不能长缓存（见 3.5）。
-- 列表与统计：ISR，300s / 900s；Agent 推送时由 `revalidatePath` 立即失效。
+- 列表与统计：共享 `runs` tag，TTL 60s；Agent 推送时同时用 tag 与 path 立即失效。
 - 页面渲染路径原则上不调用 Langfuse；唯一例外是详情页发现终态运行无快照时的
   按需补抓，它不重试、失败静默，页面照常用运行摘要推导阶段。
 
@@ -557,7 +595,8 @@ Vercel Hobby + Supabase 免费层足以承载当前运行量。
 | Scheduler 领取 | ≤ 5s | `POLL_INTERVAL_SECONDS=5` |
 | Agent 跑完一次修复 | 分钟级 | 取决于复现/修复轮次 |
 | 全站可见（含时间线） | 秒级 | 运行落终态即推送 + `revalidatePath` |
-| 推送丢失时 | 首次访问详情页 | 按需补抓自愈 |
+| 推送丢失时的列表/统计 | ≤ 60s | `runs` tag TTL 兜底 |
+| 推送丢失时的 Trace 详情 | 首次访问详情页 | 按需补抓自愈 |
 
 ---
 
@@ -571,6 +610,7 @@ Vercel Hobby + Supabase 免费层足以承载当前运行量。
 - [ ] `error_message` / `*.failure_summary` 不出现在任何 DTO、日志或页面
 - [ ] `claim_token` / `artifact_path` / `task_artifact_ref` 不出现在任何 DTO
 - [ ] `classification.reason` 不出现在任何 DTO
+- [ ] `issue_url` 可公开，但 Issue 标题/摘要/正文不从 GitHub 反抓进 DTO
 - [ ] `estimated_cost = 0` 显示为「未配置单价」而非 `$0.00`
 - [ ] `/api/hooks/run-finished` 校验 `SITE_WEBHOOK_SECRET` 且强校验 `run_id` 为 UUID
 - [ ] `/api/cron/snapshot` 校验 `CRON_SECRET`
@@ -578,6 +618,9 @@ Vercel Hobby + Supabase 免费层足以承载当前运行量。
 - [ ] 站点仅有的写操作是快照表 upsert，不触碰 Agent 运行时状态
 - [ ] Agent 推送体只含 `run_id` 与 `status`，不含任何内容
 - [ ] Agent 侧推送失败只记异常类型，不记 URL、密钥或响应体
+- [ ] Supabase 已配置但查询失败时显示错误态，不静默回退 Mock
+- [ ] `quarantined_security` 显示“提示词注入 / 安全拦截”，不显示“未分类 / 已结束”
+- [ ] 历史 `out_of_scope` 不改写、不显示为已创建 Issue
 
 ---
 
@@ -592,6 +635,7 @@ Vercel Hobby + Supabase 免费层足以承载当前运行量。
 | M4 | 概览、列表、about 页与视觉打磨 | 完整站点 |
 | M4.5 | Agent 完成回调取代每日 Cron | 秒级可见，见 3.5.1 |
 | M5 | 安全清单核对 + Vercel 部署 | 线上地址 |
+| M6 | 阶段 I 分类展示、Issue 链接与统计正确性 | 与 Supabase 全量对账、最长 60s 可见 |
 
 M2 使用 mock 是有意为之：先把最难做好看的详情页做出可视效果供你评价，再接真实数据，
 避免在数据接入上耗时后才发现视觉方向要改。
@@ -609,6 +653,10 @@ M2 使用 mock 是有意为之：先把最难做好看的详情页做出可视�
 5. **同步方式**：定时回填废弃，改为 Agent 运行落终态后主动推送 + 详情页按需补抓。
    理由是反馈量低，定时轮询绝大多数是空跑，却仍让新运行等最长 24 小时。见 3.5.1。
    生产 Agent 所在 ECS 需允许出站访问站点域名（维护者已确认放行）。
+6. **阶段 I 统计口径**：总运行数按全部 run，PR 按唯一 URL，平均耗时按全部终态，Token
+   按全部 run；Issue 不混入 PR 指标。
+7. **阶段 I 分类展示**：新运行不再产生 `out_of_scope`；前端/扩展 Bug 和所有功能需求
+   显示为人工 Issue 路由，无关和注入分别显示明确类别与终态，历史记录只兼容不回写。
 
 ---
 
@@ -663,4 +711,3 @@ Agent 展示站没有说服力，而如实展示「哪些情况 Agent 会主动�
 页面上只会出现路由结果与 `tool_calls=0` 这一事实。
 
 `dry_run = true` 的运行需要在列表和详情页明确打标，避免被误读为真实修复。
-

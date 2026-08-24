@@ -5,7 +5,7 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "MD To Word · 修复 Agent Trace",
   description:
-    "展示用户反馈如何被自动分类、复现、修复、验证并提交 Pull Request 的完整执行证据。",
+    "展示用户反馈如何被安全分类，并通过自动修复 Pull Request 或脱敏 Issue 留下可审计证据。",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

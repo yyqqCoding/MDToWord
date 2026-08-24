@@ -314,6 +314,26 @@ export function RunDetail({ data }: { data: RunDetailData }) {
         </div>
       )}
 
+      {run.issue_url && (
+        <Card className="mb-6" delay={180}>
+          <CardHeader
+            title="人工处理 Issue"
+            description="Agent 已发布脱敏摘要；前端/扩展代码不会被自动修改"
+            aside={
+              <a
+                href={run.issue_url}
+                target="_blank"
+                rel="noreferrer"
+                className="group inline-flex items-center gap-1.5 text-sm font-medium text-accent hover:text-ink"
+              >
+                查看公开 Issue
+                <ExternalLink aria-hidden className="size-3.5" />
+              </a>
+            }
+          />
+        </Card>
+      )}
+
       {/* 证据：独立验证与策略检查 */}
       <div id="section-validation" className="grid gap-6 lg:grid-cols-[1.2fr_1fr]">
         <Card delay={220}>

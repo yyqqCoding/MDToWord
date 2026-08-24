@@ -1,5 +1,5 @@
 import { NextResponse, after } from "next/server";
-import { revalidatePath } from "next/cache";
+import { revalidatePath, revalidateTag } from "next/cache";
 import { siteWebhookSecret, supabaseConfig } from "@/lib/server/env";
 import { captureRunTrace } from "@/lib/server/capture";
 
@@ -50,6 +50,7 @@ export async function POST(request: Request) {
   }
 
   // 运行本身应当立刻出现在列表里，这一步不依赖抓取结果。
+  revalidateTag("runs");
   revalidatePath("/");
   revalidatePath("/runs");
 

@@ -16,7 +16,11 @@ from agent.graph import (
 )
 from agent.operations.site_notify import TraceSiteNotifier, build_trace_site_notifier
 from agent.providers.openai_compatible import OpenAICompatibleProvider
-from agent.publishing.github import GitHubAppTokenProvider, GitHubPullRequestPublisher
+from agent.publishing.github import (
+    GitHubAppTokenProvider,
+    GitHubIssuePublisher,
+    GitHubPullRequestPublisher,
+)
 from agent.repositories.supabase import (
     SupabaseAgentRunRepository,
     SupabaseFeedbackRepository,
@@ -141,6 +145,14 @@ async def open_configured_runtime(
                 client=publisher_client,
                 api_url=api_url,
             )
+            issue_token_provider = GitHubAppTokenProvider(
+                config.github_repository,
+                app_id=app_id,
+                private_key=private_key,
+                client=publisher_client,
+                api_url=api_url,
+                permissions={"issues": "write"},
+            )
             publishing = PublishingDependencies(
                 publisher=GitHubPullRequestPublisher(
                     config.github_repository,
@@ -148,6 +160,12 @@ async def open_configured_runtime(
                     client=publisher_client,
                     api_url=api_url,
                     main_branch=main_branch,
+                ),
+                issue_publisher=GitHubIssuePublisher(
+                    config.github_repository,
+                    token_provider=issue_token_provider,
+                    client=publisher_client,
+                    api_url=api_url,
                 ),
                 trace_url_template=trace_url_template,
                 telemetry=telemetry,

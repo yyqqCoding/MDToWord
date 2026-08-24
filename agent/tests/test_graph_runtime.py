@@ -12,6 +12,7 @@ from agent.domain.enums import (
     AgentRunStatus,
     FeedbackStatus,
     FeedbackType,
+    GateArea,
     GateCategory,
     GateIntent,
     GateRoute,
@@ -19,6 +20,8 @@ from agent.domain.enums import (
 from agent.domain.gate import GateClassification
 from agent.domain.errors import ModelAuthError, ModelTimeoutError, SourceAccessError
 from agent.domain.models import AgentRunRecord, FeedbackRecord
+from agent.graph import PublishingDependencies
+from agent.publishing.contracts import IssuePublicationResult
 from agent.providers.base import StructuredModelResponse
 from agent.providers.fake import FakeModelProvider
 from agent.repositories.fake import FakeAgentRunRepository, FakeFeedbackRepository
@@ -46,6 +49,88 @@ def accepted_classification() -> GateClassification:
         requires_extension_change=False,
         reason="后端导出表格结构错误",
     )
+
+
+def test_issue_route_publishes_without_source_or_sandbox(tmp_path: Path):
+    class FakeIssuePublisher:
+        def __init__(self) -> None:
+            self.requests = []
+
+        async def publish_issue(self, request):
+            self.requests.append(request)
+            return IssuePublicationResult(
+                issue_number=18,
+                issue_url="https://github.com/yyqqCoding/MDToWord/issues/18",
+            )
+
+    async def scenario():
+        feedback = FeedbackRecord(
+            id=uuid4(),
+            feedback_type=FeedbackType.FEATURE,
+            description="希望增加 PDF 导出",
+        )
+        feedback_repository = FakeFeedbackRepository([feedback])
+        claimed = await feedback_repository.claim_next(
+            now=feedback.created_at,
+            lease_seconds=60,
+            max_attempts=3,
+        )
+        assert claimed is not None
+        issue_publisher = FakeIssuePublisher()
+        run_repository = FakeAgentRunRepository()
+        controller = GateController(
+            feedback_repository=feedback_repository,
+            run_repository=run_repository,
+            provider=FakeModelProvider(
+                [
+                    GateClassification(
+                        intent=GateIntent.FEATURE_REQUEST,
+                        area=GateArea.CROSS_COMPONENT,
+                        category=GateCategory.FEATURE_REQUEST,
+                        relevance=0.98,
+                        sufficient_information=True,
+                        injection_suspected=False,
+                        requires_extension_change=False,
+                        reason="PDF export feature",
+                        issue_title="增加 PDF 导出",
+                        issue_summary="用户希望增加 PDF 导出能力。",
+                    )
+                ]
+            ),
+            artifact_store=ArtifactStore(tmp_path),
+            checkpointer=InMemorySaver(),
+            dry_run=False,
+            publishing=PublishingDependencies(
+                trace_url_template="https://trace.example/{trace_id}",
+                issue_publisher=issue_publisher,
+            ),
+        )
+
+        outcome = await controller.start(claimed)
+        return (
+            outcome,
+            issue_publisher.requests,
+            await feedback_repository.get(feedback.id),
+            await run_repository.get(outcome.run_id),
+            sorted(path.name for path in (tmp_path / str(outcome.run_id)).iterdir()),
+        )
+
+    outcome, requests, stored_feedback, stored_run, artifacts = asyncio.run(scenario())
+
+    assert outcome.route is GateRoute.ISSUE_REQUIRED
+    assert outcome.issue_url == "https://github.com/yyqqCoding/MDToWord/issues/18"
+    assert len(requests) == 1
+    assert requests[0].draft.title == "增加 PDF 导出"
+    assert stored_feedback is not None
+    assert stored_feedback.status is FeedbackStatus.ISSUE_OPENED
+    assert stored_run is not None
+    assert stored_run.status is AgentRunStatus.COMPLETED
+    assert stored_run.issue_url == outcome.issue_url
+    assert artifacts == [
+        "gate.json",
+        "issue-publication.json",
+        "task.redacted.json",
+    ]
 
 
 def test_gate_graph_persists_only_small_state_and_finalizes_route(tmp_path: Path):

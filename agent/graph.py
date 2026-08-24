@@ -2,6 +2,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from hashlib import md5
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -21,6 +22,7 @@ from agent.domain.errors import (
     FeedbackNotFoundError,
     InvalidEditError,
     InvalidModelResponseError,
+    IssuePublicationError,
     PatchPolicyError,
     PublicationError,
     SourceAccessError,
@@ -35,6 +37,10 @@ from agent.domain.repair import (
 from agent.gate import execute_feedback_gate
 from agent.providers.base import ModelProvider
 from agent.publishing.contracts import (
+    IssueDraft,
+    IssuePublicationEvidence,
+    IssuePublicationRequest,
+    IssuePublisher,
     PublicationDisposition,
     PublicationEvidence,
     PublicationFile,
@@ -79,13 +85,14 @@ from agent.domain.reproduction import (
 )
 
 
-GRAPH_VERSION = "agent-graph-v8"
-POLICY_VERSION = "publication-policy-v6"
+GRAPH_VERSION = "agent-graph-v9"
+POLICY_VERSION = "publication-policy-v7"
 
 _ROUTE_TO_FEEDBACK_STATUS = {
     GateRoute.ACCEPTED_BACKEND_BUG: FeedbackStatus.REPRODUCING,
     GateRoute.REJECTED_IRRELEVANT: FeedbackStatus.REJECTED_IRRELEVANT,
     GateRoute.QUARANTINED_SECURITY: FeedbackStatus.QUARANTINED_SECURITY,
+    GateRoute.ISSUE_REQUIRED: FeedbackStatus.ISSUE_REQUIRED,
     GateRoute.OUT_OF_SCOPE: FeedbackStatus.OUT_OF_SCOPE,
     GateRoute.NEEDS_HUMAN: FeedbackStatus.NEEDS_HUMAN,
     GateRoute.DUPLICATE: FeedbackStatus.DUPLICATE,
@@ -118,8 +125,9 @@ class RepairDependencies:
 
 @dataclass(frozen=True)
 class PublishingDependencies:
-    publisher: PullRequestPublisher
     trace_url_template: str
+    publisher: PullRequestPublisher | None = None
+    issue_publisher: IssuePublisher | None = None
     telemetry: Telemetry = field(default_factory=NoopTelemetry)
 
     def __post_init__(self) -> None:
@@ -144,8 +152,8 @@ def build_gate_graph(
 
     if repair is not None and reproduction is None:
         raise ValueError("repair graph requires reproduction dependencies")
-    if publishing is not None and repair is None:
-        raise ValueError("publishing graph requires repair dependencies")
+    if publishing is not None and publishing.publisher is not None and repair is None:
+        raise ValueError("pull request publishing requires repair dependencies")
 
     async def start_gate(state: AgentState) -> dict[str, object]:
         feedback = await feedback_repository.get(state.feedback_id)
@@ -184,6 +192,7 @@ def build_gate_graph(
         gate_ref = artifact_store.write_gate_ref(state.run_id, result)
         return {
             "route": result.route.value,
+            "area": result.area.value,
             "category": result.category.value,
             "risk": result.risk,
             "gate_result_ref": gate_ref,
@@ -201,7 +210,16 @@ def build_gate_graph(
         if state.gate_result_ref is None:
             raise ValueError("gate state is missing gate_result_ref")
         result = artifact_store.read_gate(state.gate_result_ref)
-        target = _ROUTE_TO_FEEDBACK_STATUS[result.route]
+        publish_issue = (
+            result.route is GateRoute.ISSUE_REQUIRED
+            and publishing is not None
+            and publishing.issue_publisher is not None
+        )
+        target = (
+            FeedbackStatus.PUBLISHING_ISSUE
+            if publish_issue
+            else _ROUTE_TO_FEEDBACK_STATUS[result.route]
+        )
         feedback = await feedback_repository.get(state.feedback_id)
         if feedback is None:
             raise FeedbackNotFoundError(f"feedback {state.feedback_id} does not exist")
@@ -216,6 +234,7 @@ def build_gate_graph(
                 claim_token=state.claim_token,
                 target=target,
                 category=result.category,
+                area=result.area,
                 risk=result.risk,
             )
         elif feedback.status is not target:
@@ -230,6 +249,16 @@ def build_gate_graph(
                 estimated_cost=state.usage.estimated_cost,
             )
             return {"status": AgentRunStatus.PREPARING_SOURCE}
+        if publish_issue:
+            await run_repository.mark_publishing_issue(
+                state.run_id,
+                result,
+                input_tokens=state.usage.input_tokens,
+                output_tokens=state.usage.output_tokens,
+                total_tokens=state.usage.total_tokens,
+                estimated_cost=state.usage.estimated_cost,
+            )
+            return {"status": AgentRunStatus.PUBLISHING_ISSUE}
         await run_repository.complete_gate(
             state.run_id,
             result,
@@ -246,7 +275,133 @@ def build_gate_graph(
             and state.route == GateRoute.ACCEPTED_BACKEND_BUG.value
         ):
             return "prepare_source"
+        if (
+            publishing is not None
+            and publishing.issue_publisher is not None
+            and state.route == GateRoute.ISSUE_REQUIRED.value
+        ):
+            return "publish_issue"
         return "end"
+
+    async def publish_issue(state: AgentState) -> dict[str, object]:
+        assert publishing is not None and publishing.issue_publisher is not None
+        if state.gate_result_ref is None or state.task_artifact_ref is None:
+            raise ValueError("issue publication state is missing gate context")
+        result = artifact_store.read_gate(state.gate_result_ref)
+        classification = result.classification
+        if (
+            result.route is not GateRoute.ISSUE_REQUIRED
+            or classification is None
+            or classification.issue_title is None
+            or classification.issue_summary is None
+        ):
+            raise IssuePublicationError("issue publication requires a safe draft")
+        task = artifact_store.read_task(state.task_artifact_ref)
+        run = await run_repository.get(state.run_id)
+        if run is None:
+            raise IssuePublicationError("issue publication run summary is missing")
+        run_ref = md5(
+            str(state.feedback_id).encode("utf-8"),
+            usedforsecurity=False,
+        ).hexdigest()[:12]
+        request = IssuePublicationRequest(
+            feedback_id=state.feedback_id,
+            content_fingerprint=task.content_fingerprint,
+            run_ref=run_ref,
+            draft=IssueDraft(
+                title=classification.issue_title,
+                summary=classification.issue_summary,
+                intent=classification.intent,
+                area=result.area,
+                category=result.category,
+            ),
+            evidence=IssuePublicationEvidence(
+                graph_version=run.graph_version,
+                policy_version=run.policy_version,
+                prompt_versions=run.prompt_versions,
+                provider=run.provider or "unknown",
+                model=run.model or "unknown",
+                model_calls=state.model_calls,
+                tool_calls=state.tool_calls,
+                input_tokens=state.usage.input_tokens,
+                output_tokens=state.usage.output_tokens,
+                total_tokens=state.usage.total_tokens,
+                trace_url=publishing.trace_url_template.format(
+                    trace_id=state.trace_id
+                ),
+            ),
+        )
+        with publishing.telemetry.start_tool(
+            ToolTrace(
+                operation="publish-issue",
+                round=None,
+                input_summary={
+                    "run_ref": run_ref,
+                    "fingerprint_prefix": task.content_fingerprint[:12],
+                    "area": result.area.value,
+                    "label": (
+                        "bug"
+                        if classification.intent.value == "bug_report"
+                        else "enhancement"
+                    ),
+                },
+            )
+        ) as observation:
+            try:
+                publication = await publishing.issue_publisher.publish_issue(request)
+            except Exception as exc:
+                observation.fail(
+                    error_code="issue_publication_failed",
+                    error_type=type(exc).__name__,
+                )
+                raise IssuePublicationError("issue publication failed") from exc
+            observation.succeed(
+                {
+                    "issue_number": publication.issue_number,
+                    "reused": publication.reused,
+                }
+            )
+        return {
+            "issue_publication_result_ref": (
+                artifact_store.write_issue_publication_ref(
+                    state.run_id,
+                    publication,
+                )
+            ),
+            "issue_url": publication.issue_url,
+            "tool_calls": state.tool_calls + 1,
+        }
+
+    async def finish_issue_publication(state: AgentState) -> dict[str, object]:
+        if state.issue_publication_result_ref is None:
+            raise ValueError("issue publication result is missing")
+        result = artifact_store.read_issue_publication(
+            state.issue_publication_result_ref
+        )
+        feedback = await _owned_feedback(
+            feedback_repository,
+            state.feedback_id,
+            state.claim_token,
+        )
+        if feedback.status is FeedbackStatus.PUBLISHING_ISSUE:
+            await feedback_repository.transition(
+                feedback.id,
+                claim_token=state.claim_token,
+                target=FeedbackStatus.ISSUE_OPENED,
+                issue_url=result.issue_url,
+            )
+        elif feedback.status is not FeedbackStatus.ISSUE_OPENED:
+            raise ClaimTokenMismatchError("issue publication was finalized elsewhere")
+        await run_repository.complete_issue_publication(
+            state.run_id,
+            issue_url=result.issue_url,
+            tool_calls=state.tool_calls,
+        )
+        return {
+            "status": AgentRunStatus.COMPLETED,
+            "issue_url": result.issue_url,
+            "last_error_code": None,
+        }
 
     builder = StateGraph(AgentState)
     builder.add_node("start_gate", start_gate)
@@ -255,8 +410,20 @@ def build_gate_graph(
     builder.add_edge(START, "start_gate")
     builder.add_edge("start_gate", "classify_gate")
     builder.add_edge("classify_gate", "route_feedback")
+    if publishing is not None and publishing.issue_publisher is not None:
+        builder.add_node("publish_issue", publish_issue)
+        builder.add_node("finish_issue_publication", finish_issue_publication)
+        builder.add_edge("publish_issue", "finish_issue_publication")
+        builder.add_edge("finish_issue_publication", END)
     if reproduction is None:
-        builder.add_edge("route_feedback", END)
+        if publishing is not None and publishing.issue_publisher is not None:
+            builder.add_conditional_edges(
+                "route_feedback",
+                route_after_gate,
+                {"publish_issue": "publish_issue", "end": END},
+            )
+        else:
+            builder.add_edge("route_feedback", END)
     else:
         async def prepare_source(state: AgentState) -> dict[str, object]:
             with reproduction.telemetry.start_tool(
@@ -1286,7 +1453,11 @@ def build_gate_graph(
                 )
             elif feedback.status not in {target, FeedbackStatus.PUBLISHING}:
                 raise ClaimTokenMismatchError("feedback validation was finalized elsewhere")
-            if publishing is not None and validation.passed:
+            if (
+                publishing is not None
+                and publishing.publisher is not None
+                and validation.passed
+            ):
                 if feedback.status is FeedbackStatus.VALIDATED:
                     await feedback_repository.transition(
                         feedback.id,
@@ -1300,13 +1471,19 @@ def build_gate_graph(
             await run_repository.complete_validation(
                 state.run_id,
                 validation,
-                publish_pending=publishing is not None,
+                publish_pending=(
+                    publishing is not None and publishing.publisher is not None
+                ),
                 **_usage_arguments(state),
             )
             return {
                 "status": (
                     AgentRunStatus.PUBLISHING
-                    if publishing is not None and validation.passed
+                    if (
+                        publishing is not None
+                        and publishing.publisher is not None
+                        and validation.passed
+                    )
                     else AgentRunStatus.COMPLETED
                 )
             }
@@ -1315,7 +1492,7 @@ def build_gate_graph(
             return "publish" if state.status is AgentRunStatus.PUBLISHING else "end"
 
         async def publish_pull_request(state: AgentState) -> dict[str, object]:
-            assert publishing is not None
+            assert publishing is not None and publishing.publisher is not None
             if (
                 state.validation_result_ref is None
                 or state.source_snapshot_ref is None
@@ -1542,10 +1719,13 @@ def build_gate_graph(
         builder.add_node("run_reproduction_in_sandbox", run_reproduction_in_sandbox)
         builder.add_node("classify_reproduction", classify_reproduction)
         builder.add_node("finish_reproduction", finish_reproduction)
+        gate_targets = {"prepare_source": "prepare_source", "end": END}
+        if publishing is not None and publishing.issue_publisher is not None:
+            gate_targets["publish_issue"] = "publish_issue"
         builder.add_conditional_edges(
             "route_feedback",
             route_after_gate,
-            {"prepare_source": "prepare_source", "end": END},
+            gate_targets,
         )
         builder.add_edge("prepare_source", "plan_reproduction")
         builder.add_edge("plan_reproduction", "generate_test_edit")
@@ -1575,7 +1755,7 @@ def build_gate_graph(
             builder.add_node("validate_final", validate_final)
             builder.add_node("finish_validation", finish_validation)
             builder.add_node("finish_budget_exhausted", finish_budget_exhausted)
-            if publishing is not None:
+            if publishing is not None and publishing.publisher is not None:
                 builder.add_node("publish_pull_request", publish_pull_request)
                 builder.add_node("finish_publication", finish_publication)
             builder.add_conditional_edges(
@@ -1625,7 +1805,7 @@ def build_gate_graph(
                 },
             )
             builder.add_edge("finish_repair_failure", END)
-            if publishing is None:
+            if publishing is None or publishing.publisher is None:
                 builder.add_edge("finish_validation", END)
             else:
                 builder.add_conditional_edges(

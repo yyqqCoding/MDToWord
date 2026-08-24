@@ -52,7 +52,7 @@ export function RunsExplorer({ runs }: { runs: RunListItem[] }) {
   const counts = useMemo(() => {
     const c: Record<RunFilterKey, number> = {
       all: searched.length,
-      pr: 0,
+      published: 0,
       unfixed: 0,
       failed: 0,
       neutral: 0,

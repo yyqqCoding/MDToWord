@@ -8,8 +8,8 @@
 - 让模型生成读取密钥、联网或修改安全配置的测试/代码；
 - 利用 pytest、Python、Pandoc 或恶意文件消耗资源或攻击宿主机；
 - 修改测试、依赖、工作流或部署配置来伪造修复；
-- 将联系方式、用户文档、源码或密钥带入 Trace 和 PR；
-- 重放任务、重复创建 PR 或用超大输入消耗模型成本。
+- 将联系方式、用户文档、源码或密钥带入 Trace、PR 或公开 Issue；
+- 重放任务、重复创建 PR/Issue 或用超大输入消耗模型成本。
 
 MVP 是单仓库、单维护者系统，不按恶意多租户平台设计；但模型生成的代码始终按
 不可信代码执行。
@@ -41,9 +41,10 @@ MVP 不要求每个模块都是微服务，但凭证和能力必须按下表隔�
 | Model | 请求当前节点注册的结构化工具 | 直接Shell、网络、文件系统、数据库、GitHub、密钥 |
 | Sandbox Worker | 校验Job、启动受限容器、返回结果 | 模型/Supabase/GitHub/Langfuse业务密钥 |
 | Task Container | 读源码快照、写临时workspace、执行固定命令 | 外网、宿主机、Docker Socket、任何Secret |
-| GitHub Publisher模块 | 对指定仓库创建分支和PR | 执行修改后代码、修改Actions/Secrets、自动合并 |
+| Pull Request Publisher | 对指定仓库创建分支和PR | 创建Issue、修改Actions/Secrets、自动合并 |
+| Issue Publisher | 对指定仓库创建脱敏Issue | 读取源码、创建分支/PR/标签、关闭或编辑Issue |
 | Telemetry模块 | 向指定Langfuse项目写Trace | 控制Agent状态、读取联系方式 |
-| Maintainer | 查看Trace和PR、审核合并 | 无需向Agent暴露个人GitHub凭证 |
+| Maintainer | 查看Trace、PR和Issue，审核合并或人工处理 | 无需向Agent暴露个人GitHub凭证 |
 
 Controller 的源码读取凭据只授予指定仓库 `Contents: Read-only`；未来 Publisher 使用
 独立 GitHub App 凭据。两类凭据都只由对应的受信适配器读取，不得进入 Graph State、
@@ -107,7 +108,8 @@ Supabase 或执行其他网络 I/O；请求在锁内消费额度并释放锁后�
 4. 工具按当前 Graph 节点注册，未注册工具不存在可执行入口；
 5. 所有参数先经 Schema、路径、预算和状态授权；
 6. 模型不产生命令，沙箱只执行 Job 类型对应的固定 argv；
-7. 模型不能触发数据库写入、GitHub发布或状态跳转；
+7. 模型不能触发数据库写入、GitHub发布或状态跳转；Issue 也只能由本地
+   `issue_required` Policy 结果进入受信 Publisher；
 8. 工具输出再次包为不可信数据，避免测试日志中的间接注入；
 9. 即使 Gate 漏判，后续最小能力、补丁Policy和沙箱仍限制影响范围。
 
@@ -271,16 +273,24 @@ Langfuse 或 GitHub 凭据注入 Worker 进程。Controller 与 Worker 共享的
 
 - Feedback API不使用Agent数据库密钥；
 - Controller按Provider只加载当前模型Key；
-- GitHub使用只安装到本仓库的GitHub App，授予源码与PR所需最小权限；
-- 每次发布用 App JWT 换取短期安装令牌时再次限定当前仓库，并只请求
-  `contents:write` 与 `pull_requests:write`；令牌响应若包含额外权限则拒绝发布；
+- GitHub使用只安装到本仓库的GitHub App；阶段 I 上线前由维护者显式增加
+  `Issues: Read and write`，不得由应用或 migration 自动修改 App 权限；
+- PR Publisher 用 App JWT 换取短期安装令牌时只请求 `contents:write` 与
+  `pull_requests:write`；
+- Issue Publisher 使用独立权限配置换取只含 `issues:write` 的短期安装令牌，不因复用同一
+  GitHub App 就把 Contents/PR 权限带入 Issue 请求；
+- 两类令牌都再次限定当前仓库，并分别校验响应权限精确匹配；除 GitHub 固有
+  `metadata:read` 外出现额外权限即拒绝对应发布；
 - GitHub App禁止Actions、Administration、Secrets和自动合并权限；
 - 安装令牌短期生成，不保存到Artifact或Trace；
 - Langfuse仅使用项目写入Key，Trace查看由维护者账号控制；
 - 生产和共享环境的密钥通过部署 Secret 注入，不写入仓库、Graph State 或共享配置；
 - 本地手工集成测试可使用被 Git 忽略的私有 `.env`，只填写缺少的配置，不提交、不
   分享，也不把值粘贴到日志、Issue、PR 或聊天中；
-- 日志和PR发布前执行密钥模式扫描作为兜底。
+- 日志、PR和Issue发布前执行密钥模式扫描作为兜底；
+- Issue 不得包含 `contact`、原始 Markdown、原始 description、完整模型 reason 或用户
+  注入内容；只允许严格 `IssueDraft` 的脱敏摘要与受信运行元数据；
+- 功能建议表单在提交前明确提示建议可能被脱敏后公开，且不得填写隐私信息。
 
 ## 11. Artifact完整性
 
@@ -307,9 +317,13 @@ validated_patch_sha256
 - 无可信 IP 时返回 `503`，Supabase 写入失败不返还已消费额度；
 - 限流状态有容量上限，日志、数据库、Trace 和响应均不含原始 IP；
 - 注入样例不能触发任何代码工具；
+- 注入、无关、垃圾和信息不足样例不能触发 Issue Publisher；
 - 未注册工具、非法路径、任意命令和超限请求均在执行前被拒绝；
 - 沙箱内网络失败，环境中不存在业务密钥；
 - 修改`extension/`、`.github/`、依赖或测试基础设施的patch被拒绝；
 - 恶意测试的ImportError、超时和伪造报告不被判为成功复现；
 - Publisher拒绝哈希不一致或未验证patch；
-- Trace、日志、Artifact和PR中不存在`contact`和密钥。
+- Issue Publisher拒绝未知标签、非固定仓库、缺失 marker、敏感摘要和重复副作用；
+- PR Publisher取得的令牌不含 Issues 权限，Issue Publisher取得的令牌不含 Contents/PR
+  写权限；
+- Trace、日志、Artifact、PR和Issue中不存在`contact`和密钥。

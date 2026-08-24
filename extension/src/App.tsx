@@ -711,7 +711,9 @@ export function App() {
             </>
           ) : (
             <>
-              <p className="feedback-hint">告诉我们你希望增加的功能。</p>
+              <p className="feedback-hint">
+                告诉我们你希望增加的功能。建议可能经脱敏后公开到 GitHub Issue，请勿填写隐私、密钥或联系方式。
+              </p>
               <label>
                 功能描述 <span className="required">*</span>
                 <textarea

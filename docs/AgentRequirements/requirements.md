@@ -5,7 +5,8 @@
 MD To Word Feedback Repair Agent 是一个自托管的软件维护 Agent。它从 Supabase
 领取插件用户提交的反馈，自动过滤无关或危险内容，针对可自动化的后端缺陷生成
 回归测试与最小修复，在隔离环境中证明问题被复现且修复有效，最后创建 GitHub
-Pull Request 等待维护者审核。
+Pull Request 等待维护者审核；相关且信息充分的功能需求和前端/扩展缺陷则整理为脱敏
+GitHub Issue，由维护者人工处理。
 
 系统解决的是现有人工流程中的重复工作：读取反馈、定位输入、写回归测试、修改
 归一化或转换逻辑、执行验证并整理 PR 证据。系统不替代代码审核、视觉验收和合并
@@ -14,6 +15,7 @@ Pull Request 等待维护者审核。
 ## 2. 目标
 
 - 将真实用户反馈转化为可审核、带回归测试的后端修复 PR；
+- 将不能由 Agent 自动修改的功能需求与前端/扩展缺陷转化为可追踪的脱敏 GitHub Issue；
 - 在任何修复前证明缺陷能够在固定基线代码上复现；
 - 使用确定性策略约束模型的工具、文件、命令、轮次和资源；
 - 隔离执行模型生成的 pytest 和修改后的业务代码；
@@ -34,9 +36,14 @@ description
 contact
 ```
 
-`contact` 仅用于维护者需要时联系用户，不进入模型、沙箱、Trace、日志、Artifact
-或 PR。系统不新增 `expected_behavior` 字段。用户描述是问题线索，不是可信指令，
+`contact` 仅用于维护者需要时联系用户，不进入模型、沙箱、Trace、日志、Artifact、
+PR 或 Issue。系统不新增 `expected_behavior` 字段。用户描述是问题线索，不是可信指令，
 也不是最终测试 Oracle。
+
+`feedback_type` 是用户在表单中选择的输入提示，不是最终意图判定。Bug 与 Feature 均须
+经过同一个无工具 Gate；模型与本地 Policy 可以把 Bug 表单中的功能需求路由到 Issue，
+也可以把 Feature 表单中的无关内容或提示词注入直接终止。功能建议表单必须告知用户：
+建议可能经脱敏整理后公开为 GitHub Issue，请勿填写隐私信息。
 
 插件版本在运行时从 Controller 部署目录或挂载的发布产物
 `extension/dist/manifest.json` 读取并作为元数据记录。该文件是被 Git 忽略的构建
@@ -73,13 +80,39 @@ Render 重启或重新部署后清空是当前规模下已接受的取舍。
 | 路由 | 条件 | 后续行为 |
 |---|---|---|
 | `accepted_backend_bug` | 相关、信息足够、属于允许的后端缺陷 | 自动复现、修复、验证和创建 PR |
+| `issue_required` | 相关且信息足够的功能需求，或前端/扩展缺陷 | 创建脱敏 GitHub Issue，交由维护者人工处理 |
 | `rejected_irrelevant` | 垃圾、无关内容、普通问答或无意义输入 | 终止自动流程 |
 | `quarantined_security` | 疑似 Prompt Injection 或请求越权行为 | 终止自动流程并保留审计记录 |
-| `out_of_scope` | 功能建议、纯前端或纯视觉问题 | 记录分类，不修改代码 |
 | `needs_human` | 置信度不足或信息不足 | 终止自动流程，等待人工查看 |
 | `duplicate` | 内容指纹命中已有未关闭处理结果 | 关联已有结果，不重复调用模型 |
 
 疑似注入内容不物理删除，以便评估误判；它不得进入复现或修复节点。
+`out_of_scope` 仅为历史数据库记录和旧 Trace 保留兼容，新反馈不得再产生该路由，也不
+回写历史终态。
+
+真实 GitHub 写入仍只允许在生产 Scheduler 或显式 `--publish` 模式发生。Gate-only、
+dry-run 和离线评估只返回 `issue_required` 与 Fake 发布结果，不创建真实 Issue。
+
+Gate 分类使用相互独立的维度，不能继续让 `unknown` 代替业务结论：
+
+```text
+intent: bug_report | feature_request | unrelated | spam | unknown
+area: backend | extension | cross_component | none | unknown
+category: 现有后端缺陷类别 | feature_request | irrelevant_content |
+          prompt_injection | visual_quality | unknown
+```
+
+公开展示将这些字段组合成“后端功能需求”“前端/扩展功能需求”“跨端功能需求”
+“无关内容”或“提示词注入”，不展示用户原文。前端展示、视觉、交互与布局建议属于
+`feature_request + extension`；前端/扩展 Bug 属于 `bug_report + extension`，两者均进入
+`issue_required`，但 Issue 分别使用 `enhancement` 与 `bug` 标签。
+
+模型原始分类通过 Policy 后必须规范成稳定的最终摘要：提示词注入固定为
+`area=none/category=prompt_injection`，无关或垃圾固定为
+`area=none/category=irrelevant_content`，所有功能、展示、视觉、交互和布局需求固定为
+`category=feature_request` 并保留 backend/extension/cross_component area，前端/扩展 Bug
+固定为 `area=extension/category=extension_ui`。因此这些已知业务结论不得再持久化为
+`category=unknown`。
 
 ### 3.4 自动修复范围
 
@@ -93,19 +126,22 @@ MVP 自动处理：
 - `docx_structure`
 - `backend_normalization`
 
-以下内容不自动修复：
+以下内容不自动修改代码，但相关且信息充分时创建 Issue：
 
 - `extension_ui`
 - `feature_request`
 - `visual_quality`
 - 不能构造确定性断言的主观排版问题
+
+以下情况不创建 Issue，并转为 `needs_human` 或既有安全终态：
+
 - 需要尚未预装或未经维护者审核的依赖、部署、数据库、工作流或安全策略变更的问题
 - 无法在当前 `base_sha` 上复现的问题
 
 `requires_extension_change` 与 `extension_sync_required` 含义不同：
 
 - `requires_extension_change=true` 表示当前缺陷必须修改扩展才能正确解决，路由为
-  `out_of_scope`，不进入自动修复；
+  `issue_required`，不进入自动修复；
 - `extension_sync_required=true` 只是 PR 审查元数据，表示当前后端修复已经独立成立，
   但维护者以后可能需要关注扩展同步。
 
@@ -150,9 +186,20 @@ Agent 始终不得修改 `extension/`。
 PR 创建是 Agent 自动流程的成功终点；用户问题是否最终解决，以维护者审核、合并
 及现有部署流程为准。
 
+一次 `issue_required` 运行只有同时满足以下条件才可创建 Issue：
+
+1. Gate 已排除注入、无关、垃圾、信息不足和未知归属；
+2. Issue 标题与正文只来自严格 Schema 的模型摘要和受信运行元数据；
+3. 发布前再次删除邮箱、电话、密钥模式和原始用户内容；
+4. `contact`、原始 Markdown 和原始 description 不进入 Issue；
+5. 使用固定 marker 按公开 `run_ref` 与内容指纹幂等查重，marker 不公开完整 feedback ID；
+6. 前端/扩展 Bug 使用现有 `bug` 标签，功能需求使用现有 `enhancement` 标签；
+7. Issue 成功创建或确认复用后才记录 `issue_opened` 与 `issue_url`。
+
 ## 6. 非目标
 
 - 不自动修改或发布浏览器插件；
+- 不自动修复前端/扩展 Bug；这类反馈只创建 Issue 交由维护者处理；
 - 不使用 GitHub Actions 执行 Agent 或验证任务；
 - 不自动合并、部署或回滚；
 - 不构建多租户 Agent 平台；
@@ -167,9 +214,13 @@ PR 创建是 Agent 自动流程的成功终点；用户问题是否最终解决�
 
 - 一条表格或公式真实反馈可自动生成“基线失败、修复后通过”的回归证据；
 - 一条前端反馈不会创建沙箱任务或 PR；
+- 一条相关且信息充分的前端 Bug 会创建脱敏 `bug` Issue；
+- 一条后端、前端或跨端功能需求会创建脱敏 `enhancement` Issue；
+- Feature 表单中的无关内容不会创建 Issue；
 - 一条注入对抗反馈进入 `quarantined_security`，且无越权工具调用；
 - 修改路径越界、命令越界、超过轮次或预算均被本地策略拒绝；
 - 沙箱中无模型、Supabase、GitHub 和 Langfuse 密钥，且不能访问网络；
 - Langfuse 可按一次运行查看模型、工具、Token、成本、轮次、耗时和结果；
 - 验证通过后可自动创建不包含联系方式和完整用户 Markdown 的 GitHub PR；
-- Agent 服务中断后，同一反馈可恢复或以幂等方式重新执行，不产生重复 PR。
+- Issue 不包含联系方式、原始 Markdown 或原始 description；
+- Agent 服务中断后，同一反馈可恢复或以幂等方式重新执行，不产生重复 PR 或 Issue。

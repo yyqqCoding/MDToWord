@@ -14,8 +14,9 @@ Edge 插件
        |- Source Workspace
        |- Langfuse/结构化日志
        |- Sandbox Client --------> Docker Sandbox Worker
-       `- GitHub Publisher ------> GitHub branch + Pull Request
-                                      `-> 维护者审核与合并
+       |- Pull Request Publisher -> GitHub branch + Pull Request
+       `- Issue Publisher --------> GitHub Issue
+                                      `-> 维护者人工处理
 ```
 
 GitHub 负责源码、分支、PR 和人工协作，不负责调度、执行、沙箱或 Agent 密钥。
@@ -62,10 +63,12 @@ Langfuse。当前 Render 容器只有一个 Uvicorn worker，因此使用一个�
 - 从本地发布产物读取可选的插件版本元数据；
 - 向 Sandbox Worker 提交固定 Job；
 - 保存 Artifact、状态、Token 和错误；
-- 验证通过后通过 GitHub App 创建分支和 PR。
+- 验证通过后通过 GitHub App 创建分支和 PR；
+- 为相关且信息充分的功能需求和前端/扩展缺陷创建脱敏 Issue。
 
 Controller 不直接执行模型生成的测试或修改后的源码。GitHub 发布是 Controller 中的
-受信模块，不作为模型工具暴露；只有确定性状态达到 `validated` 才能调用。
+受信模块，不作为模型工具暴露；PR 只有确定性状态达到 `validated` 才能调用，Issue 只有
+确定性路由达到 `issue_required` 且脱敏发布契约通过后才能调用。
 源码读取使用 Controller-only、指定仓库 `Contents: Read-only` 的凭据；该凭据与
 发布用 GitHub App 分离，也不得进入 Graph State、模型上下文、Worker 或任务容器。
 
@@ -84,7 +87,7 @@ Supabase、GitHub 或 Langfuse 凭证。
 | Supabase/PostgreSQL | 反馈、运行状态、领取与幂等 | `FeedbackRepository` |
 | 模型 API | 门禁、复现规划、测试与修复生成 | `ModelProvider` |
 | Langfuse | Agent/LLM Trace、用量与评估 | `Telemetry` |
-| GitHub | 读取源码、推送分支、创建 PR | `SourceRepository` / `PullRequestPublisher` |
+| GitHub | 读取源码、创建 PR 或脱敏 Issue | `SourceRepository` / `PullRequestPublisher` / `IssuePublisher` |
 | Docker Worker | 不可信代码执行 | `SandboxClient` |
 | Mermaid CLI + Chromium | 在本地把受限 Mermaid 源码渲染为 PNG | `app.mermaid_renderer` |
 
@@ -111,7 +114,9 @@ LangGraph 的单元测试中独立验证。
 poll
  -> claim
  -> gate
-    |- reject / quarantine / out_of_scope / needs_human / duplicate
+    |- reject / quarantine / needs_human / duplicate
+    |- issue_required
+    |    `-> publish_issue -> issue_opened
     `- accepted_backend_bug
          -> prepare_source(base_sha)
          -> reproduce(max 2 rounds)
@@ -133,9 +138,10 @@ poll
 pending -> claimed -> gating
   |- rejected_irrelevant
   |- quarantined_security
-  |- out_of_scope
   |- needs_human
   |- duplicate
+  |- publishing_issue -> issue_opened
+  |                   `- failed
   `- reproducing -> repairing -> validating
        |- cannot_reproduce
        |- security_rejected
@@ -146,11 +152,15 @@ validated | publishing -> stale_base -> pending（只允许一次）
                                       `- needs_human（重排次数耗尽）
 ```
 
+`out_of_scope` 是历史兼容终态，新运行不再进入；migration 不改写已有记录。
+
 ### 5.2 Agent Run 状态
 
 ```text
 created -> gating
   |- completed（非修复终态）
+  |- publishing_issue -> completed
+  |                   `- failed
   `- preparing_source -> reproducing -> repairing -> validating
        -> publishing -> completed
 
@@ -169,10 +179,10 @@ failed | cancelled | budget_exhausted | security_rejected
 保留现有用户字段，增加或使用以下 Agent 字段：
 
 ```text
-status, category, risk, content_fingerprint,
+status, category, area, risk, content_fingerprint,
 attempt_count, stale_requeue_count, claimed_at, claim_token,
 last_error_code, last_error_message,
-pr_url, resolved_at, updated_at
+pr_url, issue_url, resolved_at, updated_at
 ```
 
 不增加 `expected_behavior` 和逐条 `source_version`。精确重复使用原始
@@ -183,12 +193,12 @@ pr_url, resolved_at, updated_at
 每次尝试独立记录：
 
 ```text
-id, feedback_id, claim_token, trace_id, status, route, category, dry_run,
+id, feedback_id, claim_token, trace_id, status, route, category, area, dry_run,
 task_artifact_ref, base_sha, extension_version,
 provider, model, graph_version, prompt_versions, policy_version,
 langfuse_trace_id, classification, reproduction, repair, validation,
 model_calls, tool_calls, input_tokens, output_tokens, estimated_cost,
-validated_patch_sha256, artifact_path, pr_url,
+validated_patch_sha256, artifact_path, pr_url, issue_url,
 error_code, error_message, started_at, finished_at
 ```
 
@@ -213,13 +223,14 @@ MVP 使用 Controller 管理的本地运行目录：
   validation-junit.xml
   validation.json
   publication.json
+  issue-publication.json
   result.json
 ```
 
 目录不包含联系方式，默认保留 14 天。模型只通过受控上下文读取必要摘要，不直接
 访问 Artifact 文件系统。
 
-## 7. 基线与发布一致性
+## 7. GitHub 发布一致性
 
 任务开始时从 GitHub `main` 读取并固定 `base_sha`。所有编辑、沙箱执行和最终补丁
 均基于该 SHA。发布前只做一次简单检查：
@@ -233,6 +244,11 @@ current_main_sha != base_sha -> 本次 run 结束为 stale_base，feedback 重�
 `validated_patch_sha256` 对应的 `validated.patch` 为准。
 同一 feedback 第二次遇到 `stale_base` 时进入 `needs_human`，不得无限重排。
 
+Issue 发布不读取或修改源码，因此不做 `base_sha` 过期检查。它使用
+`run_ref + content_fingerprint` 生成固定 marker；创建前按 marker 查询已有开放或关闭
+Issue，网络响应丢失和同 run 恢复时复用已有结果，不得重复创建。历史 `out_of_scope`
+运行不会因新版本部署而自动补建 Issue。
+
 ## 8. 故障与恢复
 
 - Feedback API 限流状态随 Render 进程重启清空，不作为持久业务状态恢复；
@@ -244,8 +260,11 @@ current_main_sha != base_sha -> 本次 run 结束为 stale_base，feedback 重�
 - 维护者可使用已有 `run_id` 显式恢复运行，不重新领取同一 feedback；
 - Sandbox 超时或崩溃只丢弃该临时容器，不复用工作区；
 - Langfuse 不可用不阻断主流程，最终用量仍写入 `agent_runs`；
-- GitHub 发布失败保留已验证 Artifact，状态为 `failed`，可由同一运行幂等重试；
+- GitHub PR 发布失败保留已验证 Artifact，状态为 `failed`，可由同一运行幂等重试；
+- GitHub Issue 发布失败保留脱敏 Issue draft，使用稳定错误码
+  `issue_publication_failed` 终结，可由同一运行幂等恢复；
 - 同一 `validated_patch_sha256` 和 feedback 不得创建多个打开的 PR。
+- 同一 feedback 与内容指纹不得创建多个 Issue。
 
 ## 9. 关键取舍
 
@@ -255,5 +274,7 @@ current_main_sha != base_sha -> 本次 run 结束为 stale_base，feedback 重�
 - 使用显式状态图包住有限 ReAct，不采用拥有任意 Shell 的开放式 Agent；
 - 使用 Docker Worker 而非自研沙箱；
 - 只修后端，避免插件商店审核周期进入自动闭环；
+- 前端/扩展 Bug 与所有功能需求进入同一 Issue 发布边界，避免为“人工处理”保留模糊的
+  `out_of_scope` 新路由；
 - 使用一个模型完成 MVP，先通过 Langfuse 和离线评估获得拆分模型的证据；
 - 保持人工合并，因为 DOCX 结构检查不能完全替代 Word 视觉检查。

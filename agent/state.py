@@ -21,7 +21,8 @@ class AgentState(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal[1] = 1
+    # v2 增加 area 与 Issue 发布引用；仍接受 v1 以恢复升级前 checkpoint。
+    schema_version: Literal[1, 2] = 2
     run_id: UUID
     feedback_id: UUID
     # claim token 是恢复条件更新所需的租约能力，只存放在私有 checkpoint 中。
@@ -30,6 +31,7 @@ class AgentState(BaseModel):
     status: AgentRunStatus
     dry_run: bool = True
     route: str | None = None
+    area: str | None = None
     category: str | None = None
     risk: RiskLevel = RiskLevel.UNKNOWN
     base_sha: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
@@ -44,6 +46,7 @@ class AgentState(BaseModel):
     repair_result_ref: str | None = None
     validation_result_ref: str | None = None
     publication_result_ref: str | None = None
+    issue_publication_result_ref: str | None = None
     fix_summary: str | None = Field(default=None, max_length=1000)
     fix_source_paths: tuple[str, ...] = ()
     reproduction_round: int = Field(default=0, ge=0)
@@ -57,5 +60,6 @@ class AgentState(BaseModel):
         pattern=r"^[0-9a-f]{64}$",
     )
     pr_url: str | None = None
+    issue_url: str | None = None
     last_error_code: str | None = None
     last_error_message: str | None = None
