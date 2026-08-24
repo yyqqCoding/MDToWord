@@ -305,7 +305,8 @@ Scheduler 侧再兜一层 `except`，保证轮询循环不会被通知拖死。
 `status=completed` 把 `quarantined_security` 显示成“已结束”。历史 `out_of_scope` 保持
 “历史范围外结论”，不伪装成新 Issue，也不反向推断当时的 intent。
 
-`issue_url` 可以公开并链接 GitHub，因为 Issue Publisher 已在发布前完成脱敏；站点仍不
+`issue_url` 可以公开并在运行详情页链接 GitHub，因为 Issue Publisher 已在发布前完成
+脱敏；运行列表的终态列只显示状态徽标，不在徽标旁重复显示 `Issue`/`PR` 链接。站点仍不
 从 Issue 反抓正文写入 DTO。详情页可链接公开 Issue，列表使用上述通用标题，不复制 Issue
 标题或用户需求摘要。
 

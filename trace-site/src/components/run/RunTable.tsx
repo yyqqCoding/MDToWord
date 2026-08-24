@@ -80,16 +80,6 @@ export function RunTable({ runs }: { runs: RunListItem[] }) {
                 </td>
                 <td className="px-5 py-3.5">
                   <StatusBadge tone={outcome.tone}>{outcome.label}</StatusBadge>
-                  {(item.pr_url || item.issue_url) && (
-                    <a
-                      href={item.pr_url ?? item.issue_url ?? undefined}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="ml-2 text-xs text-accent hover:text-ink"
-                    >
-                      {item.pr_url ? "PR" : "Issue"}
-                    </a>
-                  )}
                 </td>
                 <td className="px-5 py-3.5 font-mono text-sm text-ink-muted transition-colors duration-200 group-hover:text-ink">
                   {item.durationMs !== null ? formatDuration(item.durationMs) : "—"}
