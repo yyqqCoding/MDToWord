@@ -1,11 +1,12 @@
-# 从用户反馈到Pull Request
+# 从用户反馈到Pull Request或Issue
 
 ## 1. 一句话说明
 
 用户通过浏览器插件提交反馈，Render后端把反馈保存到Supabase。私有ECS上的Scheduler
-每5秒查询一次Supabase，领取反馈后启动LangGraph。LangGraph依次完成分类、复现、修复、
-独立验证和PR创建。模型生成的测试与修改后代码只能在无网络Docker容器中运行。Agent创建
-PR后结束，最终合并和部署仍由维护者完成。
+每5秒查询一次Supabase，领取反馈后启动LangGraph。分类与本地Policy先决定终点：后端缺陷
+才进入复现、修复、独立验证和PR创建；功能需求与前端/扩展缺陷发布脱敏Issue；无关内容和
+提示词注入直接进入各自终态。模型生成的测试与修改后代码只能在无网络Docker容器中运行，
+PR合并、代码部署和Issue处理仍由维护者完成。
 
 ## 2. 完整流程
 
@@ -23,7 +24,12 @@ Supabase函数原子领取一条反馈，status=claimed
 创建agent_runs和LangGraph初始State
         ↓
 分类与安全检查
-        ├─ 无关、前端问题、疑似攻击、信息不足 → 记录原因并结束
+        ├─ 无关内容 → rejected_irrelevant
+        ├─ 提示词注入 → quarantined_security
+        ├─ 信息不足 → needs_human
+        ├─ 功能需求或前端/扩展Bug
+        │       ↓ 发布脱敏标题和摘要
+        │   GitHub App创建Issue，人工处理
         └─ 可自动处理的后端Bug
                 ↓
         从GitHub main取得固定base_sha源码
@@ -55,7 +61,7 @@ Render根据main分支重新部署转换后端
 | Agent服务器运行目录 | 测试补丁、修复补丁、验证结果等大文件 | 避免把大段内容放进State |
 | Langfuse | 模型调用、工具调用、耗时和脱敏摘要 | 用于查看一次运行内部做了什么 |
 | `agent_run_traces` | 网站从Langfuse整理出的安全展示数据 | 页面访问不依赖Langfuse实时可用 |
-| GitHub | 固定源码版本、Agent分支、提交和PR | 用于代码审核和人工合并 |
+| GitHub | 固定源码版本、Agent分支、PR和脱敏Issue | 用于代码审核、需求跟踪和人工处理 |
 
 ## 4. 哪些步骤由模型完成
 
@@ -75,7 +81,7 @@ Render根据main分支重新部署转换后端
 - 把结构化修改转换成补丁；
 - 决定Docker运行的命令和资源上限；
 - 根据JUnit判断测试失败或通过；
-- 创建GitHub分支和PR；
+- 按固定契约创建GitHub分支、PR或Issue；
 - 通知追踪网站。
 
 ## 5. 四条不能混淆的链路
@@ -89,7 +95,9 @@ Render根据main分支重新部署转换后端
 ### Agent执行链路
 
 ```text
-Scheduler → Supabase领取 → LangGraph → Sandbox Worker → GitHub PR
+Scheduler → Supabase领取 → LangGraph
+                              ├─ Sandbox Worker → GitHub PR
+                              └─ 脱敏Issue发布 → GitHub Issue
 ```
 
 ### 运行记录链路
@@ -115,19 +123,16 @@ Vercel → Supabase.agent_run_traces保存展示快照
 
 ## 6. 自动化在哪里结束
 
-自动化终点是“PR已创建”，不是“代码已上线”。
+自动化终点取决于分类结果：后端缺陷最多到“PR已创建”，功能需求与前端/扩展缺陷最多到
+“Issue已创建”，都不代表代码已经上线或需求已经完成。
 
 ```text
-Agent验证通过并创建PR
-        ↓
-维护者审查代码、测试和Word实际效果
-        ↓
-维护者手动合并
-        ↓
-Render部署
+后端缺陷：Agent验证通过并创建PR → 维护者审查并合并 → Render部署
+Issue路线：Agent发布脱敏Issue → 维护者确认优先级并人工实现或关闭
 ```
 
-保留人工合并是刻意设计：自动测试可以检查DOCX结构，但不能完全替代在Word中查看版式。
+保留人工决策是刻意设计：自动测试不能完全替代Word视觉检查，分类模型也不能决定需求优先级
+或直接修改扩展代码。
 
 ## 7. 结合源码看主流程
 
@@ -147,9 +152,9 @@ builder.add_node("run_reproduction_in_sandbox", run_reproduction_in_sandbox)
 builder.add_node("classify_reproduction", classify_reproduction)
 ```
 
-修复阶段继续在同一张图中注册`generate_fix_edit`、`run_target_validation`、
-`validate_final`和`publish_pull_request`。条件边也是Python函数返回固定名称，不是模型生成
-下一个节点：
+Issue路线还注册`publish_issue`与`finish_issue_publication`；修复路线继续注册
+`generate_fix_edit`、`run_target_validation`、`validate_final`和`publish_pull_request`。
+条件边由Python函数返回固定名称，不是模型生成下一个节点：
 
 ```python
 builder.add_conditional_edges(
@@ -165,4 +170,4 @@ builder.add_conditional_edges(
 2. [agent/scheduler.py](../../agent/scheduler.py)的`run_once()`：Agent怎样领取；
 3. [agent/graph.py](../../agent/graph.py)的`build_gate_graph()`：状态怎样流转；
 4. [agent/sandbox/docker_runner.py](../../agent/sandbox/docker_runner.py)的`execute()`：怎样验证；
-5. [agent/publishing/github.py](../../agent/publishing/github.py)的`publish()`：怎样创建PR。
+5. [agent/publishing/github.py](../../agent/publishing/github.py)：怎样用隔离令牌创建PR或Issue。

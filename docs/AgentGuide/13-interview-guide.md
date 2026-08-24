@@ -6,24 +6,25 @@
 
 > 这是一个处理MD To Word真实用户反馈的自动修复Agent。用户通过浏览器插件提交原始
 > Markdown和问题描述，后端保存到Supabase。私有ECS上的Scheduler每5秒领取反馈，
-> LangGraph负责分类、复现、修复、独立验证和发布状态。模型只生成严格结构化的分类、测试
+> LangGraph负责分类、分流、复现、修复、独立验证和发布状态。模型只生成严格结构化的分类、测试
 > 和修复内容，所有路径、补丁、状态和工具调用都由Python校验。生成代码只在无网络、非root、
-> 限资源的一次性Docker容器里执行。最终验证通过后由GitHub App创建PR，维护者人工合并。
+> 限资源的一次性Docker容器里执行。后端Bug验证通过后由GitHub App创建PR；功能需求和
+> 前端/扩展Bug创建脱敏Issue，不进入Sandbox。PR合并和Issue实现都由维护者决定。
 
 ## 2. 为什么使用LangGraph
 
 > 因为流程不是一次模型调用，而是包含分支、最多两轮复现、最多两轮修复、Docker验证、
 > 发布和失败恢复。LangGraph把这些步骤写成明确节点，并把State保存到PostgreSQL。服务器
-> 重启后可以使用原run ID从上一个checkpoint继续，而不是重新调用模型和重复创建PR。
+> 重启后可以使用原run ID从上一个checkpoint继续，而不是重新调用模型和重复创建PR或Issue。
 
 补充时可以列出核心State：
 
 ```text
-run_id, feedback_id, claim_token, status, route
+run_id, feedback_id, claim_token, status, route, area
 base_sha, 各阶段文件引用
 复现/修复轮次
 模型、工具、Token和Sandbox用量
-validated_patch_sha256, pr_url, error_code
+validated_patch_sha256, pr_url, issue_url, error_code
 ```
 
 ## 3. Agent怎样感知新反馈
@@ -76,11 +77,12 @@ validated_patch_sha256, pr_url, error_code
 > Policy隔离。后续工具按节点最小开放，模型不能访问Shell、数据库或GitHub。补丁还有路径
 > 白名单，Docker没有网络和Secret。提示词只是第一层，真正安全边界是代码权限和沙箱。
 
-## 11. 怎样避免重复任务和重复PR
+## 11. 怎样避免重复任务和重复GitHub写入
 
 > 数据库领取使用行锁、租约和claim token；LangGraph恢复使用固定run ID；Sandbox使用job
 > ID作为幂等键；GitHub分支、提交和PR使用确定性命名并绑定feedback与补丁哈希。发布失败
-> 恢复时只重试发布节点，不重新跑模型和Docker。
+> 恢复时只重试发布节点，不重新跑模型和Docker。Issue使用不可逆run reference和内容指纹
+> marker，同时查开放和关闭Issue，避免网络重试或人工关闭后重复创建。
 
 ## 12. Supabase、Langfuse和本地文件分别有什么作用
 
@@ -99,8 +101,9 @@ validated_patch_sha256, pr_url, error_code
 ## 14. 为什么不自动合并PR
 
 > 自动测试能检查DOCX ZIP、XML、公式、表格和drawing数量，但不能完全替代在Word中观察
-> 版式。Agent自动化到创建PR为止，维护者检查代码、Trace、测试和实际Word效果后手动合并。
-> 这是质量边界，不是流程没有做完。
+> 版式。后端修复自动化到创建PR为止，维护者检查代码、Trace、测试和实际Word效果后手动
+> 合并。功能和前端问题自动化到创建脱敏Issue为止，由维护者判断优先级和实现方式。这是
+> 质量与权限边界，不是流程没有做完。
 
 ## 15. 项目做了哪些稳定性设计
 
@@ -114,7 +117,7 @@ validated_patch_sha256, pr_url, error_code
 工具：按节点授权、参数和输出限制
 补丁：路径白名单、行数和能力检查、哈希绑定
 执行：无网络Docker、资源限制、超时、全新容器
-发布：base SHA检查、幂等PR、人工合并
+发布：隔离的PR/Issue最小令牌、幂等marker、人工合并或处理
 观测：稳定错误码、Langfuse、数据库权威摘要、网站兜底
 预算：模型、工具、轮次、Token和Sandbox时间上限
 ```
@@ -140,7 +143,8 @@ validated_patch_sha256, pr_url, error_code
 - 不要说“模型选择并执行任意工具”，工具由节点限制并由Graph调用；
 - 不要说“Docker全部只读”，根文件系统只读，受控workspace、result和tmp有明确写入用途；
 - 不要说“Worker没有Docker权限”，受信Worker能调用Docker，任务容器看不到Docker Socket；
-- 不要说“Agent自动合并和部署”，它只创建PR；
+- 不要说“Agent自动合并和部署”，它只创建PR或脱敏Issue；
+- 不要说“前端问题都是out_of_scope”，新运行会创建Issue，历史值只兼容展示；
 - 不要说“Langfuse保存业务状态”，Supabase才是事实来源；
 - 不要说“网站逐节点实时更新”，它是运行结束后的推送触发读取。
 
@@ -157,7 +161,7 @@ validated_patch_sha256, pr_url, error_code
 | 模型只提交结构化编辑 | [reproduction.py](../../agent/reproduction.py)的`generate_reproduction_test()` |
 | Docker无网络、非root | [docker_runner.py](../../agent/sandbox/docker_runner.py)的`_docker_argv()` |
 | 最终补丁绑定哈希 | [validation.py](../../agent/workspace/validation.py)的`materialize_validated_files()` |
-| PR幂等和基线检查 | [github.py](../../agent/publishing/github.py)的`publish()` |
+| PR/Issue幂等和最小权限 | [github.py](../../agent/publishing/github.py) |
 
 例如回答“是ReAct还是Plan-and-Execute”时，可以直接展示下面两处：
 

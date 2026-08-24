@@ -21,6 +21,9 @@ contact             联系方式，可选
 
 插件不会直接连接Supabase，也不会持有Supabase密钥。
 
+Feature表单会提示：建议可能经脱敏整理后公开为GitHub Issue，请勿填写隐私信息。这个提示
+不改变请求字段；后续Gate仍会独立判断它究竟是功能需求、Bug、无关内容还是提示词注入。
+
 ## 2. Render后端做什么
 
 FastAPI收到请求后按下面的顺序处理：
@@ -79,7 +82,7 @@ Supabase，避免数据库延迟阻塞其他请求。
 
 - 联系方式只保存在反馈数据中，不进入模型提示词；
 - 用户Markdown和描述被当作不可信数据；
-- Agent生成的公开Trace和PR不得包含联系方式；
+- Agent生成的公开Trace、PR和Issue不得包含联系方式；
 - 追踪网站不会查询`feedback`表；
 - Feedback API只能写入规定的反馈字段，不能领取任务或读取Agent运行。
 

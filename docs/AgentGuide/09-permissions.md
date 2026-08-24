@@ -17,7 +17,7 @@
 | 修复模型 | 生成白名单内结构化修复Edit | 修改测试、依赖、部署、Agent或扩展 |
 | Sandbox Worker | 校验Job并启动受限容器 | 读取模型、Supabase、Langfuse和GitHub业务密钥 |
 | 任务容器 | 运行固定测试命令 | 外网、Docker Socket、宿主机敏感目录和Secret |
-| GitHub Publisher | 在指定仓库创建分支、提交和PR | 修改Secrets、Actions、仓库管理设置、自动合并 |
+| GitHub Publisher | 在指定仓库创建分支/提交/PR，或创建脱敏Issue | 修改Secrets、Actions、仓库管理设置、自动合并或自动关闭Issue |
 | Vercel网站服务端 | 读取公开运行视图和Trace快照 | 读取`feedback`表并向浏览器暴露服务密钥 |
 
 ## 3. 工具按节点开放
@@ -100,13 +100,18 @@ Agent主进程和Worker使用不同Linux用户。Worker进程可以通过`docker
 
 ## 7. GitHub权限
 
-读取源码和发布PR使用不同凭据：
+读取源码、发布PR和发布Issue使用隔离的权限配置：
 
 - 源码读取凭据只有指定仓库`Contents: Read-only`；
-- 发布时GitHub App换取短期installation token；
-- 发布令牌只允许`contents:write`和`pull_requests:write`；
+- 发布时GitHub App为同一仓库换取短期installation token；
+- PR令牌只允许`contents:write + pull_requests:write`；
+- Issue令牌只允许`issues:write`，不继承PR写权限；
 - 如果GitHub返回额外权限，Publisher拒绝继续；
 - token不写入State、文件、Trace或日志。
+
+维护者修改GitHub App注册权限后，还必须在仓库安装实例中批准新增权限；只改App设置页不会
+让既有安装立即获得`issues:write`。部署前的只读预检分别申请PR和Issue令牌，任何一组失败
+都保持Scheduler关闭。
 
 ## 8. 网站权限
 

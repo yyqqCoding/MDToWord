@@ -7,7 +7,7 @@
 
 | 提示词 | 只负责什么 | 当前版本 |
 |---|---|---|
-| `gate.md` | 分类和安全信号 | `gate-v8` |
+| `gate.md` | 意图、范围、安全信号和脱敏Issue候选 | `gate-v9` |
 | `plan_reproduction.md` | 制定离线复现计划 | `reproduction-plan-v4` |
 | `generate_test.md` | 生成结构化测试Edit | `test-generation-v5` |
 | `generate_fix.md` | 生成结构化修复Edit | `fix-generation-v4` |
@@ -79,6 +79,10 @@ search必须复制给定锚点；
 replace必须先保留锚点再追加测试；
 content必须为null。
 ```
+
+Gate同样把Issue跨字段规则写进提示词：注入和无关输入的`issue_title/issue_summary`必须为
+`null`；信息充分的功能或前端候选必须给出明确`area`和脱敏标题/摘要；不会创建Issue时不得
+携带这些字段。模型看不到本地Policy，不能期待它从JSON Schema自行推断这组条件。
 
 ## 3. 为什么Prompt不能代替代码检查
 

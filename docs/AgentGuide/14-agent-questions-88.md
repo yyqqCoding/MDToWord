@@ -180,7 +180,7 @@ Provider规范化输入、输出、缓存、推理和总Token；一次格式重�
 
 ### 27. 提示词如何区分普通技术文字和Prompt Injection？
 
-不能看到“system prompt”几个字就一律隔离。`gate-v8`要求只有内容试图改变当前分类任务、
+不能看到“system prompt”几个字就一律隔离。`gate-v9`要求只有内容试图改变当前分类任务、
 索要内部信息、要求越权操作或把数据伪装成给模型的指令时，才设置
 `injection_suspected=true`。普通代码和技术讨论仍按产品内容分类。
 
@@ -470,13 +470,14 @@ Supabase RPC在事务中用`FOR UPDATE SKIP LOCKED`选一行并立即更新为`c
 发布前读取当前`main`，与任务开始固定的`base_sha`比较。不同则不写GitHub，第一次把反馈
 重新排队，从新基线完整复现；第二次仍过期转`needs_human`。系统不让模型自动rebase旧补丁。
 
-### 79. 如何避免网络重试创建两个PR？
+### 79. 如何避免网络重试创建两个PR或Issue？
 
 Publisher使用确定性分支、提交信息、PR marker、feedback ID和补丁哈希。恢复时先查已有
 分支和PR；如果GitHub已创建但本地尚未保存，就复用已有结果。同一反馈和补丁不能存在多个
-打开的PR。
+打开的PR。Issue使用不可逆run reference和内容指纹marker，创建前同时查询开放和关闭Issue；
+网络响应丢失或Issue被人工关闭后恢复，都复用原Issue。
 
-### 80. 为什么Agent只创建PR，不自动合并？
+### 80. 为什么后端修复只创建PR，不自动合并？
 
 DOCX结构测试能检查ZIP、XML、公式、表格和drawing数量，但不能完全替代在Word里观察版式。
 维护者需要查看代码、Trace、测试和实际文档效果。人工合并是明确质量边界，不是Agent流程

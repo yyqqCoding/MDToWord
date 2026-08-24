@@ -28,7 +28,7 @@ feedback-repair-run
 - 源码读取；
 - 补丁提交；
 - Sandbox Job；
-- GitHub发布；
+- GitHub PR或Issue发布；
 - 每次调用的开始时间、耗时、状态、模型、Token和错误码。
 
 Trace默认不保存完整输入和输出。上传的是脱敏摘要，例如路径、文件数量、哈希、状态和Token，
@@ -113,6 +113,9 @@ Agent执行`flush()`只能保证客户端已经发送，Langfuse服务端建立�
 - `agent_run_traces`：已经整理的Trace树；
 - GitHub公开PR：用于展示代码差异。
 
+公开摘要包含稳定分类`route/area/category`以及互斥的`pr_url/issue_url`。Issue候选标题和摘要
+只存在于私有分类结果和最终GitHub Issue，公开视图不会投影它们，也不会读取`feedback`表。
+
 网站明确不查询`feedback`表。公开视图不包含用户Markdown、联系方式、内部错误正文和
 `langfuse_trace_id`。
 
@@ -128,6 +131,23 @@ Agent执行`flush()`只能保证客户端已经发送，Langfuse服务端建立�
 
 准确说法是“运行结束后近实时更新”。
 
+## 9. 概览和终态怎样保证语义正确
+
+概览对`agent_run_public`进行全量分页聚合，而不是只统计Supabase默认单页：
+
+- 总运行数：全部run尝试数；
+- 产出PR：唯一非空`pr_url`数量；
+- 平均耗时：全部已有`finished_at`运行的墙钟平均值；
+- Token合计：全部run的`total_tokens`之和。
+
+运行列表和详情先按`route`解释终态，再用intent/area/category细化。因此注入显示“安全拦截”、
+无关显示“已忽略”、Issue路线显示“已创建Issue”，不能因为run统一以`completed`结束就都显示
+成“已结束”。历史`out_of_scope`只做兼容展示，不伪装成新Issue。
+
+列表终态列只保留状态徽标，避免在同一单元格重复放置蓝色PR/Issue链接；实际GitHub入口在
+详情页。Issue详情明确说明前端/扩展代码没有被Agent自动修改，PR详情才展示代码diff与验证
+证据。
+
 对应实现：
 
 - [agent/operations/site_notify.py](../../agent/operations/site_notify.py)
@@ -136,7 +156,7 @@ Agent执行`flush()`只能保证客户端已经发送，Langfuse服务端建立�
 - [Supabase读取边界](../../trace-site/src/lib/server/supabase.ts)
 - [Langfuse数据投影](../../trace-site/src/lib/server/langfuse.ts)
 
-## 9. 结合源码看“推信号、站点再拉数据”
+## 10. 结合源码看“推信号、站点再拉数据”
 
 [agent/operations/site_notify.py](../../agent/operations/site_notify.py)只发送`run_id`和终态：
 

@@ -17,7 +17,7 @@ LangGraph负责“下一步运行哪个节点”和“保存当前State”。安
 
 | 字段 | 含义 |
 |---|---|
-| `schema_version` | State结构版本，当前为1 |
+| `schema_version` | State结构版本，当前为2；仍接受v1 checkpoint恢复 |
 | `run_id` | 本次运行ID，也是LangGraph `thread_id` |
 | `feedback_id` | 对应的反馈ID |
 | `claim_token` | 更新反馈状态时证明当前运行仍拥有任务 |
@@ -30,6 +30,7 @@ LangGraph负责“下一步运行哪个节点”和“保存当前State”。安
 |---|---|
 | `status` | 当前运行状态 |
 | `route` | 分类后的处理方向 |
+| `area` | backend、extension、cross_component等处理范围 |
 | `category` | 问题类别 |
 | `risk` | 风险等级 |
 | `base_sha` | 本次修复固定使用的Git提交 |
@@ -49,6 +50,7 @@ LangGraph负责“下一步运行哪个节点”和“保存当前State”。安
 | `repair_result_ref` | 修复阶段结果 |
 | `validation_result_ref` | 最终验证结果 |
 | `publication_result_ref` | GitHub发布结果 |
+| `issue_publication_result_ref` | Issue发布结果；与PR发布引用分离 |
 
 这些字段只保存文件地址，不保存完整补丁和长日志。地址形式类似：
 
@@ -75,6 +77,7 @@ artifact://<run_id>/test.patch
 | `fix_source_paths` | 修复涉及的业务文件 |
 | `validated_patch_sha256` | 最终验证通过补丁的哈希 |
 | `pr_url` | 创建成功的PR地址 |
+| `issue_url` | 创建或复用成功的Issue地址 |
 | `last_error_code` | 稳定错误码 |
 | `last_error_message` | 受控错误摘要 |
 
@@ -91,7 +94,10 @@ start_gate
 classify_gate
   ↓
 route_feedback
-  ├─ 不自动修复 → END
+  ├─ 无关/注入/信息不足/重复 → END
+  ├─ 功能需求或前端Bug → publish_issue
+  │                          ↓
+  │                        finish_issue_publication → END
   └─ 后端Bug
        ↓
      prepare_source
@@ -158,8 +164,9 @@ Scheduler启动后先调用`find_resumable()`。发现未完成运行后：
 
 - 模型、工具和沙箱计数取数据库与checkpoint中的较大值，避免少记预算；
 - Sandbox Job使用固定`job_id`，重复提交返回第一次结果；
-- 发布失败恢复时只重新进入GitHub发布节点，不重新调用模型和Docker；
+- 发布失败恢复时只重新进入对应PR或Issue发布节点，不重新调用模型和Docker；
 - GitHub发布使用确定性分支和提交，并检查同一反馈和补丁是否已有PR；
+- Issue发布使用run reference与内容指纹marker，并同时检查开放和关闭Issue；
 - 所有源码和补丁继续绑定原来的`base_sha`与SHA-256。
 
 ## 7. 哪些失败可以继续，哪些必须结束
