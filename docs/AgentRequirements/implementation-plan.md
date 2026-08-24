@@ -250,7 +250,7 @@ Scheduler是否领取生产反馈，不引入逐条人工批准状态。
 
 ## 11. 阶段I：功能需求 Issue 路由与展示数据正确性
 
-**状态：本地实现完成，待人工 migration、权限、真实验收与部署（2026-08-24）**
+**状态：生产核心链路验收完成，扩展发布构建待准备（2026-08-24）**
 
 ### 设计依据
 
@@ -297,8 +297,26 @@ Scheduler是否领取生产反馈，不引入逐条人工批准状态。
   唯一 PR、全部终态平均耗时与全部 Token；
 - 扩展 `tsc` 通过；扩展 Vite build 与 Trace Site Next build 均因当前 WSL `node_modules`
   缺少 Linux 原生可选 binding 阻断，未擅自重装依赖，不把该环境失败记为通过；
-- 未执行 `007_issue_routing_and_public_projection.sql`、未修改 GitHub App、未创建真实 Issue、
-  未部署或启用 Scheduler，验收顺序第 7～12 项仍待维护者明确执行。
+- 本地阶段未执行 migration、修改 GitHub App 或创建真实 Issue；这些外部变更均留到维护者
+  审查、批准后的生产验收执行，不由测试或应用启动隐式完成。
+
+### 生产实施与真实验收证据（2026-08-24）
+
+- 维护者手工执行 `007_issue_routing_and_public_projection.sql`，批准 GitHub App 安装实例的
+  `Issues: Read and write` 新权限，并完成 Trace Site 与 ECS Agent 部署；新版 Scheduler
+  已能领取反馈，Issue 最小权限令牌真实发布成功；
+- 明确批准提交可丢弃 Feature feedback `6f668551-...`，run `cc34f82c-...` 经一次真实模型
+  分类为 `route=issue_required / area=extension / category=feature_request`，未创建 PR，最终
+  feedback=`issue_opened`、run=`completed`、`error_code=null`；
+- 自动创建 [Issue #3](https://github.com/yyqqCoding/MDToWord/issues/3)，标签为
+  `enhancement`。公开标题和正文只含脱敏后的前端功能摘要、分类、run reference、模型用量
+  与 Trace URL，不含完整 feedback ID、contact、Markdown 或原始提交；
+- Trace Site 对应运行详情返回 `200`；回调后概览与 Supabase 公开视图一致显示 52 次运行、
+  2 个唯一 PR、1 个唯一 Issue、`1,095,051` Token 与约 9 分钟平均终态耗时，证明全量分页
+  聚合和缓存失效均已在生产生效；
+- 真实重复恢复未为验收额外制造第二次外部写入；同 marker 复用开放/关闭 Issue 仍由聚焦
+  自动测试覆盖。扩展源码提示已通过 `tsc`，但商店发布构建仍需在具备 Linux 原生 binding
+  的干净依赖环境完成，不能把本次生产 Agent/Trace Site 验收记作扩展发布完成。
 
 ### 验收顺序
 
@@ -1147,6 +1165,6 @@ Cloud，使真实 Gate 调用具备严格结构化输出、有限重试、真实
 | F GitHub PR | Completed | 2026-08-12 | Agent 全量回归通过；真实 App 最小权限预检通过；run `f11032d7-...` 幂等创建 PR #1，数据库与 Artifact 一致，维护者已人工合并 |
 | G 评估与投产 | Completed | 2026-08-13；公式闭环复验 2026-08-16 | 12 条真实 Gate 评估、Fake 发布 E2E、PR/Render/插件回放通过；独立 ECS Worker/Scheduler 常驻；生产 `rejected_irrelevant`、Mermaid `cannot_reproduce` 与公式自动修复 PR #2 验收通过 |
 | H 公开反馈入口 IP 限流 | Completed | 2026-08-18；插件人工验收 2026-08-19 | 限流/API/插件与自动测试完成；生产 Docker 后端全量 71 passed；Render 黑盒验证伪造头不能绕过、Wi-Fi/手机身份不同、分钟窗口与 `Retry-After` 正确；插件限流提示与输入保留人工验收通过，`0.3.3` 发布构建已准备 |
-| I 功能需求 Issue 路由与展示数据正确性 | Implemented locally / Pending production acceptance | 2026-08-24 | Agent 321 passed（5 skipped）且 compileall 通过；Trace Site 10 passed/typecheck 通过；扩展 tsc 通过；migration、App 权限、真实 Issue、原生 binding 环境下的生产构建与部署待完成 |
+| I 功能需求 Issue 路由与展示数据正确性 | Production core accepted / Extension release build pending | 2026-08-24 | Agent 321 passed（5 skipped）且 compileall 通过；Trace Site 10 passed/typecheck 与 Vercel 生产构建通过；migration、App 权限和 ECS 部署完成；真实 run `cc34f82c-...` 创建脱敏 Issue #3，feedback=`issue_opened`，概览 52 次运行与 Supabase 对账一致；扩展 tsc 通过，发布构建待干净原生 binding 环境完成 |
 
 状态只在完成对应验收后更新。已有代码不因存在文件或历史提交自动视为通过。
