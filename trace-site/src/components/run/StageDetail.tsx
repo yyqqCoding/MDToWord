@@ -1,21 +1,28 @@
 "use client";
 
 import clsx from "clsx";
-import { useState } from "react";
-import { ChevronRight, Sparkles, Wrench, CircleDot } from "lucide-react";
+import { useMemo, useState } from "react";
+import {
+  ChevronRight,
+  Sparkles,
+  Wrench,
+  CircleDot,
+  AlertTriangle,
+  ChevronsUpDown,
+} from "lucide-react";
 import { formatDuration, formatInteger, formatTokens } from "@/lib/format";
 import { describeFailure } from "@/lib/failure-codes";
 import { observationLabel, observationQualifier } from "@/lib/observation-labels";
 import { stageStory } from "@/lib/stage-story";
+import { PayloadVisualizer } from "@/components/run/PayloadVisualizer";
 import type { StageKey, StageView } from "@/lib/run-graph";
 import type { Observation, RunPublic } from "@/lib/types";
 
 /**
  * 阶段详情。
  *
- * 取代了原先「常驻元数据面板 + 全量瀑布」的组合:那两者对同一批调用重复呈现,
- * 而真正缺失的是「这一步做了什么判断」。这里左侧讲叙述与关键产物,
- * 右侧只列本阶段的调用,点开才展开脱敏摘要 —— 逐层深入,不一次性铺开。
+ * 左侧讲叙述与关键产物 (含 sticky 响应式悬停)，
+ * 右侧提供调用明细分类筛选 (模型/工具/异常) 与结构化 Payload 可视化。
  */
 
 const TYPE_ICON = {
@@ -25,37 +32,21 @@ const TYPE_ICON = {
   span: { icon: CircleDot, color: "text-ink-faint" },
 } as const;
 
-function Summary({ value }: { value: Record<string, unknown> }) {
-  const entries = Object.entries(value);
-  if (entries.length === 0) return null;
-  return (
-    <dl className="mt-2 space-y-1.5 rounded-lg border border-line bg-canvas px-3 py-2.5">
-      {entries.map(([key, item]) => (
-        <div key={key} className="grid gap-0.5 sm:grid-cols-[10rem_1fr] sm:gap-3">
-          <dt className="font-mono text-xs text-ink-faint">{key}</dt>
-          <dd className="break-all font-mono text-xs leading-relaxed text-ink-muted">
-            {typeof item === "object" && item !== null
-              ? JSON.stringify(item)
-              : String(item)}
-          </dd>
-        </div>
-      ))}
-    </dl>
-  );
-}
-
 function CallRow({
   observation,
   index,
   spanStart,
   spanTotal,
+  isOpen,
+  onToggle,
 }: {
   observation: Observation;
   index: number;
   spanStart: number;
   spanTotal: number;
+  isOpen: boolean;
+  onToggle: () => void;
 }) {
-  const [open, setOpen] = useState(false);
   const meta = TYPE_ICON[observation.type];
   const Icon = meta.icon;
   const qualifier = observationQualifier(observation);
@@ -66,19 +57,19 @@ function CallRow({
   return (
     <li
       className="anim-fade border-b border-line/50 last:border-b-0"
-      style={{ animationDelay: `${index * 40}ms` }}
+      style={{ animationDelay: `${index * 35}ms` }}
     >
       <button
         type="button"
-        onClick={() => setOpen((value) => !value)}
-        aria-expanded={open}
-        className="row-hover group flex w-full items-center gap-2.5 px-3 py-2.5 text-left hover:bg-raised/60"
+        onClick={onToggle}
+        aria-expanded={isOpen}
+        className="row-hover group flex w-full items-center gap-2.5 px-3.5 py-3 text-left hover:bg-raised/60 cursor-pointer"
       >
         <ChevronRight
           aria-hidden
           className={clsx(
             "size-3.5 shrink-0 text-ink-faint transition-transform duration-300",
-            open && "rotate-90",
+            isOpen && "rotate-90",
           )}
         />
         <Icon
@@ -91,7 +82,7 @@ function CallRow({
         <span
           className={clsx(
             "min-w-0 flex-1 truncate text-sm",
-            failed ? "text-critical" : "text-ink-muted group-hover:text-ink",
+            failed ? "text-critical font-medium" : "text-ink-muted group-hover:text-ink",
           )}
         >
           {observationLabel(observation)}
@@ -100,12 +91,15 @@ function CallRow({
           )}
         </span>
 
-        {/* 相对本阶段的微型时间条,替代整页瀑布 */}
-        <span aria-hidden className="relative hidden h-1.5 w-24 shrink-0 rounded bg-raised sm:block">
+        {/* 相对本阶段的微型时间条 */}
+        <span
+          aria-hidden
+          className="relative hidden h-1.5 w-24 shrink-0 rounded bg-raised sm:block overflow-hidden"
+        >
           <span
             className={clsx(
               "anim-grow-x absolute inset-y-0 rounded",
-              failed ? "bg-critical" : "bg-accent/70",
+              failed ? "bg-critical" : "bg-accent/80",
             )}
             style={{ left: `${left}%`, width: `${width}%` }}
           />
@@ -124,33 +118,46 @@ function CallRow({
       <div
         className={clsx(
           "grid transition-[grid-template-rows] duration-300 ease-out",
-          open ? "grid-rows-[1fr]" : "grid-rows-[0fr]",
+          isOpen ? "grid-rows-[1fr]" : "grid-rows-[0fr]",
         )}
       >
         <div className="overflow-hidden">
-          <div className="px-3 pb-3 pl-10">
+          <div className="px-4 pb-4 pl-10 space-y-3">
             {failed && observation.errorCode && (
-              <p className="rounded-lg border border-critical/35 bg-critical/10 px-3 py-2 text-sm leading-relaxed text-critical">
-                {describeFailure(observation.errorCode)}
-              </p>
+              <div className="flex items-start gap-2 rounded-lg border border-critical/35 bg-critical/10 px-3 py-2 text-xs leading-relaxed text-critical">
+                <AlertTriangle className="size-4 shrink-0 mt-0.5" />
+                <span>{describeFailure(observation.errorCode)}</span>
+              </div>
             )}
+
             {observation.model && (
-              <p className="mt-2 font-mono text-xs text-ink-faint">{observation.model}</p>
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line/60 pb-1.5">
+                <span className="font-mono text-xs text-accent">
+                  模型: {observation.model}
+                </span>
+                {observation.usage && (
+                  <span className="font-mono text-xs text-ink-faint">
+                    输入 {formatInteger(observation.usage.input)} · 输出{" "}
+                    {formatInteger(observation.usage.output)} tokens
+                  </span>
+                )}
+              </div>
             )}
-            {observation.usage && (
-              <p className="mt-1 text-sm text-ink-muted">
-                输入 {formatInteger(observation.usage.input)} · 输出{" "}
-                {formatInteger(observation.usage.output)} tokens
-              </p>
+
+            {observation.input && (
+              <PayloadVisualizer value={observation.input} title="输入参数 (Input Payload)" />
             )}
-            {observation.input && <Summary value={observation.input} />}
-            {observation.output && <Summary value={observation.output} />}
+            {observation.output && (
+              <PayloadVisualizer value={observation.output} title="执行产物 (Output Result)" />
+            )}
           </div>
         </div>
       </div>
     </li>
   );
 }
+
+type CallFilter = "all" | "generation" | "tool" | "error";
 
 export function StageDetail({
   stage,
@@ -169,15 +176,68 @@ export function StageDetail({
   calls: Observation[];
 }) {
   const story = stageStory(stage.key as StageKey, run);
-  // 阶段是否确实执行过:done/failed 来自 Trace 或运行摘要字段,active 是进行中的当前阶段。
-  // 只有「没执行过」的阶段(skipped/pending)才展示「从未执行」的提示,
-  // 已执行但 Trace 恰好没有它的调用时,要明说是「未上报」而不是「从未执行」。
+  const [filter, setFilter] = useState<CallFilter>("all");
+  const [expandedCallIds, setExpandedCallIds] = useState<Set<string>>(new Set());
+
   const hasEvidence =
     stage.state === "done" || stage.state === "failed" || stage.state === "active";
+
   const spanStart = calls.length > 0 ? Math.min(...calls.map((c) => c.startMs)) : 0;
   const spanEnd =
     calls.length > 0 ? Math.max(...calls.map((c) => c.startMs + c.durationMs)) : 1;
   const spanTotal = Math.max(spanEnd - spanStart, 1);
+
+  const counts = useMemo(() => {
+    let generations = 0;
+    let tools = 0;
+    let errors = 0;
+    for (const c of calls) {
+      if (c.type === "generation") generations++;
+      if (c.type === "tool") tools++;
+      if (c.status === "error") errors++;
+    }
+    return { all: calls.length, generation: generations, tool: tools, error: errors };
+  }, [calls]);
+
+  const filteredCalls = useMemo(() => {
+    if (filter === "generation") return calls.filter((c) => c.type === "generation");
+    if (filter === "tool") return calls.filter((c) => c.type === "tool");
+    if (filter === "error") return calls.filter((c) => c.status === "error");
+    return calls;
+  }, [calls, filter]);
+
+  const allCallsExpanded =
+    filteredCalls.length > 0 &&
+    filteredCalls.every((c) => expandedCallIds.has(c.id));
+
+  const toggleCall = (id: string) => {
+    setExpandedCallIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const toggleAllCalls = () => {
+    if (allCallsExpanded) {
+      setExpandedCallIds((prev) => {
+        const next = new Set(prev);
+        for (const c of filteredCalls) next.delete(c.id);
+        return next;
+      });
+    } else {
+      setExpandedCallIds((prev) => {
+        const next = new Set(prev);
+        for (const c of filteredCalls) next.add(c.id);
+        return next;
+      });
+    }
+  };
+
   const enterClass =
     direction === "forward"
       ? "anim-slide-forward"
@@ -186,36 +246,39 @@ export function StageDetail({
         : "anim-fade";
 
   return (
-    <div key={stage.key} className={`${enterClass} grid gap-5 lg:grid-cols-[1fr_1.1fr]`}>
-      <div>
-        <p className="text-xs tracking-wide text-ink-faint">
-          阶段 {stageIndex + 1} / {stageCount}
-        </p>
-        <h3 className="mt-1 flex flex-wrap items-center gap-3 text-lg font-semibold text-ink">
-          {stage.label}
-          {stage.durationMs !== null && (
-            <span className="font-mono text-sm font-normal text-ink-muted">
-              {formatDuration(stage.durationMs)}
-            </span>
-          )}
-          {stage.retries > 0 && (
-            <span className="text-sm font-normal text-warn">重试 {stage.retries} 次</span>
-          )}
-        </h3>
-        <p className="mt-3 text-sm leading-relaxed text-ink-muted">{story.narrative}</p>
+    <div key={stage.key} className={`${enterClass} grid gap-6 lg:grid-cols-[1fr_1.2fr]`}>
+      {/* 左侧：阶段故事与事实 (sticky 悬停，避免右侧过长时长篇空白) */}
+      <div className="lg:sticky lg:top-20 lg:self-start space-y-4">
+        <div>
+          <p className="text-xs tracking-wide text-ink-faint">
+            阶段 {stageIndex + 1} / {stageCount}
+          </p>
+          <h3 className="mt-1 flex flex-wrap items-center gap-3 text-lg font-semibold text-ink">
+            {stage.label}
+            {stage.durationMs !== null && (
+              <span className="font-mono text-sm font-normal text-ink-muted">
+                {formatDuration(stage.durationMs)}
+              </span>
+            )}
+            {stage.retries > 0 && (
+              <span className="text-sm font-normal text-warn">重试 {stage.retries} 次</span>
+            )}
+          </h3>
+          <p className="mt-2.5 text-sm leading-relaxed text-ink-muted">{story.narrative}</p>
+        </div>
 
         {story.facts.length > 0 && (
-          <dl className="mt-4 divide-y divide-line/60 rounded-xl border border-line bg-canvas">
+          <dl className="divide-y divide-line/60 rounded-xl border border-line bg-canvas">
             {story.facts.map((fact, index) => (
               <div
                 key={`${fact.label}-${index}`}
-                className="row-hover grid gap-1 px-4 py-2.5 hover:bg-raised/50 sm:grid-cols-[8rem_1fr] sm:gap-3"
+                className="row-hover grid gap-1 px-4 py-2.5 hover:bg-raised/50 sm:grid-cols-[7.5rem_1fr] sm:gap-3"
               >
-                <dt className="shrink-0 text-sm text-ink-faint">{fact.label}</dt>
+                <dt className="shrink-0 text-xs text-ink-faint">{fact.label}</dt>
                 <dd
                   className={clsx(
-                    "min-w-0 break-all text-sm text-ink-muted",
-                    fact.mono && "font-mono text-xs leading-relaxed",
+                    "min-w-0 break-all text-xs text-ink-muted",
+                    fact.mono && "font-mono leading-relaxed",
                   )}
                 >
                   {fact.value}
@@ -226,28 +289,100 @@ export function StageDetail({
         )}
       </div>
 
+      {/* 右侧：调用明细与过滤 */}
       <div className="min-w-0">
-        <p className="mb-2 text-sm text-ink-faint">
-          本阶段调用
-          {calls.length > 0 && <span className="ml-1.5 font-mono">{calls.length}</span>}
-        </p>
-        {calls.length > 0 ? (
+        <div className="mb-2.5 flex flex-wrap items-center justify-between gap-2">
+          {/* 类型筛选 Tabs */}
+          <div className="flex flex-wrap items-center gap-1">
+            <button
+              type="button"
+              onClick={() => setFilter("all")}
+              className={clsx(
+                "rounded-full px-2.5 py-1 text-xs transition-colors cursor-pointer",
+                filter === "all"
+                  ? "bg-accent/15 font-medium text-accent border border-accent/40"
+                  : "text-ink-faint hover:text-ink hover:bg-raised",
+              )}
+            >
+              全部 ({counts.all})
+            </button>
+            {counts.generation > 0 && (
+              <button
+                type="button"
+                onClick={() => setFilter("generation")}
+                className={clsx(
+                  "inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs transition-colors cursor-pointer",
+                  filter === "generation"
+                    ? "bg-accent/15 font-medium text-accent border border-accent/40"
+                    : "text-ink-faint hover:text-ink hover:bg-raised",
+                )}
+              >
+                <Sparkles className="size-3" />
+                模型 ({counts.generation})
+              </button>
+            )}
+            {counts.tool > 0 && (
+              <button
+                type="button"
+                onClick={() => setFilter("tool")}
+                className={clsx(
+                  "inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs transition-colors cursor-pointer",
+                  filter === "tool"
+                    ? "bg-accent/15 font-medium text-accent border border-accent/40"
+                    : "text-ink-faint hover:text-ink hover:bg-raised",
+                )}
+              >
+                <Wrench className="size-3" />
+                工具 ({counts.tool})
+              </button>
+            )}
+            {counts.error > 0 && (
+              <button
+                type="button"
+                onClick={() => setFilter("error")}
+                className={clsx(
+                  "inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs transition-colors cursor-pointer",
+                  filter === "error"
+                    ? "bg-critical/15 font-medium text-critical border border-critical/40"
+                    : "text-critical/80 hover:text-critical hover:bg-critical/10",
+                )}
+              >
+                <AlertTriangle className="size-3" />
+                异常 ({counts.error})
+              </button>
+            )}
+          </div>
+
+          {/* 全部展开/收起 */}
+          {filteredCalls.length > 1 && (
+            <button
+              type="button"
+              onClick={toggleAllCalls}
+              className="inline-flex items-center gap-1 text-xs text-ink-faint transition-colors hover:text-ink cursor-pointer"
+            >
+              <ChevronsUpDown className="size-3" />
+              {allCallsExpanded ? "全部收起" : "全部展开"}
+            </button>
+          )}
+        </div>
+
+        {filteredCalls.length > 0 ? (
           <ul className="overflow-hidden rounded-xl border border-line bg-surface">
-            {calls.map((call, index) => (
+            {filteredCalls.map((call, index) => (
               <CallRow
                 key={call.id}
                 observation={call}
                 index={index}
                 spanStart={spanStart}
                 spanTotal={spanTotal}
+                isOpen={expandedCallIds.has(call.id)}
+                onToggle={() => toggleCall(call.id)}
               />
             ))}
           </ul>
         ) : hasEvidence ? (
           <p className="rounded-xl border border-dashed border-line px-4 py-10 text-center text-sm leading-relaxed text-ink-faint">
-            该阶段已执行,但调用明细未随 Trace 上报。
-            <br />
-            观测上报是 fail-open 的,未成功上报不影响业务结果。
+            该分类下无调用明细。
           </p>
         ) : (
           <p className="rounded-xl border border-dashed border-line px-4 py-10 text-center text-sm leading-relaxed text-ink-faint">

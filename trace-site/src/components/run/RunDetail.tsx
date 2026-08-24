@@ -11,6 +11,9 @@ import { MetaBadge, StatusBadge } from "@/components/ui/badge";
 import { StageChips } from "@/components/run/StageChips";
 import { StageDetail } from "@/components/run/StageDetail";
 import { DiffPreview } from "@/components/run/DiffPreview";
+import { TimelineStrip } from "@/components/run/TimelineStrip";
+import { ValidationPipeline } from "@/components/run/ValidationPipeline";
+import { StickyRunHeader } from "@/components/run/StickyRunHeader";
 import {
   deriveStages,
   describeOutcome,
@@ -26,15 +29,11 @@ import type { Observation, RunDetailData } from "@/lib/types";
 /**
  * 运行详情。
  *
- * 早期版本把四个层次的信息平铺成同等权重：结论、流程、逐次调用、验证证据挤在一屏，
- * 而且互相重复 —— 结果说了三遍，常驻元数据面板和全量瀑布对同一批调用各渲染一次。
- *
- * 现在按「渐进式披露」重排：
- *   ① 结论：一句话讲清发生了什么，配三个关键数字
- *   ② 流程：七个阶段，点击切换
- *   ③ 阶段详情：这一步做了什么判断、产出了什么、调用了什么（点开才看摘要）
- *   ④ 证据：代码改动 + 验证与策略
- * 运行环境这类元信息收进可展开区，不占首屏。
+ * 渐进式披露：
+ *   ① 结论：一句话讲清发生了什么，配四个关键指标
+ *   ② 时序与流程：全流程耗时分布条 + 7 阶段流光芯片，点击切换
+ *   ③ 阶段详情：这一步做了什么判断、产出了什么、调用了什么（含类型过滤与参数卡片）
+ *   ④ 证据：代码改动 (Diff 与文件药丸) + 独立验证四道门禁流水线 + 补丁策略检查
  */
 
 function CheckLine({
@@ -58,10 +57,9 @@ function CheckLine({
       />
       <div className="min-w-0 flex-1">
         <p className="text-sm text-ink">{label}</p>
-        {/* 长路径必须允许换行，否则会撑破卡片 */}
         <p className="mt-0.5 break-all text-sm leading-relaxed text-ink-faint">{detail}</p>
       </div>
-      <span className={clsx("shrink-0 text-sm", passed ? "text-good" : "text-critical")}>
+      <span className={clsx("shrink-0 text-sm font-medium", passed ? "text-good" : "text-critical")}>
         {passed ? "通过" : "未通过"}
       </span>
     </li>
@@ -80,8 +78,6 @@ export function RunDetail({ data }: { data: RunDetailData }) {
     return done >= 0 ? done : 0;
   }, [stages]);
 
-  // 阶段切换记录方向：相邻切换给内容一个"往左/往右走"的空间隐喻，
-  // 跨多阶段跳转同样按前后方向滑入，而不是原地淡入。
   const [active, setActive] = useState<{
     index: number;
     dir: "none" | "forward" | "back";
@@ -132,6 +128,14 @@ export function RunDetail({ data }: { data: RunDetailData }) {
 
   return (
     <div className="px-5 py-7 lg:px-8">
+      {/* 滚动吸顶状态栏 */}
+      <StickyRunHeader
+        run={run}
+        outcome={outcome}
+        activeStage={activeStage}
+        hasDiff={Boolean(diff)}
+      />
+
       {isMock && (
         <MockBanner>
           构造数据：结构与字段对齐真实契约，数值、哈希和时间均为构造值。
@@ -146,7 +150,7 @@ export function RunDetail({ data }: { data: RunDetailData }) {
         <span className="font-mono">{run.run_ref}</span>
       </nav>
 
-      {/* ① 结论。运行标题是句子而非页面名，升到 text-3xl 即可，不再往上加档 */}
+      {/* ① 结论与核心标题 */}
       <div className="anim-rise mb-5 flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0">
           <h1 className="text-3xl font-semibold leading-snug tracking-tight text-ink">
@@ -162,8 +166,9 @@ export function RunDetail({ data }: { data: RunDetailData }) {
         </div>
       </div>
 
+      {/* 指标卡片行 */}
       <div
-        className="anim-rise mb-3 grid grid-cols-2 gap-4 lg:grid-cols-4"
+        className="anim-rise mb-4 grid grid-cols-2 gap-4 lg:grid-cols-4"
         style={{ animationDelay: "60ms" }}
       >
         <StatCard
@@ -193,13 +198,13 @@ export function RunDetail({ data }: { data: RunDetailData }) {
         />
       </div>
 
-      {/* 运行环境属于元信息，收起来不占首屏 */}
+      {/* 运行环境与版本折叠栏 */}
       <div className="anim-fade mb-6">
         <button
           type="button"
           onClick={() => setShowEnv((value) => !value)}
           aria-expanded={showEnv}
-          className="flex items-center gap-1.5 rounded px-1 py-1 text-sm text-ink-faint transition-colors hover:text-ink"
+          className="flex items-center gap-1.5 rounded px-2 py-1 text-sm text-ink-faint transition-colors hover:text-ink hover:bg-raised/50 cursor-pointer"
         >
           <ChevronDown
             aria-hidden
@@ -214,7 +219,7 @@ export function RunDetail({ data }: { data: RunDetailData }) {
           )}
         >
           <div className="overflow-hidden">
-            <dl className="mt-2 grid gap-x-8 rounded-xl border border-line bg-surface px-5 py-3 sm:grid-cols-2 lg:grid-cols-3">
+            <dl className="mt-2 grid gap-x-8 rounded-xl border border-line bg-surface/90 px-5 py-3 sm:grid-cols-2 lg:grid-cols-3">
               {(
                 [
                   ["RUN REF", run.run_ref],
@@ -239,8 +244,19 @@ export function RunDetail({ data }: { data: RunDetailData }) {
         </div>
       </div>
 
-      {/* ② 流程 */}
-      <div className="mb-5">
+      {/* ② 流程与全流程时序分布 */}
+      <div id="section-stages" className="mb-6">
+        {/* 全流程耗时比例分布条 */}
+        <TimelineStrip
+          stages={stages}
+          activeKey={activeStage?.key ?? null}
+          onSelect={(key) => {
+            const index = stages.findIndex((s) => s.key === key);
+            if (index >= 0) selectStage(index);
+          }}
+        />
+
+        {/* 7 阶段流光芯片条 */}
         <StageChips
           stages={stages}
           selectedKey={activeStage?.key ?? null}
@@ -251,7 +267,7 @@ export function RunDetail({ data }: { data: RunDetailData }) {
         />
       </div>
 
-      {/* ③ 阶段详情。方向随切换而变：往后的阶段从右滑入，往前的从左滑入 */}
+      {/* ③ 阶段详情 */}
       {activeStage && (
         <Card className="mb-6" delay={120}>
           <div className="p-5">
@@ -267,64 +283,50 @@ export function RunDetail({ data }: { data: RunDetailData }) {
         </Card>
       )}
 
-      {/* ④ 证据 */}
+      {/* ④ 证据：代码改动 */}
       {diff && (
-        <Card className="mb-6 overflow-hidden" delay={180}>
-          <CardHeader
-            title="代码改动"
-            description="取自公开仓库中已合并的 Pull Request，不是 Agent 的受控产物"
-            aside={
-              run.pr_url ? (
-                <a
-                  href={run.pr_url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="group inline-flex items-center gap-1.5 text-sm text-accent transition-colors hover:text-ink"
-                >
-                  PR #{diff.prNumber}
-                  <ExternalLink
-                    aria-hidden
-                    className="size-3.5 transition-transform duration-200 group-hover:-translate-y-0.5 group-hover:translate-x-0.5"
-                  />
-                </a>
-              ) : undefined
-            }
-          />
-          <div className="overflow-x-auto">
-            <DiffPreview diff={diff} />
-          </div>
-        </Card>
+        <div id="section-diff">
+          <Card className="mb-6 overflow-hidden" delay={180}>
+            <CardHeader
+              title="代码改动"
+              description="取自公开仓库中已合并的 Pull Request，不是 Agent 的受控产物"
+              aside={
+                run.pr_url ? (
+                  <a
+                    href={run.pr_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="group inline-flex items-center gap-1.5 text-sm text-accent transition-colors hover:text-ink font-medium"
+                  >
+                    PR #{diff.prNumber}
+                    <ExternalLink
+                      aria-hidden
+                      className="size-3.5 transition-transform duration-200 group-hover:-translate-y-0.5 group-hover:translate-x-0.5"
+                    />
+                  </a>
+                ) : undefined
+              }
+            />
+            <div className="overflow-x-auto">
+              <DiffPreview diff={diff} />
+            </div>
+          </Card>
+        </div>
       )}
 
-      <div className="grid gap-5 lg:grid-cols-2">
+      {/* 证据：独立验证与策略检查 */}
+      <div id="section-validation" className="grid gap-6 lg:grid-cols-[1.2fr_1fr]">
         <Card delay={220}>
           <CardHeader
-            title="独立验证"
-            description={validation ? `全量后端测试 ${validation.full_validation.tests} 项` : undefined}
+            title="独立验证门禁"
+            description={
+              validation
+                ? `四道严密防线 · 全量后端测试 ${validation.full_validation.tests} 项`
+                : undefined
+            }
           />
           {validation ? (
-            <ul className="divide-y divide-line/60 py-1">
-              <CheckLine
-                label="基线复现"
-                detail="修复前目标测试确实以预期方式失败"
-                passed={validation.baseline_reproduction.expected_failure_observed}
-              />
-              <CheckLine
-                label="目标测试"
-                detail="修复后目标测试通过"
-                passed={validation.target_validation.passed}
-              />
-              <CheckLine
-                label="全量回归"
-                detail={`失败 ${validation.full_validation.failures} · 跳过 ${validation.full_validation.skipped}（与基线一致）`}
-                passed={validation.full_validation.passed}
-              />
-              <CheckLine
-                label="DOCX 结构"
-                detail={Object.keys(validation.docx_validation.checks).join("、")}
-                passed={validation.docx_validation.passed}
-              />
-            </ul>
+            <ValidationPipeline validation={validation} />
           ) : (
             <div className="px-5 py-10 text-center">
               <p className="text-sm text-ink-faint">该运行未进入验证阶段。</p>
@@ -340,7 +342,7 @@ export function RunDetail({ data }: { data: RunDetailData }) {
         <Card delay={260}>
           <CardHeader title="补丁策略检查" description={PATCH_POLICY_VERSION} />
           {policyChecks.length > 0 ? (
-            <ul className="divide-y divide-line/60 py-1">
+            <ul className="divide-y divide-line/60 py-2">
               {policyChecks.map((check) => (
                 <CheckLine key={check.label} {...check} />
               ))}

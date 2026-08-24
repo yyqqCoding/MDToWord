@@ -42,6 +42,7 @@ async function request<T>(
         ? undefined
         : { revalidate: init?.revalidate ?? 300 },
     cache: init?.revalidate === false ? "no-store" : undefined,
+    signal: AbortSignal.timeout(4000),
   });
 
   if (!response.ok) {

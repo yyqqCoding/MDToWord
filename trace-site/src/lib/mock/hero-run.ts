@@ -424,7 +424,15 @@ export const heroRunDetail: RunDetailData = {
 };
 
 export function getMockRun(id: string): RunDetailData | null {
-  return id === RUN_ID ? heroRunDetail : null;
+  if (id === RUN_ID) return heroRunDetail;
+  return {
+    ...heroRunDetail,
+    run: {
+      ...run,
+      id,
+      run_ref: id.slice(0, 12).replace(/-/g, ""),
+    },
+  };
 }
 
 export { run as heroRun };

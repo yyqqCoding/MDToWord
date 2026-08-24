@@ -99,11 +99,12 @@ export function StageChips({
               onClick={() => onSelect?.(stage.key)}
               aria-pressed={selected || undefined}
               className={clsx(
-                "lift group h-full w-full min-w-0 rounded-lg border px-3.5 py-3 text-left",
+                "lift group relative h-full w-full min-w-0 rounded-lg border px-3.5 py-3 text-left",
                 style.box,
                 style.hover,
                 clickable ? "cursor-pointer" : "cursor-default",
-                selected && "glow-strong border-accent bg-accent/20",
+                selected && "glow-strong border-accent bg-accent/20 ring-1 ring-accent/50",
+                stage.state === "active" && "anim-radar",
               )}
             >
               <div className="flex items-center gap-2">
@@ -116,6 +117,9 @@ export function StageChips({
                   )}
                 />
                 <span className="truncate text-sm font-medium text-ink">{stage.label}</span>
+                {selected && (
+                  <span className="ml-auto size-1.5 rounded-full bg-accent animate-pulse" />
+                )}
               </div>
               <div className="mt-1 flex items-baseline gap-2 pl-6">
                 {stage.durationMs !== null && (
@@ -134,19 +138,23 @@ export function StageChips({
             </button>
 
             {index < stages.length - 1 && (
-              <span
+              <div
                 aria-hidden
-                className={clsx(
-                  "hidden h-px w-4 shrink-0 self-center xl:block",
-                  CONNECTOR_STYLE[stage.state].color,
-                  CONNECTOR_STYLE[stage.state].animate && "anim-grow-x",
-                )}
-                style={
-                  CONNECTOR_STYLE[stage.state].animate
-                    ? { animationDelay: `${300 + index * 55}ms` }
-                    : undefined
-                }
-              />
+                className="hidden h-1 w-5 shrink-0 self-center overflow-hidden xl:block rounded-full bg-line-strong/40 mx-0.5"
+              >
+                <div
+                  className={clsx(
+                    "h-full w-full rounded-full transition-all",
+                    CONNECTOR_STYLE[stage.state].color,
+                    CONNECTOR_STYLE[stage.state].animate && "anim-grow-x anim-shimmer-stream",
+                  )}
+                  style={
+                    CONNECTOR_STYLE[stage.state].animate
+                      ? { animationDelay: `${300 + index * 55}ms` }
+                      : undefined
+                  }
+                />
+              </div>
             )}
           </li>
         );

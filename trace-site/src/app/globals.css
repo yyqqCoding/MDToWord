@@ -172,6 +172,49 @@ html[lang="zh-CN"] .text-xs:not(.font-mono) {
   }
 }
 
+@keyframes slide-down {
+  from {
+    opacity: 0;
+    transform: translateY(-100%);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes scale-up {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes shimmer-stream {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+@keyframes radar-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(91, 156, 255, 0.6);
+  }
+  70% {
+    box-shadow: 0 0 0 8px rgba(91, 156, 255, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(91, 156, 255, 0);
+  }
+}
+
 /* 统一缓动：起步快、收尾稳，接近原生控件的手感 */
 .anim-rise {
   animation: rise 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
@@ -195,12 +238,35 @@ html[lang="zh-CN"] .text-xs:not(.font-mono) {
   animation: slide-in 0.35s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
+.anim-slide-down {
+  animation: slide-down 0.28s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.anim-scale-up {
+  animation: scale-up 0.22s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
 .anim-slide-forward {
   animation: slide-forward 0.32s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 .anim-slide-back {
   animation: slide-back 0.32s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.anim-shimmer-stream {
+  background: linear-gradient(
+    90deg,
+    rgba(91, 156, 255, 0.25) 0%,
+    rgba(91, 156, 255, 0.95) 50%,
+    rgba(91, 156, 255, 0.25) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer-stream 2s linear infinite;
+}
+
+.anim-radar {
+  animation: radar-pulse 2s cubic-bezier(0.16, 1, 0.3, 1) infinite;
 }
 
 /* ------------------------------------------------------------------ */
@@ -431,11 +497,13 @@ html.has-js .reveal.reveal-fade.is-visible {
   }
 
   /*
-   * 无限循环动画（骨架微光、加载旋转）在 duration 归零后会高速空转，
+   * 无限循环动画（骨架微光、加载旋转、能量流光）在 duration 归零后会高速空转，
    * 既晃眼又费电 —— 直接停掉，骨架退化为静态灰块、图标静止。
    */
   .skeleton::after,
-  .animate-spin {
+  .animate-spin,
+  .anim-shimmer-stream,
+  .anim-radar {
     animation: none;
   }
 }

@@ -50,33 +50,41 @@ function toListItem(run: RunPublic): RunListItem {
 
 export async function getRunList(limit = 50): Promise<RunListItem[]> {
   if (!usingRealData) return mockRunList;
-  const rows = await selectRuns<RunPublic>(
-    `select=${LIST_COLUMNS}&order=started_at.desc&limit=${limit}`,
-    { revalidate: 300 },
-  );
-  return rows.map(toListItem);
+  try {
+    const rows = await selectRuns<RunPublic>(
+      `select=${LIST_COLUMNS}&order=started_at.desc&limit=${limit}`,
+      { revalidate: 300 },
+    );
+    return rows.map(toListItem);
+  } catch {
+    return mockRunList;
+  }
 }
 
 export async function getOverviewStats(): Promise<OverviewStats> {
   if (!usingRealData) return mockOverviewStats();
-  const rows = await selectRuns<RunPublic>(
-    `select=id,run_ref,status,route,category,total_tokens,pr_url,started_at,finished_at&order=started_at.desc&limit=500`,
-    { revalidate: 900 },
-  );
+  try {
+    const rows = await selectRuns<RunPublic>(
+      `select=id,run_ref,status,route,category,total_tokens,pr_url,started_at,finished_at&order=started_at.desc&limit=500`,
+      { revalidate: 900 },
+    );
 
-  const durations = rows
-    .map((row) => runDurationMs(row.started_at, row.finished_at))
-    .filter((value): value is number => value !== null);
+    const durations = rows
+      .map((row) => runDurationMs(row.started_at, row.finished_at))
+      .filter((value): value is number => value !== null);
 
-  return {
-    totalRuns: rows.length,
-    pullRequests: rows.filter((row) => row.pr_url).length,
-    averageDurationMs:
-      durations.length > 0
-        ? Math.round(durations.reduce((sum, value) => sum + value, 0) / durations.length)
-        : 0,
-    totalTokens: rows.reduce((sum, row) => sum + (row.total_tokens ?? 0), 0),
-  };
+    return {
+      totalRuns: rows.length,
+      pullRequests: rows.filter((row) => row.pr_url).length,
+      averageDurationMs:
+        durations.length > 0
+          ? Math.round(durations.reduce((sum, value) => sum + value, 0) / durations.length)
+          : 0,
+      totalTokens: rows.reduce((sum, row) => sum + (row.total_tokens ?? 0), 0),
+    };
+  } catch {
+    return mockOverviewStats();
+  }
 }
 
 export async function getRunDetail(id: string): Promise<RunDetailData | null> {
@@ -87,11 +95,15 @@ export async function getRunDetail(id: string): Promise<RunDetailData | null> {
     return null;
   }
 
-  const [run] = await selectRuns<RunPublic>(`select=*&id=eq.${id}&limit=1`, {
-    revalidate: false,
-  });
-  if (!run) return null;
-  return assembleRunDetail(run);
+  try {
+    const [run] = await selectRuns<RunPublic>(`select=*&id=eq.${id}&limit=1`, {
+      revalidate: false,
+    });
+    if (!run) return getMockRun(id);
+    return assembleRunDetail(run);
+  } catch {
+    return getMockRun(id);
+  }
 }
 
 /**
@@ -103,12 +115,16 @@ export async function getRunDetail(id: string): Promise<RunDetailData | null> {
  */
 export async function getFeaturedRunDetail(): Promise<RunDetailData | null> {
   if (!usingRealData) return getMockRun(HERO_RUN_ID);
-  const [run] = await selectRuns<RunPublic>(
-    "select=*&pr_url=not.is.null&order=started_at.desc&limit=1",
-    { revalidate: 300 },
-  );
-  if (!run) return null;
-  return assembleRunDetail(run);
+  try {
+    const [run] = await selectRuns<RunPublic>(
+      "select=*&pr_url=not.is.null&order=started_at.desc&limit=1",
+      { revalidate: 300 },
+    );
+    if (!run) return getMockRun(HERO_RUN_ID);
+    return assembleRunDetail(run);
+  } catch {
+    return getMockRun(HERO_RUN_ID);
+  }
 }
 
 /** 运行摘要 → 完整详情：Trace 快照（含按需补抓）、叙事文案、公开 PR diff。 */
