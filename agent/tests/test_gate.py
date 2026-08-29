@@ -423,11 +423,12 @@ def test_gate_result_does_not_store_user_content():
 def test_gate_provider_receives_strict_schema_and_no_tools():
     provider = FakeModelProvider([classification()])
 
-    asyncio.run(run_feedback_gate(make_task(), provider))
+    asyncio.run(run_feedback_gate(make_task(), provider, timeout_seconds=60))
 
     request = provider.requests[0]
     assert request.response_schema is GateClassification
     assert request.tools == ()
+    assert request.timeout_seconds == 60
     assert request.messages[0].role == "system"
     assert request.messages[1].role == "user"
 

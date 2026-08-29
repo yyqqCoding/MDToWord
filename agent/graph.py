@@ -153,6 +153,7 @@ def build_gate_graph(
     artifact_store: ArtifactStore,
     checkpointer: BaseCheckpointSaver,
     min_confidence: float,
+    gate_timeout_seconds: float = 30.0,
     reproduction: ReproductionDependencies | None = None,
     repair: RepairDependencies | None = None,
     publishing: PublishingDependencies | None = None,
@@ -197,6 +198,7 @@ def build_gate_graph(
             provider,
             duplicate_found=duplicate is not None,
             min_confidence=min_confidence,
+            timeout_seconds=gate_timeout_seconds,
         )
         result = execution.result
         gate_ref = artifact_store.write_gate_ref(state.run_id, result)

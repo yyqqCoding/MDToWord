@@ -36,6 +36,19 @@ class AgentConfig(BaseModel):
     model_base_url: str | None = None
     model_input_cost_per_million: Decimal = Field(default=Decimal("0"), ge=0)
     model_output_cost_per_million: Decimal = Field(default=Decimal("0"), ge=0)
+    fallback_model_enabled: bool = False
+    fallback_model_name: str | None = None
+    fallback_model_api_key: SecretStr | None = None
+    fallback_model_base_url: str | None = None
+    fallback_model_input_cost_per_million: Decimal = Field(
+        default=Decimal("0"),
+        ge=0,
+    )
+    fallback_model_output_cost_per_million: Decimal = Field(
+        default=Decimal("0"),
+        ge=0,
+    )
+    gate_model_timeout_seconds: float = Field(default=30.0, ge=30.0, le=120.0)
     reproduction_model_timeout_seconds: float = Field(
         default=180.0,
         ge=30.0,
@@ -90,6 +103,7 @@ class AgentConfig(BaseModel):
 
     @field_validator(
         "model_base_url",
+        "fallback_model_base_url",
         "langfuse_host",
         "sandbox_worker_url",
         "github_api_url",
@@ -207,6 +221,33 @@ class AgentConfig(BaseModel):
                 values,
                 "MODEL_OUTPUT_COST_PER_MILLION",
             ),
+            fallback_model_enabled=_bool_value(
+                values,
+                "FALLBACK_MODEL_ENABLED",
+                False,
+            ),
+            fallback_model_name=_optional_text(values, "FALLBACK_MODEL_NAME"),
+            fallback_model_api_key=_optional_secret(
+                values,
+                "FALLBACK_MODEL_API_KEY",
+            ),
+            fallback_model_base_url=_optional_text(
+                values,
+                "FALLBACK_MODEL_BASE_URL",
+            ),
+            fallback_model_input_cost_per_million=_decimal_value(
+                values,
+                "FALLBACK_MODEL_INPUT_COST_PER_MILLION",
+            ),
+            fallback_model_output_cost_per_million=_decimal_value(
+                values,
+                "FALLBACK_MODEL_OUTPUT_COST_PER_MILLION",
+            ),
+            gate_model_timeout_seconds=_float_value(
+                values,
+                "GATE_MODEL_TIMEOUT_SECONDS",
+                30.0,
+            ),
             reproduction_model_timeout_seconds=_float_value(
                 values,
                 "REPRODUCTION_MODEL_TIMEOUT_SECONDS",
@@ -315,6 +356,33 @@ class AgentConfig(BaseModel):
             self.model_name,
             self.model_api_key.get_secret_value(),
             self.model_base_url,
+        )
+
+    def fallback_model_settings(self) -> tuple[str, str, str] | None:
+        """返回启用的备用接口；未启用时不读取或暴露其 Secret。"""
+
+        if not self.fallback_model_enabled:
+            return None
+        missing = [
+            name
+            for name, value in (
+                ("FALLBACK_MODEL_NAME", self.fallback_model_name),
+                ("FALLBACK_MODEL_API_KEY", self.fallback_model_api_key),
+                ("FALLBACK_MODEL_BASE_URL", self.fallback_model_base_url),
+            )
+            if value is None
+        ]
+        if missing:
+            raise ConfigurationError(
+                "missing required configuration: " + ", ".join(missing)
+            )
+        assert self.fallback_model_name is not None
+        assert self.fallback_model_api_key is not None
+        assert self.fallback_model_base_url is not None
+        return (
+            self.fallback_model_name,
+            self.fallback_model_api_key.get_secret_value(),
+            self.fallback_model_base_url,
         )
 
     def require_langfuse_settings(self) -> tuple[str, str, str]:

@@ -18,7 +18,11 @@ from agent.config import AgentConfig
 from agent.domain.enums import FeedbackType, GateCategory, GateRoute
 from agent.domain.gate import GateClassification
 from agent.domain.models import TaskArtifact
-from agent.gate import GATE_PROMPT_VERSION, execute_feedback_gate
+from agent.gate import (
+    GATE_PROMPT_VERSION,
+    GATE_TIMEOUT_SECONDS,
+    execute_feedback_gate,
+)
 from agent.graph import GRAPH_VERSION, POLICY_VERSION
 from agent.providers.base import ModelProvider
 from agent.providers.fake import FakeModelProvider
@@ -91,6 +95,7 @@ class _Runtime:
     telemetry: Telemetry
     provider_name: str
     model_name: str
+    gate_timeout_seconds: float = GATE_TIMEOUT_SECONDS
     client: httpx.AsyncClient | None = None
 
 
@@ -110,6 +115,7 @@ async def evaluate(
     *,
     provider: ModelProvider | None = None,
     telemetry: Telemetry | None = None,
+    gate_timeout_seconds: float = GATE_TIMEOUT_SECONDS,
 ) -> EvaluationReport:
     observations = telemetry or NoopTelemetry()
     results: list[CaseResult] = []
@@ -148,7 +154,11 @@ async def evaluate(
         )
         with observations.start_run(trace) as run_observation:
             try:
-                execution = await execute_feedback_gate(task, observed)
+                execution = await execute_feedback_gate(
+                    task,
+                    observed,
+                    timeout_seconds=gate_timeout_seconds,
+                )
             except Exception as exc:
                 elapsed = int((time.perf_counter() - started) * 1000)
                 results.append(
@@ -265,6 +275,7 @@ async def _runtime(mode: str) -> _Runtime:
         )
     config = AgentConfig.from_env()
     model_name, api_key, base_url = config.require_model_settings()
+    fallback_model = config.fallback_model_settings()
     host, public_key, secret_key = config.require_langfuse_settings()
     client = httpx.AsyncClient(timeout=30)
     return _Runtime(
@@ -275,6 +286,19 @@ async def _runtime(mode: str) -> _Runtime:
             client=client,
             input_cost_per_million=config.model_input_cost_per_million,
             output_cost_per_million=config.model_output_cost_per_million,
+            fallback_model=fallback_model[0] if fallback_model is not None else None,
+            fallback_api_key=(
+                fallback_model[1] if fallback_model is not None else None
+            ),
+            fallback_base_url=(
+                fallback_model[2] if fallback_model is not None else None
+            ),
+            fallback_input_cost_per_million=(
+                config.fallback_model_input_cost_per_million
+            ),
+            fallback_output_cost_per_million=(
+                config.fallback_model_output_cost_per_million
+            ),
         ),
         telemetry=LangfuseTelemetry(
             public_key=public_key,
@@ -284,6 +308,7 @@ async def _runtime(mode: str) -> _Runtime:
         ),
         provider_name="openai_compatible",
         model_name=model_name,
+        gate_timeout_seconds=config.gate_model_timeout_seconds,
         client=client,
     )
 
@@ -309,6 +334,7 @@ async def _run(
             cases,
             provider=runtime.provider if mode == "configured" else None,
             telemetry=runtime.telemetry,
+            gate_timeout_seconds=runtime.gate_timeout_seconds,
         )
     finally:
         runtime.telemetry.flush()

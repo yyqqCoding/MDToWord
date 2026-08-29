@@ -222,6 +222,28 @@ stop              当前自动处理终止
 这些值是观测结果，不是一个新的统一状态机。Checkpoint 与发布恢复继续由 LangGraph 与
 Controller 使用原 `run_id`、operation ID 和幂等查询完成。
 
+### 5.3 可选备用模型接口
+
+OpenAI-compatible Provider 可选配置一个备用接口，但它仍是同一个 Provider 边界，不增加
+供应商路由、供应商状态或新的 handling：
+
+```text
+attempt 1  主接口
+attempt 2  主接口
+attempt 3  备用接口（仅启用且前两次均为 transient 时）
+```
+
+- 总 attempt 仍包含首次最多三次，等待仍为 1 秒、2 秒；不得变成两个接口各三次；
+- `timeout`、连接异常、408、429 和 5xx 可按 Retry Policy 进入下一 attempt；
+- 认证、权限、配置、上下文、安全、无效响应、预算和未知错误立即 STOP，不得借备用接口
+  绕过；
+- 第三次切换仍沿用 `transport_retry`，成功与失败统一使用
+  `provider=openai_compatible`；
+- 不记录接口名称、Base URL、凭据或主/备用身份，不新增 `provider_failover` 事件；
+- 两套凭据只由受信配置和逐请求 Header 使用，备用配置不进入 Graph State、Artifact、
+  数据库或 Trace；
+- Schema 格式修正仍是成功传输后的既有独立轮次，不纳入这三个传输 attempt。
+
 ## 6. 捕获与转换边界
 
 ### 6.1 Adapter 边界

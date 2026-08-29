@@ -1166,7 +1166,7 @@ Cloud，使真实 Gate 调用具备严格结构化输出、有限重试、真实
 | G 评估与投产 | Completed | 2026-08-13；公式闭环复验 2026-08-16 | 12 条真实 Gate 评估、Fake 发布 E2E、PR/Render/插件回放通过；独立 ECS Worker/Scheduler 常驻；生产 `rejected_irrelevant`、Mermaid `cannot_reproduce` 与公式自动修复 PR #2 验收通过 |
 | H 公开反馈入口 IP 限流 | Completed | 2026-08-18；插件人工验收 2026-08-19 | 限流/API/插件与自动测试完成；生产 Docker 后端全量 71 passed；Render 黑盒验证伪造头不能绕过、Wi-Fi/手机身份不同、分钟窗口与 `Retry-After` 正确；插件限流提示与输入保留人工验收通过，`0.3.3` 发布构建已准备 |
 | I 功能需求 Issue 路由与展示数据正确性 | Production core accepted / Extension release build pending | 2026-08-24 | Agent 321 passed（5 skipped）且 compileall 通过；Trace Site 10 passed/typecheck 与 Vercel 生产构建通过；migration、App 权限和 ECS 部署完成；真实 run `cc34f82c-...` 创建脱敏 Issue #3，feedback=`issue_opened`，概览 52 次运行与 Supabase 对账一致；扩展 tsc 通过，发布构建待干净原生 binding 环境完成 |
-| J 统一失败处理与重试策略 | Local implementation complete / Production pending | 本地验证 2026-08-29 | Agent 339 passed、5 skipped且compileall通过；Trace Site 10 passed/typecheck通过；migration未执行，Docker 5项因环境跳过，Trace Site build缺本地Lightning CSS原生模块，未部署 |
+| J 统一失败处理与重试策略 | Local implementation complete / Production pending | 本地验证 2026-08-29 | Agent 344 passed、5 skipped且compileall通过；Provider 可选在第三次总 attempt 使用备用 OpenAI-compatible 接口，Gate 短超时可配置；当前增量未做真实模型和生产部署验收 |
 
 状态只在完成对应验收后更新。已有代码不因存在文件或历史提交自动视为通过。
 
@@ -1224,12 +1224,15 @@ Cloud，使真实 Gate 调用具备严格结构化输出、有限重试、真实
   Langfuse 和 Trace Site 已接入各自所有权边界，`POLICY_VERSION` 已更新；
 - Provider 与 Sandbox 临时传输包含首次最多三次，退避为1秒、2秒；Sandbox复用同一job
   ID/幂等键/指纹并受wall timeout加60秒总deadline约束，永久状态与无效200不重试；
+- Provider 可选配置一个备用 OpenAI-compatible 请求目标：前两次 attempt 使用主接口，
+  第三次使用备用接口；两者共享统一 Provider、错误分类、handling 和三次总上限，不记录
+  供应商切换事件。Gate 短请求超时改为 30～120 秒受限配置；
 - Controller捕获普通运行异常并保存脱敏位置快照，未知异常降级为`unexpected_error`；
   Provider/Sandbox认证失败将feedback转为`needs_human`，Scheduler不吞取消或进程控制信号；
 - Graph仍拥有格式修正后的受信fallback、两轮业务修订和`stale_base`一次重排，只向Recorder
   报告实际handling；Publisher与Repository未接入通用短重试；
 - 新增 `008_failure_handling.sql` 和公开投影白名单，但遵守项目约定未执行migration；
-- `.venv/bin/python -m pytest agent/tests -q`：339 passed、5 skipped；跳过项为需要真实Docker
+- `.venv/bin/python -m pytest agent/tests -q`：344 passed、5 skipped；跳过项为需要真实Docker
   条件的集成测试。`.venv/bin/python -m compileall -q agent`通过；
 - Trace Site `npm test`：10 passed，`npm run typecheck`通过；`npm run build`因现有
   `node_modules` 缺少 `lightningcss.linux-x64-gnu.node` 失败，未安装依赖或伪造构建通过；

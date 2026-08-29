@@ -35,6 +35,7 @@ async def run_feedback_gate(
     *,
     duplicate_found: bool = False,
     min_confidence: float = MIN_GATE_CONFIDENCE,
+    timeout_seconds: float = GATE_TIMEOUT_SECONDS,
 ) -> GateResult:
     """执行 B1 Gate；确定性规则可在任何模型调用前直接终止。"""
 
@@ -44,6 +45,7 @@ async def run_feedback_gate(
             provider,
             duplicate_found=duplicate_found,
             min_confidence=min_confidence,
+            timeout_seconds=timeout_seconds,
         )
     ).result
 
@@ -54,6 +56,7 @@ async def execute_feedback_gate(
     *,
     duplicate_found: bool = False,
     min_confidence: float = MIN_GATE_CONFIDENCE,
+    timeout_seconds: float = GATE_TIMEOUT_SECONDS,
 ) -> GateExecution:
     """执行 Gate 并返回持久化所需的最小模型用量摘要。"""
 
@@ -69,7 +72,7 @@ async def execute_feedback_gate(
         GateClassification,
         # Gate 模型从接口层就拿不到工具，而不是依赖 Prompt 自律。
         tools=(),
-        timeout_seconds=GATE_TIMEOUT_SECONDS,
+        timeout_seconds=timeout_seconds,
     )
     if response.tool_calls:
         raise InvalidModelResponseError(

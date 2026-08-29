@@ -3,6 +3,7 @@ import json
 import logging
 from collections.abc import Awaitable, Callable
 from copy import deepcopy
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
@@ -41,6 +42,17 @@ _Sleep = Callable[[float], Awaitable[None]]
 _LOGGER = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True, repr=False)
+class _RequestTarget:
+    """单次请求所需配置；repr 隐藏凭据，且不会进入失败或 Trace。"""
+
+    api_key: str
+    model: str
+    endpoint: str
+    input_cost_per_million: Decimal
+    output_cost_per_million: Decimal
+
+
 class OpenAICompatibleProvider:
     """基于 Chat Completions 协议的 Provider，不依赖具体厂商 SDK。"""
 
@@ -57,6 +69,11 @@ class OpenAICompatibleProvider:
         max_transport_retries: int = 2,
         input_cost_per_million: Decimal = Decimal("0"),
         output_cost_per_million: Decimal = Decimal("0"),
+        fallback_api_key: str | None = None,
+        fallback_model: str | None = None,
+        fallback_base_url: str | None = None,
+        fallback_input_cost_per_million: Decimal = Decimal("0"),
+        fallback_output_cost_per_million: Decimal = Decimal("0"),
         sleep: _Sleep = asyncio.sleep,
         retry_policy: RetryPolicy | None = None,
         failure_recorder: FailureRecorder | None = None,
@@ -67,15 +84,41 @@ class OpenAICompatibleProvider:
             raise ValueError("max_format_retries must be 0 or 1")
         if max_transport_retries not in {0, 1, 2}:
             raise ValueError("max_transport_retries must be between 0 and 2")
-        self._api_key = api_key
+        fallback_values = (fallback_api_key, fallback_model, fallback_base_url)
+        if any(value is not None for value in fallback_values) and not all(
+            isinstance(value, str) and value.strip() for value in fallback_values
+        ):
+            raise ValueError(
+                "fallback_api_key, fallback_model and fallback_base_url "
+                "must be configured together"
+            )
+        if fallback_api_key is not None and max_transport_retries != 2:
+            raise ValueError("fallback model requires exactly three transport attempts")
         self.model = model
-        self._endpoint = f"{base_url.rstrip('/')}/chat/completions"
+        self._primary_target = _RequestTarget(
+            api_key=api_key,
+            model=model,
+            endpoint=f"{base_url.rstrip('/')}/chat/completions",
+            input_cost_per_million=input_cost_per_million,
+            output_cost_per_million=output_cost_per_million,
+        )
+        self._fallback_target = (
+            _RequestTarget(
+                api_key=fallback_api_key,
+                model=fallback_model,
+                endpoint=f"{fallback_base_url.rstrip('/')}/chat/completions",
+                input_cost_per_million=fallback_input_cost_per_million,
+                output_cost_per_million=fallback_output_cost_per_million,
+            )
+            if fallback_api_key is not None
+            and fallback_model is not None
+            and fallback_base_url is not None
+            else None
+        )
         self._client = client or httpx.AsyncClient(timeout=30)
         self._owns_client = client is None
         self._max_format_retries = max_format_retries
         self._max_transport_retries = max_transport_retries
-        self._input_cost_per_million = input_cost_per_million
-        self._output_cost_per_million = output_cost_per_million
         self._sleep = sleep
         self._retry_policy = retry_policy or RetryPolicy()
         self._failure_recorder = failure_recorder or FailureRecorder()
@@ -194,25 +237,26 @@ class OpenAICompatibleProvider:
         *,
         timeout_seconds: float | None,
     ) -> dict[str, Any]:
-        request_body = {
-            "model": self.model,
-            "messages": messages,
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": _schema_name(response_schema),
-                    "strict": True,
-                    "schema": _strict_response_schema(response_schema),
-                },
-            },
-        }
         for attempt in range(self._max_transport_retries + 1):
+            target = self._request_target(attempt)
+            request_body = {
+                "model": target.model,
+                "messages": messages,
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": _schema_name(response_schema),
+                        "strict": True,
+                        "schema": _strict_response_schema(response_schema),
+                    },
+                },
+            }
             response: httpx.Response | None = None
             try:
                 response = await self._client.post(
-                    self._endpoint,
+                    target.endpoint,
                     headers={
-                        "Authorization": f"Bearer {self._api_key}",
+                        "Authorization": f"Bearer {target.api_key}",
                         "Content-Type": "application/json",
                     },
                     json=request_body,
@@ -230,7 +274,7 @@ class OpenAICompatibleProvider:
                 )
             else:
                 if response.status_code < 400:
-                    return _parse_response(response, self)
+                    return _parse_response(response, target)
                 error = _http_error(response)
 
             attempt_number = attempt + 1
@@ -262,6 +306,11 @@ class OpenAICompatibleProvider:
 
         raise AssertionError("transport retry loop must return or raise")
 
+    def _request_target(self, attempt: int) -> _RequestTarget:
+        if attempt == 2 and self._fallback_target is not None:
+            return self._fallback_target
+        return self._primary_target
+
     def _record_failure(
         self,
         error: Exception,
@@ -287,7 +336,7 @@ class OpenAICompatibleProvider:
 
 def _parse_response(
     response: httpx.Response,
-    provider: OpenAICompatibleProvider,
+    target: _RequestTarget,
 ) -> dict[str, Any]:
     try:
         body = response.json()
@@ -309,11 +358,11 @@ def _parse_response(
         for item in message.get("tool_calls") or ()
         if isinstance(item, dict)
     )
-    usage = _normalized_usage(body.get("usage"), provider)
+    usage = _normalized_usage(body.get("usage"), target)
     request_id = response.headers.get("x-request-id") or body.get("id") or "unknown"
     return {
         "content": content,
-        "model": str(body.get("model") or provider.model),
+        "model": str(body.get("model") or target.model),
         "request_id": str(request_id),
         "tool_calls": tool_calls,
         "usage": usage,
@@ -322,7 +371,7 @@ def _parse_response(
 
 def _normalized_usage(
     raw: object,
-    provider: OpenAICompatibleProvider,
+    target: _RequestTarget,
 ) -> dict[str, int | Decimal]:
     usage = raw if isinstance(raw, dict) else {}
     prompt_tokens = _nonnegative_int(usage.get("prompt_tokens"))
@@ -346,8 +395,8 @@ def _normalized_usage(
             estimated_cost = Decimal("0")
     else:
         estimated_cost = (
-            Decimal(prompt_tokens) * provider._input_cost_per_million
-            + Decimal(completion_tokens) * provider._output_cost_per_million
+            Decimal(prompt_tokens) * target.input_cost_per_million
+            + Decimal(completion_tokens) * target.output_cost_per_million
         ) / Decimal(1_000_000)
     return {
         "input_tokens": prompt_tokens,

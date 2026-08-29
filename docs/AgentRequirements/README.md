@@ -30,6 +30,9 @@ Agent 服务自动判断：后端缺陷在隔离沙箱中复现、修复和确�
   受信 fallback 和 `stale_base` 仍由现有 Provider/Graph 所有。短传输调用包含首次在内最多
   三次，按 1 秒、2 秒指数退避，安全、认证、配置、预算和未知错误不重试。当前工作树已完成
   本地实现与自动测试；migration、真实 Docker 验证和生产部署仍待维护者执行。
+- 模型 Provider 可选配置一个备用 OpenAI-compatible 接口。它不形成新的供应商领域概念：
+  前两次 attempt 使用主接口，第三次使用备用接口，仍共享三次总上限、`transport_retry`
+  handling、稳定错误码与统一 `openai_compatible` 观测口径；永久错误不会切换接口。
 
 ## 文档结构
 
@@ -90,8 +93,8 @@ Agent 服务自动判断：后端缺陷在隔离沙箱中复现、修复和确�
   验收和生产部署仍待维护者执行。
 - 阶段 J 的统一失败分类、Provider/Sandbox 三次总 attempt、失败位置补全、最终
   FailureSnapshot、Scheduler 守护和 Trace Site 白名单已完成本地实现；Agent 自动测试与
-  Trace Site 测试/类型检查通过。`008_failure_handling.sql` 未执行，真实 Docker 测试在当前
-  环境跳过，Trace Site 生产构建因本地缺少 Lightning CSS 原生模块未完成，因此尚未部署。
+  Trace Site 测试/类型检查通过；Provider 已在同一三次总 attempt 内支持可选第三次备用
+  OpenAI-compatible 接口，Gate 30～120 秒短超时可配置。当前增量尚未生产部署。
 
 可直接执行的配置和命令见 [agent/README.md](../../agent/README.md)。阶段划分、历史检查点
 和验收证据以 [implementation-plan.md](implementation-plan.md) 为准；本文档中的目标

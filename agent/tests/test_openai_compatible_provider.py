@@ -9,6 +9,7 @@ import pytest
 from agent.domain.errors import (
     InvalidModelResponseError,
     ModelAuthError,
+    ModelProviderError,
     ModelRateLimitError,
 )
 from agent.domain.gate import GateClassification
@@ -228,6 +229,123 @@ def test_transient_provider_failure_uses_bounded_backoff_before_success():
     assert result.output.intent.value == "bug_report"
     assert request_count == 3
     assert delays == [1.0, 2.0]
+
+
+def test_third_transport_attempt_uses_fallback_api_with_one_global_budget():
+    requests: list[tuple[str, str, str]] = []
+    delays: list[float] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        requests.append(
+            (
+                request.url.host,
+                request.headers["Authorization"],
+                payload["model"],
+            )
+        )
+        if request.url.host == "primary.example":
+            return httpx.Response(503, json={"error": {"message": "temporary"}})
+        return httpx.Response(
+            200,
+            json=_response(
+                json.dumps(_classification_payload()),
+                usage={"prompt_tokens": 100, "completion_tokens": 40},
+            ),
+        )
+
+    async def record_sleep(seconds: float) -> None:
+        delays.append(seconds)
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await _run_async(
+                OpenAICompatibleProvider(
+                    api_key="primary-secret",
+                    model="primary-model",
+                    base_url="https://primary.example/v1",
+                    client=client,
+                    fallback_api_key="fallback-secret",
+                    fallback_model="fallback-model",
+                    fallback_base_url="https://fallback.example/v1",
+                    fallback_input_cost_per_million=Decimal("2"),
+                    fallback_output_cost_per_million=Decimal("4"),
+                    sleep=record_sleep,
+                )
+            )
+
+    result = asyncio.run(scenario())
+
+    assert requests == [
+        ("primary.example", "Bearer primary-secret", "primary-model"),
+        ("primary.example", "Bearer primary-secret", "primary-model"),
+        ("fallback.example", "Bearer fallback-secret", "fallback-model"),
+    ]
+    assert delays == [1.0, 2.0]
+    assert result.provider == "openai_compatible"
+    assert result.estimated_cost == Decimal("0.00036")
+
+
+def test_fallback_api_does_not_bypass_permanent_primary_failure():
+    hosts: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        hosts.append(request.url.host)
+        return httpx.Response(401, json={"error": {"message": "invalid token"}})
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            provider = OpenAICompatibleProvider(
+                api_key="primary-secret",
+                model="primary-model",
+                base_url="https://primary.example/v1",
+                client=client,
+                fallback_api_key="fallback-secret",
+                fallback_model="fallback-model",
+                fallback_base_url="https://fallback.example/v1",
+            )
+            with pytest.raises(ModelAuthError) as exc_info:
+                await _run_async(provider)
+            return exc_info.value
+
+    error = asyncio.run(scenario())
+
+    assert hosts == ["primary.example"]
+    assert error.attempt == 1
+    assert error.max_attempts == 3
+
+
+def test_fallback_failure_is_the_third_and_final_transport_attempt():
+    hosts: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        hosts.append(request.url.host)
+        return httpx.Response(503, json={"error": {"message": "temporary"}})
+
+    async def no_sleep(seconds: float) -> None:
+        del seconds
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            provider = OpenAICompatibleProvider(
+                api_key="primary-secret",
+                model="primary-model",
+                base_url="https://primary.example/v1",
+                client=client,
+                fallback_api_key="fallback-secret",
+                fallback_model="fallback-model",
+                fallback_base_url="https://fallback.example/v1",
+                sleep=no_sleep,
+            )
+            with pytest.raises(ModelProviderError) as exc_info:
+                await _run_async(provider)
+            return exc_info.value
+
+    error = asyncio.run(scenario())
+
+    assert hosts == ["primary.example", "primary.example", "fallback.example"]
+    assert error.attempt == 3
+    assert error.max_attempts == 3
 
 
 def test_rate_limit_respects_bounded_retry_after_seconds():

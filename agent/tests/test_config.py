@@ -95,6 +95,70 @@ def test_reproduction_model_timeout_is_bounded_and_configurable(tmp_path: Path):
         )
 
 
+def test_gate_model_timeout_is_bounded_and_configurable(tmp_path: Path):
+    config = AgentConfig.from_env(
+        {
+            "SUPABASE_URL": "https://example.supabase.co",
+            "SUPABASE_AGENT_KEY": "secret",
+            "GATE_MODEL_TIMEOUT_SECONDS": "60",
+        },
+        project_root=tmp_path,
+    )
+
+    assert config.gate_model_timeout_seconds == 60.0
+
+    with pytest.raises(ValueError):
+        AgentConfig.from_env(
+            {
+                "SUPABASE_URL": "https://example.supabase.co",
+                "SUPABASE_AGENT_KEY": "secret",
+                "GATE_MODEL_TIMEOUT_SECONDS": "121",
+            },
+            project_root=tmp_path,
+        )
+
+
+def test_fallback_model_is_optional_and_requires_complete_enabled_settings(
+    tmp_path: Path,
+):
+    disabled = AgentConfig.from_env(
+        {
+            "SUPABASE_URL": "https://example.supabase.co",
+            "SUPABASE_AGENT_KEY": "secret",
+        },
+        project_root=tmp_path,
+    )
+    assert disabled.fallback_model_settings() is None
+
+    incomplete = AgentConfig.from_env(
+        {
+            "SUPABASE_URL": "https://example.supabase.co",
+            "SUPABASE_AGENT_KEY": "secret",
+            "FALLBACK_MODEL_ENABLED": "true",
+            "FALLBACK_MODEL_API_KEY": "do-not-print",
+        },
+        project_root=tmp_path,
+    )
+    with pytest.raises(ConfigurationError) as exc_info:
+        incomplete.fallback_model_settings()
+    assert "FALLBACK_MODEL_NAME" in str(exc_info.value)
+    assert "do-not-print" not in str(exc_info.value)
+
+    configured = AgentConfig.from_env(
+        {
+            "SUPABASE_URL": "https://example.supabase.co",
+            "SUPABASE_AGENT_KEY": "secret",
+            "FALLBACK_MODEL_ENABLED": "true",
+            "FALLBACK_MODEL_NAME": "fallback-model",
+            "FALLBACK_MODEL_API_KEY": "fallback-secret",
+            "FALLBACK_MODEL_BASE_URL": "https://fallback.example/v1",
+        },
+        project_root=tmp_path,
+    )
+    assert configured.fallback_model_settings()[0] == "fallback-model"
+    assert "fallback-secret" not in repr(configured)
+
+
 def test_stage_e_budgets_are_bounded_and_configurable(tmp_path: Path):
     config = AgentConfig.from_env(
         {

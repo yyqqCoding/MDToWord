@@ -180,6 +180,10 @@ sudo mdtoword-agentctl logs
 - `invalid_response`：接口已经返回内容，但严格 JSON Schema 或本地 Policy 在一次格式
   修正后仍未通过；
 - `/models` 返回 200 只验证 Base URL、网络和认证，复杂 `generate-test` 仍可能失败；
+- 配置 `FALLBACK_MODEL_ENABLED=true` 后，前两次临时传输失败仍使用主接口，第三次使用备用
+  OpenAI-compatible 接口；日志和 Trace 继续按统一 Provider 口径展示，不区分实际接口；
+- `GATE_MODEL_TIMEOUT_SECONDS` 默认 30 秒、允许 30～120 秒；调整前应在生产 Agent 主机上
+  使用相同模型与结构化请求测量耗时，避免用过长等待掩盖上游故障；
 - 可用 `agent.evals.runner --provider configured --case-id <id>` 验证单条 Gate，但阶段 D
   仍应以 Langfuse 的具体 generation 节点和数据库阶段字段定位。
 

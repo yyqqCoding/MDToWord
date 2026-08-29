@@ -83,13 +83,17 @@ SQL migration 为 [001_agent_foundation.sql](migrations/001_agent_foundation.sql
 
 - `MODEL_BASE_URL` 填以 `/v1` 结尾的 API 根路径，不填完整的
   `/chat/completions`；
+- `GATE_MODEL_TIMEOUT_SECONDS` 默认 30 秒，可在 30～120 秒内调整；
+- `FALLBACK_MODEL_ENABLED=true` 时，`FALLBACK_MODEL_NAME/API_KEY/BASE_URL` 必须完整配置。
+  Provider 仍按统一 `openai_compatible` 处理：前两次临时传输失败继续请求主接口，第三次
+  请求备用接口，总 attempt 不超过三次；认证、权限、配置和其他永久错误不会切换；
 - `LANGFUSE_HOST` 必须与 Cloud 项目区域一致，例如美国区
   `https://cloud.langfuse.com` 或日本区 `https://jp.cloud.langfuse.com`；
 - `SUPABASE_AGENT_KEY` 与 Feedback API 凭据必须不同，只能由自托管 Controller 使用；
 - 如果兼容接口不返回 `usage.cost`，只有配置模型的美元/百万 Token 单价后，数据库
   `agent_runs.estimated_cost` 才会大于 `0`。Langfuse 自行推算的展示成本不会回写数据库。
 - 阶段 D 的长源码请求默认允许 180 秒，可用
-  `REPRODUCTION_MODEL_TIMEOUT_SECONDS` 在 30～300 秒内调整；Gate 使用独立的短请求超时。
+  `REPRODUCTION_MODEL_TIMEOUT_SECONDS` 在 30～300 秒内调整；Gate 使用上述独立短请求超时。
 - 阶段 E 默认限制 8 次模型、30 次工具、200,000 tokens 和 900 秒 Sandbox；配置名见
   `.env.example`。`BACKEND_BASELINE_SKIPPED` 必须填写当前固定后端基线值，当前为 `0`。
 

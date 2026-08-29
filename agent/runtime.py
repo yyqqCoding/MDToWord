@@ -60,6 +60,7 @@ async def open_configured_runtime(
 
     database_url = config.require_database_url()
     model_name, model_api_key, model_base_url = config.require_model_settings()
+    fallback_model = config.fallback_model_settings()
     langfuse_host, langfuse_public_key, langfuse_secret_key = (
         config.require_langfuse_settings()
     )
@@ -82,6 +83,19 @@ async def open_configured_runtime(
             client=shared_client,
             input_cost_per_million=config.model_input_cost_per_million,
             output_cost_per_million=config.model_output_cost_per_million,
+            fallback_model=fallback_model[0] if fallback_model is not None else None,
+            fallback_api_key=(
+                fallback_model[1] if fallback_model is not None else None
+            ),
+            fallback_base_url=(
+                fallback_model[2] if fallback_model is not None else None
+            ),
+            fallback_input_cost_per_million=(
+                config.fallback_model_input_cost_per_million
+            ),
+            fallback_output_cost_per_million=(
+                config.fallback_model_output_cost_per_million
+            ),
             failure_recorder=failure_recorder,
         )
         artifacts = ArtifactStore(config.artifact_root)
@@ -207,6 +221,7 @@ async def open_configured_runtime(
                     artifact_store=artifacts,
                     checkpointer=checkpointer,
                     min_confidence=config.min_gate_confidence,
+                    gate_timeout_seconds=config.gate_model_timeout_seconds,
                     extension_version=read_extension_version(
                         config.extension_manifest_path
                     ),
