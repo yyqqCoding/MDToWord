@@ -2,7 +2,6 @@ import asyncio
 import hashlib
 from datetime import UTC, datetime
 from pathlib import Path
-from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
@@ -20,6 +19,7 @@ from agent.domain.enums import (
 )
 from agent.domain.gate import GateClassification
 from agent.domain.errors import PublicationError
+from agent.domain.failures import FailureEvent, FailureHandling, FailureRecorder
 from agent.domain.models import FeedbackRecord
 from agent.domain.reproduction import (
     ExpectedFailureKind,
@@ -285,6 +285,7 @@ async def _run(
     description: str = "exported Word table structure is incorrect",
     gate_classification: GateClassification | None = None,
     reproduction_plan: ReproductionPlan | None = None,
+    failure_recorder: FailureRecorder | None = None,
 ):
     feedback = FeedbackRecord(
         id=FEEDBACK_ID,
@@ -318,7 +319,9 @@ async def _run(
                 artifacts,
             ),
             sandbox_client=sandbox,
+            failure_recorder=failure_recorder or FailureRecorder(),
         ),
+        failure_recorder=failure_recorder,
     )
     outcome = await controller.start(feedback)
     return outcome, await feedbacks.get(FEEDBACK_ID), await runs.get(outcome.run_id), sandbox, test_provider
@@ -336,7 +339,6 @@ async def _run_stage_e(
     reproduction_plan: ReproductionPlan | None = None,
     generated_test: GeneratedTestResult | None = None,
     publisher: _Publisher | _FailingPublisher | _RetryingPublisher | None = None,
-    capture_publication_error: bool = False,
     runtime_capture: dict[str, object] | None = None,
 ):
     feedback = FeedbackRecord(
@@ -391,19 +393,7 @@ async def _run_stage_e(
                 "runs": runs,
             }
         )
-    try:
-        outcome = await controller.start(feedback)
-    except PublicationError as exc:
-        if not capture_publication_error:
-            raise
-        run_directories = list((tmp_path / "artifacts").iterdir())
-        assert len(run_directories) == 1
-        outcome = SimpleNamespace(
-            run_id=UUID(run_directories[0].name),
-            completed=False,
-            pr_url=None,
-            error=exc,
-        )
+    outcome = await controller.start(feedback)
     return (
         outcome,
         await feedbacks.get(FEEDBACK_ID),
@@ -431,8 +421,20 @@ def test_known_target_failure_produces_reproduction_report(tmp_path: Path) -> No
 
 
 def test_two_direct_passes_become_cannot_reproduce(tmp_path: Path) -> None:
+    class EventSink:
+        def __init__(self) -> None:
+            self.events: list[FailureEvent] = []
+
+        def record_failure(self, event: FailureEvent) -> None:
+            self.events.append(event)
+
+    sink = EventSink()
     _, feedback, run, sandbox, test_provider = asyncio.run(
-        _run(tmp_path, [TargetTestOutcome.PASSED, TargetTestOutcome.PASSED])
+        _run(
+            tmp_path,
+            [TargetTestOutcome.PASSED, TargetTestOutcome.PASSED],
+            failure_recorder=FailureRecorder(sink),
+        )
     )
 
     assert feedback is not None
@@ -442,6 +444,11 @@ def test_two_direct_passes_become_cannot_reproduce(tmp_path: Path) -> None:
     assert run.reproduction["disposition"] == ReproductionDisposition.NOT_REPRODUCED.value
     assert len(sandbox.jobs) == 2
     assert len(test_provider.requests) == 2
+    assert [event.handling for event in sink.events] == [
+        FailureHandling.GRAPH_REVISE,
+        FailureHandling.STOP,
+    ]
+    assert all(event.failure.cause.code == "target_passed" for event in sink.events)
     # 两轮 Job 都携带同一原始源码 archive，而不是上一轮 workspace。
     assert sandbox.jobs[0].source_archive == sandbox.jobs[1].source_archive
 
@@ -850,15 +857,18 @@ def test_stage_g_fake_e2e_publication_failure_preserves_validated_artifacts(
             ],
             fixes=[_fix()],
             publisher=publisher,
-            capture_publication_error=True,
         )
     )
 
-    assert isinstance(outcome.error, PublicationError)
+    assert outcome.completed is False
+    assert outcome.error_code == "publication_failed"
     assert feedback is not None and feedback.status is FeedbackStatus.FAILED
     assert feedback.last_error_code == "publication_failed"
     assert run is not None and run.status is AgentRunStatus.FAILED
     assert run.error_code == "publication_failed"
+    assert run.failure is not None
+    assert run.failure.phase == "publishing"
+    assert run.failure.node == "publish_pull_request"
     assert run.validated_patch_sha256 is not None
     assert artifacts.path_for(outcome.run_id, "validated.patch").is_file()
     assert len(publisher.requests) == 1
@@ -881,7 +891,6 @@ def test_stage_f_explicit_retry_reuses_validation_without_rerunning_sandbox(
             ],
             fixes=[_fix()],
             publisher=publisher,
-            capture_publication_error=True,
             runtime_capture=capture,
         )
         controller = capture["controller"]

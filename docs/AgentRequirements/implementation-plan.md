@@ -1166,5 +1166,72 @@ Cloud，使真实 Gate 调用具备严格结构化输出、有限重试、真实
 | G 评估与投产 | Completed | 2026-08-13；公式闭环复验 2026-08-16 | 12 条真实 Gate 评估、Fake 发布 E2E、PR/Render/插件回放通过；独立 ECS Worker/Scheduler 常驻；生产 `rejected_irrelevant`、Mermaid `cannot_reproduce` 与公式自动修复 PR #2 验收通过 |
 | H 公开反馈入口 IP 限流 | Completed | 2026-08-18；插件人工验收 2026-08-19 | 限流/API/插件与自动测试完成；生产 Docker 后端全量 71 passed；Render 黑盒验证伪造头不能绕过、Wi-Fi/手机身份不同、分钟窗口与 `Retry-After` 正确；插件限流提示与输入保留人工验收通过，`0.3.3` 发布构建已准备 |
 | I 功能需求 Issue 路由与展示数据正确性 | Production core accepted / Extension release build pending | 2026-08-24 | Agent 321 passed（5 skipped）且 compileall 通过；Trace Site 10 passed/typecheck 与 Vercel 生产构建通过；migration、App 权限和 ECS 部署完成；真实 run `cc34f82c-...` 创建脱敏 Issue #3，feedback=`issue_opened`，概览 52 次运行与 Supabase 对账一致；扩展 tsc 通过，发布构建待干净原生 binding 环境完成 |
+| J 统一失败处理与重试策略 | Local implementation complete / Production pending | 本地验证 2026-08-29 | Agent 339 passed、5 skipped且compileall通过；Trace Site 10 passed/typecheck通过；migration未执行，Docker 5项因环境跳过，Trace Site build缺本地Lightning CSS原生模块，未部署 |
 
 状态只在完成对应验收后更新。已有代码不因存在文件或历史提交自动视为通过。
+
+## 15. 阶段 J：统一失败处理与重试策略
+
+**状态：本地实现与自动测试完成，生产验收待执行（2026-08-29）**
+
+权威设计见
+[failure-handling-and-retries.md](failure-handling-and-retries.md)。本阶段只收敛现有错误边界，
+不增加延迟恢复、消息队列、第二套状态机、Skill、多 Agent 或数据飞轮。
+
+### 交付
+
+- 使用 `FailureCause + LocatedFailure` 标准化 Provider、Sandbox、Policy、Publisher 与
+  Repository 的失败事实，由受信调用点补充 phase/node；
+- 使用纯本地 Retry Policy 只决定相同输入短传输调用的 `RETRY/STOP`；Provider格式修正、
+  Graph业务修订、受信fallback和`stale_base`重排继续由既有边界负责；
+- 增加 Adapter、Graph调用点、Controller单次运行和Scheduler守护四层捕获边界；未知普通
+  异常安全转换为`unexpected_error`，取消和进程控制信号不得被吞掉；
+- Model Provider 与 Sandbox Client 的临时传输操作包含首次在内最多三次 attempt，按
+  1 秒、2 秒指数退避；429 的合法秒数 `Retry-After` 最多尊重到 10 秒；
+- Sandbox submit 使用 Worker wall timeout 加60秒结果对账窗口作为总deadline；Worker先
+  返回相同job ID和指纹的已保存结果，再对尚未执行的新Job检查过期；
+- 安全、认证、配置、上下文、预算和未知错误不重试；格式修正、复现与修复继续使用现有
+  独立轮次，不纳入指数退避；
+- Failure Recorder 将每次尝试及实际handling写入脱敏结构化日志和Langfuse；Failure
+  Finalizer将最终未恢复失败以`agent_runs.failure`保存结构化摘要；
+- claim后发生Provider/Sandbox认证失败时run进入`failed`、feedback进入`needs_human`，但
+  不增加自动requeue；publication失败继续使用既有同run checkpoint恢复；
+- 保留现有 `error_code/error_message` 兼容，并通过字段白名单控制公开 Trace Site 投影；
+- 第一版不预先抽取通用执行器，只有后续出现经过测试证明的真实重复时才提取。
+
+### 验收顺序
+
+1. 评审稳定code到kind的表驱动注册表，逐条确认临时、永久、普通编辑与安全拒绝的边界；
+2. 注入未登记普通异常和此前未捕获的AgentError，验证Controller完成位置补全和终结，
+   Scheduler不退出；Repository不可用时不得伪造FailureSnapshot已落库；
+3. 聚焦验证Provider三次attempt、1秒/2秒退避、Retry-After上限和认证零重试；同时锁定一次
+   格式修正和受信fallback不被Retry Policy接管；
+4. 聚焦验证Sandbox三次attempt复用同一job ID/幂等键/指纹，总时间不超过wall timeout加
+   60秒；已保存结果过期后仍可读取，过期无结果不执行，无效200使用独立稳定code；
+5. 验证Graph仍拥有复现/修复两轮修订和`stale_base`一次重排，预算耗尽立即停止；
+6. 验证Publisher与Repository不进入通用短重试，响应未知仍先查询既有副作用；
+7. 验证最终FailureSnapshot的位置、错误码、attempt和handling完整，成功运行不保留最终
+   failure；claim后认证失败进入明确人工队列且不自动requeue；
+8. 验证Recorder故障fail-open而Finalizer故障不被吞掉；`schema_errors`只使用脱敏路径摘要，
+   日志、Langfuse、数据库和公开投影均不泄露用户内容、Prompt、patch、工具完整输出或Secret；
+9. 运行Agent全量pytest和compileall；涉及migration时由维护者审查后手工执行，并按现有
+   生产部署流程保持Scheduler关闭完成审计后再启用。
+
+### 本地实现证据（2026-08-29）
+
+- 新增 `FailureCause`、`LocatedFailure`、纯 `RetryPolicy`、fail-open `FailureRecorder` 与
+  最终 `FailureSnapshot`；Provider、Sandbox、Graph、Controller、Scheduler、Repository、
+  Langfuse 和 Trace Site 已接入各自所有权边界，`POLICY_VERSION` 已更新；
+- Provider 与 Sandbox 临时传输包含首次最多三次，退避为1秒、2秒；Sandbox复用同一job
+  ID/幂等键/指纹并受wall timeout加60秒总deadline约束，永久状态与无效200不重试；
+- Controller捕获普通运行异常并保存脱敏位置快照，未知异常降级为`unexpected_error`；
+  Provider/Sandbox认证失败将feedback转为`needs_human`，Scheduler不吞取消或进程控制信号；
+- Graph仍拥有格式修正后的受信fallback、两轮业务修订和`stale_base`一次重排，只向Recorder
+  报告实际handling；Publisher与Repository未接入通用短重试；
+- 新增 `008_failure_handling.sql` 和公开投影白名单，但遵守项目约定未执行migration；
+- `.venv/bin/python -m pytest agent/tests -q`：339 passed、5 skipped；跳过项为需要真实Docker
+  条件的集成测试。`.venv/bin/python -m compileall -q agent`通过；
+- Trace Site `npm test`：10 passed，`npm run typecheck`通过；`npm run build`因现有
+  `node_modules` 缺少 `lightningcss.linux-x64-gnu.node` 失败，未安装依赖或伪造构建通过；
+- `.venv/bin/python -m pytest agent/tests/test_docker_integration.py -q`：5 skipped；尚无本次
+  变更的真实容器、Supabase migration、模型、Langfuse或生产部署验收证据。

@@ -1,3 +1,4 @@
+from agent.domain.errors import AgentError
 from agent.providers.base import (
     ModelMessage,
     ModelProvider,
@@ -57,6 +58,16 @@ class ObservedModelProvider:
                     timeout_seconds=timeout_seconds,
                 )
             except Exception as exc:
+                if isinstance(exc, AgentError):
+                    phase, node = _LOCATION_BY_OPERATION.get(
+                        self._operation,
+                        ("runtime", "model_provider"),
+                    )
+                    exc.locate(
+                        operation=self._operation,
+                        phase=phase,
+                        node=node,
+                    )
                 observation.fail(
                     error_code=getattr(exc, "error_code", "unexpected_error"),
                     error_type=type(exc).__name__,
@@ -65,3 +76,11 @@ class ObservedModelProvider:
                 raise
             observation.succeed(response)
             return response
+
+
+_LOCATION_BY_OPERATION = {
+    "gate": ("gating", "classify_gate"),
+    "plan_reproduction": ("reproducing", "plan_reproduction"),
+    "generate_test": ("reproducing", "generate_test_edit"),
+    "generate_fix": ("repairing", "generate_fix_edit"),
+}

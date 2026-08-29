@@ -20,6 +20,7 @@ from agent.domain.errors import (
     InvalidStatusTransitionError,
 )
 from agent.domain.gate import GateResult
+from agent.domain.failures import FailureSnapshot
 from agent.domain.models import AgentRunRecord, FeedbackRecord
 from agent.domain.reproduction import ReproductionReport
 from agent.domain.repair import RepairDisposition, RepairReport, ValidationResult
@@ -678,6 +679,7 @@ class FakeAgentRunRepository:
             )
             run.error_code = None
             run.error_message = None
+            run.failure = None
             run.finished_at = None
             return run.model_copy(deep=True)
 
@@ -724,12 +726,19 @@ class FakeAgentRunRepository:
         output_tokens: int,
         total_tokens: int,
         estimated_cost: Decimal,
+        failure: FailureSnapshot | None = None,
+        terminal_status: AgentRunStatus = AgentRunStatus.FAILED,
     ) -> AgentRunRecord:
         async with self._lock:
             run = self._require(run_id)
-            run.status = AgentRunStatus.FAILED
+            _ensure_failure_terminal(terminal_status)
+            if run.status is terminal_status:
+                return run.model_copy(deep=True)
+            ensure_agent_run_transition(run.status, terminal_status)
+            run.status = terminal_status
             run.error_code = error_code
             run.error_message = error_message
+            run.failure = failure
             _set_usage(
                 run,
                 model_calls=model_calls,
@@ -747,6 +756,15 @@ class FakeAgentRunRepository:
         if run is None:
             raise AgentRunNotFoundError(f"agent run {run_id} does not exist")
         return run
+
+
+def _ensure_failure_terminal(status: AgentRunStatus) -> None:
+    if status not in {
+        AgentRunStatus.FAILED,
+        AgentRunStatus.SECURITY_REJECTED,
+        AgentRunStatus.BUDGET_EXHAUSTED,
+    }:
+        raise ValueError("invalid failure terminal status")
 
 
 def _set_usage(

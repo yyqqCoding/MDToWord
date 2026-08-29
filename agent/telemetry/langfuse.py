@@ -4,6 +4,7 @@ from typing import Any
 
 from langfuse import Langfuse, propagate_attributes
 
+from agent.domain.failures import FailureEvent
 from agent.providers.base import StructuredModelResponse
 from agent.telemetry.base import (
     GenerationTrace,
@@ -140,6 +141,52 @@ class LangfuseTelemetry:
             self._client.flush()
         except Exception as exc:  # pragma: no cover - SDK-specific failure
             _warn(exc)
+
+    def record_failure(self, event: FailureEvent) -> None:
+        """记录脱敏失败attempt；SDK异常不能影响业务流。"""
+
+        failure = event.failure
+        payload = {
+            "code": failure.cause.code,
+            "kind": failure.cause.kind.value,
+            "component": failure.cause.component,
+            "operation": failure.cause.operation,
+            "phase": failure.phase,
+            "node": failure.node,
+            "attempt": event.attempt,
+            "max_attempts": event.max_attempts,
+            "handling": event.handling.value,
+            "delay_seconds": event.delay_seconds,
+            "deadline_remaining_seconds": event.deadline_remaining_seconds,
+            "safe_details": failure.cause.safe_details,
+        }
+        context = self._safe_context(
+            name="failure-attempt",
+            as_type="span",
+            input=mask_sensitive(payload),
+            metadata=mask_sensitive(
+                {
+                    "failure_code": failure.cause.code,
+                    "handling": event.handling.value,
+                }
+            ),
+        )
+        if context is None:
+            return
+        raw = None
+        try:
+            raw = context.__enter__()
+            raw.update(
+                level="ERROR" if event.handling.value == "stop" else "WARNING",
+                status_message=failure.cause.code,
+                output=mask_sensitive(payload),
+            )
+        except Exception as exc:  # pragma: no cover - SDK-specific failure
+            if raw is not None:
+                _safe_exit(context, type(exc), exc, exc.__traceback__)
+            _warn(exc)
+            return
+        _safe_exit(context, None, None, None)
 
     @contextmanager
     def start_tool(self, trace: ToolTrace):

@@ -18,7 +18,12 @@ from agent.domain.enums import (
     GateRoute,
 )
 from agent.domain.gate import GateClassification
-from agent.domain.errors import ModelAuthError, ModelTimeoutError, SourceAccessError
+from agent.domain.errors import (
+    BudgetExceededError,
+    ModelAuthError,
+    ModelTimeoutError,
+    SourceAccessError,
+)
 from agent.domain.models import AgentRunRecord, FeedbackRecord
 from agent.graph import PublishingDependencies
 from agent.publishing.contracts import IssuePublicationResult
@@ -299,16 +304,40 @@ def test_gate_graph_persists_real_provider_usage_and_deterministic_trace_id(
 
 
 @pytest.mark.parametrize(
-    ("failure", "error_code"),
+    ("failure", "error_code", "feedback_status", "run_status"),
     (
-        (ModelAuthError("safe message"), "auth_error"),
-        (SourceAccessError("safe message"), "source_access_denied"),
+        (
+            ModelAuthError("safe message"),
+            "auth_error",
+            FeedbackStatus.NEEDS_HUMAN,
+            AgentRunStatus.FAILED,
+        ),
+        (
+            SourceAccessError("safe message"),
+            "source_access_denied",
+            FeedbackStatus.SECURITY_REJECTED,
+            AgentRunStatus.SECURITY_REJECTED,
+        ),
+        (
+            BudgetExceededError("safe message"),
+            "budget_exhausted",
+            FeedbackStatus.FAILED,
+            AgentRunStatus.BUDGET_EXHAUSTED,
+        ),
+        (
+            RuntimeError("secret body"),
+            "unexpected_error",
+            FeedbackStatus.FAILED,
+            AgentRunStatus.FAILED,
+        ),
     ),
 )
 def test_non_retryable_failure_terminalizes_run_and_feedback(
     tmp_path: Path,
     failure: Exception,
     error_code: str,
+    feedback_status: FeedbackStatus,
+    run_status: AgentRunStatus,
 ):
     class FailingProvider:
         provider = "openai_compatible"
@@ -342,24 +371,28 @@ def test_non_retryable_failure_terminalizes_run_and_feedback(
             artifact_store=ArtifactStore(tmp_path),
             checkpointer=InMemorySaver(),
         )
-        with pytest.raises(type(failure)):
-            await controller.start(claimed)
+        outcome = await controller.start(claimed)
         run = await run_repository.find_resumable()
         stored_feedback = await feedback_repository.get(feedback.id)
         all_runs = [
             item
             for item in run_repository._records.values()
         ]
-        return run, stored_feedback, all_runs[0]
+        return outcome, run, stored_feedback, all_runs[0]
 
-    resumable, feedback, failed_run = asyncio.run(scenario())
+    outcome, resumable, feedback, failed_run = asyncio.run(scenario())
 
+    assert outcome.status is run_status
     assert resumable is None
     assert feedback is not None
-    assert feedback.status is FeedbackStatus.FAILED
+    assert feedback.status is feedback_status
     assert feedback.last_error_code == error_code
-    assert failed_run.status is AgentRunStatus.FAILED
+    assert failed_run.status is run_status
     assert failed_run.error_message == type(failure).__name__
+    assert failed_run.failure is not None
+    assert failed_run.failure.code == error_code
+    assert failed_run.failure.phase == "gating"
+    assert failed_run.failure.node == "classify_gate"
 
 
 def test_failure_finalization_persists_newer_checkpoint_usage(tmp_path: Path):
@@ -426,6 +459,9 @@ def test_failure_finalization_persists_newer_checkpoint_usage(tmp_path: Path):
     assert failed_run.output_tokens == 30
     assert failed_run.total_tokens == 150
     assert failed_run.estimated_cost == Decimal("0.012")
+    assert failed_run.failure is not None
+    assert failed_run.failure.code == "timeout"
+    assert failed_run.failure.phase == "repairing"
     assert failed_feedback is not None
     assert failed_feedback.status is FeedbackStatus.FAILED
     assert failed_feedback.last_error_code == "timeout"

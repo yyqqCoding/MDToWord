@@ -90,3 +90,20 @@ def test_stage_i_migration_adds_issue_state_and_fail_closed_public_projection():
     assert "'{classification,issue_summary}'" not in sql
     assert "update public.feedback" not in sql
     assert "delete from" not in sql
+
+
+def test_stage_j_migration_adds_private_failure_and_public_whitelist():
+    sql = (
+        Path(__file__).parents[1] / "migrations" / "008_failure_handling.sql"
+    ).read_text(encoding="utf-8").lower()
+
+    assert "add column if not exists failure jsonb" in sql
+    assert "agent_runs_failure_shape_check" in sql
+    assert "failure ?& array[" in sql
+    assert "status in ('failed', 'security_rejected', 'budget_exhausted')" in sql
+    assert "security_invoker = true" in sql
+    assert "'handling', r.failure -> 'handling'" in sql
+    assert "'safe_details', r.failure" not in sql
+    assert "grant select on public.agent_run_public to service_role" in sql
+    assert "update public.agent_runs" not in sql
+    assert "delete from" not in sql

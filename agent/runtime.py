@@ -9,6 +9,7 @@ import httpx
 from agent.checkpoint import open_postgres_checkpointer
 from agent.config import AgentConfig
 from agent.controller import GateController
+from agent.domain.failures import FailureRecorder
 from agent.graph import (
     PublishingDependencies,
     RepairDependencies,
@@ -72,6 +73,7 @@ async def open_configured_runtime(
         host=langfuse_host,
         environment=config.agent_environment,
     )
+    failure_recorder = FailureRecorder(telemetry)
     try:
         provider = OpenAICompatibleProvider(
             api_key=model_api_key,
@@ -80,6 +82,7 @@ async def open_configured_runtime(
             client=shared_client,
             input_cost_per_million=config.model_input_cost_per_million,
             output_cost_per_million=config.model_output_cost_per_million,
+            failure_recorder=failure_recorder,
         )
         artifacts = ArtifactStore(config.artifact_root)
         reproduction = None
@@ -111,8 +114,10 @@ async def open_configured_runtime(
                     worker_url,
                     credential=worker_credential,
                     client=shared_client,
+                    failure_recorder=failure_recorder,
                 ),
                 telemetry=telemetry,
+                failure_recorder=failure_recorder,
                 model_timeout_seconds=config.reproduction_model_timeout_seconds,
             )
 
@@ -211,6 +216,7 @@ async def open_configured_runtime(
                     reproduction=reproduction,
                     repair=repair,
                     publishing=publishing,
+                    failure_recorder=failure_recorder,
                 ),
                 feedback_repository=feedback_repository,
                 run_repository=run_repository,

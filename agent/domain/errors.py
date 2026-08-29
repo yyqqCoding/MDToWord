@@ -3,6 +3,40 @@ class AgentError(Exception):
 
     error_code = "agent_error"
 
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        attempt: int = 1,
+        max_attempts: int = 1,
+        safe_details: dict[str, str | int | bool | None] | None = None,
+        operation: str | None = None,
+        phase: str | None = None,
+        node: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.attempt = max(1, attempt)
+        self.max_attempts = max(self.attempt, max_attempts)
+        self.safe_details = dict(safe_details or {})
+        self.operation = operation
+        self.phase = phase
+        self.node = node
+
+    def locate(
+        self,
+        *,
+        operation: str | None = None,
+        phase: str | None = None,
+        node: str | None = None,
+    ) -> "AgentError":
+        """只补充受信调用点尚未提供的位置，不覆盖更具体的内层位置。"""
+
+        # operation 由外层业务调用点提供时比厂商协议方法更具体，应允许覆盖；位置只补空值。
+        self.operation = operation or self.operation
+        self.phase = self.phase or phase
+        self.node = self.node or node
+        return self
+
 
 class ConfigurationError(AgentError):
     error_code = "configuration_error"
@@ -30,6 +64,10 @@ class ConcurrentFeedbackUpdateError(AgentError):
 
 class RepositoryError(AgentError):
     error_code = "repository_error"
+
+
+class RepositoryUnavailableError(RepositoryError):
+    error_code = "repository_unavailable"
 
 
 class SourceRevisionError(AgentError):
@@ -74,6 +112,14 @@ class SandboxUnavailableError(AgentError):
     error_code = "sandbox_unavailable"
 
 
+class SandboxRequestRejectedError(AgentError):
+    error_code = "sandbox_request_rejected"
+
+
+class SandboxInvalidResponseError(AgentError):
+    error_code = "sandbox_invalid_response"
+
+
 class ToolAuthorizationError(AgentError):
     error_code = "tool_not_authorized"
 
@@ -85,8 +131,17 @@ class InvalidArtifactPathError(AgentError):
 class InvalidModelResponseError(AgentError):
     error_code = "invalid_response"
 
-    def __init__(self, message: str, *, schema_errors: str | None = None) -> None:
-        super().__init__(message)
+    def __init__(
+        self,
+        message: str,
+        *,
+        schema_errors: str | None = None,
+        **kwargs: object,
+    ) -> None:
+        safe_details = dict(kwargs.pop("safe_details", {}) or {})
+        if schema_errors:
+            safe_details["schema_errors"] = schema_errors
+        super().__init__(message, safe_details=safe_details, **kwargs)
         # 不合规字段摘要，只含「字段路径:规则名」，不含模型原文，因此可以进日志和
         # Trace。Controller 只持久化异常类名、CLI 只打印 error_code，没有这个字段就
         # 无法判断 invalid_response 到底卡在哪一项。

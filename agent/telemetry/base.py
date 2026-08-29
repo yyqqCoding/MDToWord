@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Protocol
 
+from agent.domain.failures import FailureEvent
 from agent.providers.base import StructuredModelResponse
 
 
@@ -68,6 +69,8 @@ class Telemetry(Protocol):
 
     def start_tool(self, trace: ToolTrace) -> AbstractContextManager[ToolObservation]: ...
 
+    def record_failure(self, event: FailureEvent) -> None: ...
+
     def flush(self) -> None: ...
 
 
@@ -116,6 +119,9 @@ class NoopTelemetry:
 
     def flush(self) -> None:
         return None
+
+    def record_failure(self, event: FailureEvent) -> None:
+        del event
 
 
 def exclusive_usage_buckets(

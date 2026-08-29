@@ -119,8 +119,6 @@ class SandboxWorker:
         artifacts = SandboxArtifacts.from_wire(payload)
         if idempotency_key is not None and idempotency_key != str(artifacts.job.job_id):
             raise SandboxJobConflictError("idempotency key does not match job id")
-        if artifacts.job.expires_at <= datetime.now(UTC):
-            raise ValueError("sandbox job has expired")
         fingerprint = artifacts.request_fingerprint()
 
         # 锁覆盖“查询、执行、写入”，防止并发相同 Job 被实际执行两次。
@@ -132,6 +130,9 @@ class SandboxWorker:
                         "job id was already used for a different request"
                     )
                 return stored.result
+            # expires_at 只阻止新的副作用；已执行结果必须能在响应丢失后幂等取回。
+            if artifacts.job.expires_at <= datetime.now(UTC):
+                raise ValueError("sandbox job has expired")
             try:
                 result = self._runner.execute(artifacts.job, artifacts)
                 if result.job_id != artifacts.job.job_id:

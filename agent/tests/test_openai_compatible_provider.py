@@ -227,7 +227,7 @@ def test_transient_provider_failure_uses_bounded_backoff_before_success():
 
     assert result.output.intent.value == "bug_report"
     assert request_count == 3
-    assert delays == [1.0, 4.0]
+    assert delays == [1.0, 2.0]
 
 
 def test_rate_limit_respects_bounded_retry_after_seconds():
@@ -297,6 +297,7 @@ def test_provider_errors_are_stable_and_never_echo_response(status, expected_err
                 await _run_async(provider)
             assert "model-secret" not in str(exc_info.value)
             assert "leaked-secret" not in str(exc_info.value)
+            assert exc_info.value.safe_details == {"http_status": status}
 
     asyncio.run(scenario())
 
@@ -349,7 +350,11 @@ def test_invalid_structure_reports_which_fields_failed(caplog):
     # 校验器文案只回传给模型（_validation_error_hint），不进 Trace 与展示站
     assert "must not be blank" not in error.schema_errors
 
-    messages = [record.getMessage() for record in caplog.records]
+    messages = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "agent.providers.openai_compatible"
+    ]
     # 两次尝试都留痕，便于判断修正提示有没有起作用
     assert len(messages) == 2
     assert all("relevance:less_than_equal" in item for item in messages)

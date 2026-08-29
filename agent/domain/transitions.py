@@ -20,6 +20,7 @@ _FEEDBACK_TRANSITIONS: Mapping[FeedbackStatus, frozenset[FeedbackStatus]] = {
             FeedbackStatus.NEEDS_HUMAN,
             FeedbackStatus.DUPLICATE,
             FeedbackStatus.REPRODUCING,
+            FeedbackStatus.SECURITY_REJECTED,
             FeedbackStatus.FAILED,
         }
     ),
@@ -27,6 +28,7 @@ _FEEDBACK_TRANSITIONS: Mapping[FeedbackStatus, frozenset[FeedbackStatus]] = {
         {
             FeedbackStatus.REPAIRING,
             FeedbackStatus.CANNOT_REPRODUCE,
+            FeedbackStatus.NEEDS_HUMAN,
             FeedbackStatus.SECURITY_REJECTED,
             FeedbackStatus.FAILED,
         }
@@ -42,6 +44,7 @@ _FEEDBACK_TRANSITIONS: Mapping[FeedbackStatus, frozenset[FeedbackStatus]] = {
     FeedbackStatus.VALIDATING: frozenset(
         {
             FeedbackStatus.VALIDATED,
+            FeedbackStatus.NEEDS_HUMAN,
             FeedbackStatus.SECURITY_REJECTED,
             FeedbackStatus.FAILED,
         }

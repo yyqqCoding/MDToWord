@@ -150,6 +150,32 @@ def test_expired_job_is_rejected_without_running(tmp_path: Path):
     assert runner.calls == 0
 
 
+def test_expired_job_can_read_matching_persisted_result(tmp_path: Path):
+    source = b"snapshot"
+    patch = b"patch"
+    job = _job(source, patch)
+    runner = RecordingRunner()
+    worker = SandboxWorker(
+        credential="worker-secret",
+        runner=runner,
+        store=FileJobStore(tmp_path / "jobs"),
+    )
+    request = SandboxArtifacts(job=job, source_archive=source, test_patch=patch)
+    first = worker.execute("Bearer worker-secret", request.to_wire())
+
+    expired = request.model_copy(
+        update={
+            "job": job.model_copy(
+                update={"expires_at": datetime.now(UTC) - timedelta(seconds=1)}
+            )
+        }
+    )
+    second = worker.execute("Bearer worker-secret", expired.to_wire())
+
+    assert second == first
+    assert runner.calls == 1
+
+
 def test_unexpected_runner_failure_is_redacted_persisted_and_not_retried(tmp_path: Path):
     source = b"snapshot"
     patch = b"patch"

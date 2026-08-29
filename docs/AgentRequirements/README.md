@@ -25,6 +25,11 @@ Agent 服务自动判断：后端缺陷在隔离沙箱中复现、修复和确�
 - 每次运行固定一个 `base_sha`，最终产物记录一个 `validated_patch_sha256`；
 - MVP 通常使用一个模型完成门禁、复现规划、测试生成和修复生成；Mermaid 测试生成耗尽
   格式修正，或第一轮测试编辑无效时，Controller 可用固定受信 drawing 模板继续复现。
+- 失败处理使用 `FailureCause + RetryPolicy + FailureRecorder`：适配器标准化错误，调用点
+  补充阶段和节点，本地纯策略只决定同输入传输调用的 `RETRY/STOP`；格式修正、业务修订、
+  受信 fallback 和 `stale_base` 仍由现有 Provider/Graph 所有。短传输调用包含首次在内最多
+  三次，按 1 秒、2 秒指数退避，安全、认证、配置、预算和未知错误不重试。当前工作树已完成
+  本地实现与自动测试；migration、真实 Docker 验证和生产部署仍待维护者执行。
 
 ## 文档结构
 
@@ -33,6 +38,7 @@ Agent 服务自动判断：后端缺陷在隔离沙箱中复现、修复和确�
 | [requirements.md](requirements.md) | 目标、范围、反馈路由、成功标准与非目标 |
 | [architecture.md](architecture.md) | 部署组件、依赖方向、状态机与数据所有权 |
 | [agent-runtime.md](agent-runtime.md) | LangGraph 状态、节点、有限 ReAct 和恢复语义 |
+| [failure-handling-and-retries.md](failure-handling-and-retries.md) | 失败分类、重试策略、最终失败快照与验收契约 |
 | [tool-contracts.md](tool-contracts.md) | 模型可用工具、结构化编辑、验证任务与结果契约 |
 | [security-and-sandbox.md](security-and-sandbox.md) | 信任边界、权限、Prompt Injection、Docker 与补丁策略 |
 | [observability.md](observability.md) | Trace ID、Langfuse、Token/成本、日志与脱敏 |
@@ -41,11 +47,13 @@ Agent 服务自动判断：后端缺陷在隔离沙箱中复现、修复和确�
 
 策略只维护一份：权限、路径白名单和沙箱约束只在
 `security-and-sandbox.md` 定义；状态转换只在 `architecture.md` 定义；工具请求与
-结果 Schema 只在 `tool-contracts.md` 定义。其他文档通过引用使用，不复制规则。
+结果 Schema 只在 `tool-contracts.md` 定义；阶段 J 的失败分类与重试决定只在
+`failure-handling-and-retries.md` 定义。其他文档通过引用使用，不复制规则；生产行为仍以
+已部署 migration、代码版本和 `implementation-plan.md` 的验收状态为准。
 
 ## 当前实现状态
 
-截至 2026-08-18：
+截至 2026-08-29：
 
 - 阶段 A、B1 和 B2 已完成；
 - 阶段 B3 的真实模型分类、Prompt Injection 隔离、Langfuse Trace、Token 统计和默认
@@ -80,6 +88,10 @@ Agent 服务自动判断：后端缺陷在隔离沙箱中复现、修复和确�
 - 阶段 I 的功能需求/前端缺陷 Issue 路由、细分类别和 Trace Site 统计正确性已于
   2026-08-24 完成本地实现与自动测试；migration、GitHub App Issues 权限、真实 Issue
   验收和生产部署仍待维护者执行。
+- 阶段 J 的统一失败分类、Provider/Sandbox 三次总 attempt、失败位置补全、最终
+  FailureSnapshot、Scheduler 守护和 Trace Site 白名单已完成本地实现；Agent 自动测试与
+  Trace Site 测试/类型检查通过。`008_failure_handling.sql` 未执行，真实 Docker 测试在当前
+  环境跳过，Trace Site 生产构建因本地缺少 Lightning CSS 原生模块未完成，因此尚未部署。
 
 可直接执行的配置和命令见 [agent/README.md](../../agent/README.md)。阶段划分、历史检查点
 和验收证据以 [implementation-plan.md](implementation-plan.md) 为准；本文档中的目标

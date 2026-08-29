@@ -6,7 +6,13 @@ from uuid import uuid4
 import httpx
 import pytest
 
-from agent.domain.errors import SandboxUnavailableError
+from agent.domain.errors import (
+    SandboxAuthenticationError,
+    SandboxInvalidResponseError,
+    SandboxJobConflictError,
+    SandboxRequestRejectedError,
+    SandboxUnavailableError,
+)
 from agent.sandbox.client import HttpSandboxClient
 from agent.sandbox.contracts import (
     JobType,
@@ -121,7 +127,39 @@ def test_http_sandbox_client_retries_transient_failure_with_same_job_id():
 
     assert result.job_id == submission.job.job_id
     assert seen_keys == [str(submission.job.job_id)] * 2
-    assert delays == [0.5]
+    assert delays == [1.0]
+
+
+def test_http_sandbox_client_stops_after_three_transient_attempts():
+    submission = _submission()
+    seen_keys: list[str] = []
+    delays: list[float] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen_keys.append(request.headers["idempotency-key"])
+        return httpx.Response(503, text="temporary")
+
+    async def record_sleep(seconds: float) -> None:
+        delays.append(seconds)
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            sandbox = HttpSandboxClient(
+                "http://sandbox.internal",
+                credential="worker-secret",
+                client=client,
+                sleep=record_sleep,
+            )
+            with pytest.raises(SandboxUnavailableError) as exc_info:
+                await sandbox.submit(submission)
+            return exc_info.value
+
+    error = asyncio.run(scenario())
+
+    assert seen_keys == [str(submission.job.job_id)] * 3
+    assert delays == [1.0, 2.0]
+    assert error.attempt == 3
+    assert error.max_attempts == 3
 
 
 def test_http_sandbox_client_does_not_retry_invalid_success_body():
@@ -140,8 +178,86 @@ def test_http_sandbox_client_does_not_retry_invalid_success_body():
                 credential="worker-secret",
                 client=client,
             )
-            with pytest.raises(SandboxUnavailableError):
+            with pytest.raises(SandboxInvalidResponseError):
                 await sandbox.submit(_submission())
 
     asyncio.run(scenario())
     assert requests == 1
+
+
+@pytest.mark.parametrize(
+    ("status", "error_type"),
+    [
+        (401, SandboxAuthenticationError),
+        (409, SandboxJobConflictError),
+        (400, SandboxRequestRejectedError),
+    ],
+)
+def test_http_sandbox_client_does_not_retry_permanent_statuses(
+    status: int,
+    error_type: type[Exception],
+) -> None:
+    requests = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        del request
+        requests += 1
+        return httpx.Response(status, text="must-not-be-exposed")
+
+    async def scenario() -> None:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            sandbox = HttpSandboxClient(
+                "http://sandbox.internal",
+                credential="worker-secret",
+                client=client,
+            )
+            with pytest.raises(error_type):
+                await sandbox.submit(_submission())
+
+    asyncio.run(scenario())
+    assert requests == 1
+
+
+def test_http_sandbox_client_stops_when_total_deadline_cannot_fit_retry():
+    submission = _submission()
+    requests = 0
+    delays: list[float] = []
+
+    class Clock:
+        value = 0.0
+
+        def __call__(self) -> float:
+            return self.value
+
+    clock = Clock()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        del request
+        requests += 1
+        clock.value = submission.job.limits.wall_timeout_seconds + 59.5
+        return httpx.Response(503, text="temporary")
+
+    async def record_sleep(seconds: float) -> None:
+        delays.append(seconds)
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            sandbox = HttpSandboxClient(
+                "http://sandbox.internal",
+                credential="worker-secret",
+                client=client,
+                sleep=record_sleep,
+                monotonic=clock,
+            )
+            with pytest.raises(SandboxUnavailableError) as exc_info:
+                await sandbox.submit(submission)
+            return exc_info.value
+
+    error = asyncio.run(scenario())
+
+    assert requests == 1
+    assert delays == []
+    assert error.attempt == 1
+    assert error.max_attempts == 3

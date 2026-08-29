@@ -82,7 +82,12 @@ class FeedbackScheduler:
 
     async def run_forever(self, stop_event: asyncio.Event) -> None:
         while not stop_event.is_set():
-            await self.run_once()
+            try:
+                await self.run_once()
+            except Exception as exc:
+                # 单次run或Failure Finalizer故障不能杀死常驻Scheduler；异常正文可能含
+                # 外部响应或路径，只记录类型并在既有轮询间隔后重试恢复。
+                _LOGGER.error("scheduler run failed: %s", type(exc).__name__)
             try:
                 await asyncio.wait_for(
                     stop_event.wait(),

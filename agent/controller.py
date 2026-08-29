@@ -1,16 +1,21 @@
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from hashlib import sha256
+import logging
 from uuid import UUID, uuid4
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from agent.domain.enums import AgentRunStatus, FeedbackStatus, GateRoute
-from agent.domain.errors import (
-    InvalidModelResponseError,
-    ModelProviderError,
-    PublicationError,
-    SourceAccessError,
+from agent.domain.errors import AgentRunNotFoundError
+from agent.domain.failures import (
+    FailureEvent,
+    FailureHandling,
+    FailureKind,
+    FailureRecorder,
+    FailureSnapshot,
+    LocatedFailure,
+    failure_cause_from_exception,
 )
 from agent.domain.models import AgentRunRecord, FeedbackRecord, TaskArtifact
 from agent.gate import GATE_PROMPT_VERSION
@@ -33,6 +38,9 @@ from agent.repositories.base import AgentRunRepository, FeedbackRepository
 from agent.state import AgentState
 from agent.telemetry.base import NoopTelemetry, RunTrace, Telemetry
 from agent.workspace.artifacts import ArtifactStore
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -67,11 +75,13 @@ class GateController:
         reproduction: ReproductionDependencies | None = None,
         repair: RepairDependencies | None = None,
         publishing: PublishingDependencies | None = None,
+        failure_recorder: FailureRecorder | None = None,
     ) -> None:
         self._feedback_repository = feedback_repository
         self._run_repository = run_repository
         self._provider = provider
         self._telemetry = telemetry or NoopTelemetry()
+        self._failure_recorder = failure_recorder or FailureRecorder(self._telemetry)
         self._environment = environment
         self._dry_run = dry_run
         self._artifact_store = artifact_store
@@ -95,6 +105,7 @@ class GateController:
                     prompt_version=TEST_GENERATION_PROMPT_VERSION,
                 ),
                 telemetry=self._telemetry,
+                failure_recorder=self._failure_recorder,
             )
         self._reproduction_enabled = observed_reproduction is not None
         observed_repair = None
@@ -324,15 +335,10 @@ class GateController:
         with self._telemetry.start_run(trace) as observation:
             try:
                 output = await self.graph.ainvoke(state, _thread_config(run_id))
-            except (
-                ModelProviderError,
-                InvalidModelResponseError,
-                PublicationError,
-                SourceAccessError,
-            ) as exc:
-                await self._finalize_run_failure(run_id, exc)
+            except Exception as exc:
+                failed_run = await self._finalize_run_failure(run_id, exc)
                 observation.finish(route=None, status="failed")
-                raise
+                return _outcome_from_run(failed_run)
             final_state = AgentState.model_validate(output)
             outcome = _outcome_from_state(final_state)
             observation.finish(
@@ -344,18 +350,13 @@ class GateController:
     async def _finalize_run_failure(
         self,
         run_id: UUID,
-        error: (
-            ModelProviderError
-            | InvalidModelResponseError
-            | PublicationError
-            | SourceAccessError
-        ),
-    ) -> None:
+        error: Exception,
+    ) -> AgentRunRecord:
         """终结确定性或已耗尽重试的失败，避免 Scheduler 无限恢复同一节点。"""
 
         run = await self._run_repository.get(run_id)
         if run is None:
-            return
+            raise AgentRunNotFoundError(f"agent run {run_id} does not exist")
         usage = {
             "model_calls": run.model_calls,
             "tool_calls": run.tool_calls,
@@ -366,24 +367,73 @@ class GateController:
         }
         # Graph 节点可能已写入 checkpoint、但尚未走到数据库汇总节点；失败终结时
         # 取两者单调最大值，避免丢失已完成的模型、工具与 Sandbox 计量。
-        snapshot = await self.graph.aget_state(_thread_config(run_id))
-        if snapshot.values:
-            checkpoint_state = AgentState.model_validate(snapshot.values)
-            if checkpoint_state.run_id == run_id:
-                checkpoint_usage = {
-                    "model_calls": checkpoint_state.model_calls,
-                    "tool_calls": checkpoint_state.tool_calls,
-                    "input_tokens": checkpoint_state.usage.input_tokens,
-                    "output_tokens": checkpoint_state.usage.output_tokens,
-                    "total_tokens": checkpoint_state.usage.total_tokens,
-                    "estimated_cost": checkpoint_state.usage.estimated_cost,
-                }
-                usage = {
-                    key: max(usage[key], checkpoint_usage[key])
-                    for key in usage
-                }
+        checkpoint_node: str | None = None
+        try:
+            snapshot = await self.graph.aget_state(_thread_config(run_id))
+            pending_nodes = getattr(snapshot, "next", ())
+            checkpoint_node = str(pending_nodes[0]) if pending_nodes else None
+            if snapshot.values:
+                checkpoint_state = AgentState.model_validate(snapshot.values)
+                if checkpoint_state.run_id == run_id:
+                    checkpoint_usage = {
+                        "model_calls": checkpoint_state.model_calls,
+                        "tool_calls": checkpoint_state.tool_calls,
+                        "input_tokens": checkpoint_state.usage.input_tokens,
+                        "output_tokens": checkpoint_state.usage.output_tokens,
+                        "total_tokens": checkpoint_state.usage.total_tokens,
+                        "estimated_cost": checkpoint_state.usage.estimated_cost,
+                    }
+                    usage = {
+                        key: max(usage[key], checkpoint_usage[key])
+                        for key in usage
+                    }
+        except Exception as checkpoint_error:
+            # Checkpoint诊断失败不能遮蔽原始失败；只记录异常类型，继续用run摘要终结。
+            _LOGGER.warning(
+                "failure checkpoint lookup failed: %s",
+                type(checkpoint_error).__name__,
+            )
+        phase = getattr(error, "phase", None) or run.status.value
+        node = getattr(error, "node", None) or checkpoint_node or "controller_run"
+        operation = getattr(error, "operation", None) or node
+        located = LocatedFailure(
+            cause=failure_cause_from_exception(error, operation=operation),
+            phase=phase,
+            node=node,
+        )
+        attempt = min(max(1, int(getattr(error, "attempt", 1))), 3)
+        max_attempts = min(
+            max(attempt, int(getattr(error, "max_attempts", attempt))),
+            3,
+        )
+        failure = FailureSnapshot.final(
+            located,
+            attempt=attempt,
+            max_attempts=max_attempts,
+        )
+        self._failure_recorder.record(
+            FailureEvent(
+                failure=located,
+                attempt=attempt,
+                max_attempts=max_attempts,
+                handling=FailureHandling.STOP,
+            )
+        )
         feedback = await self._feedback_repository.get(run.feedback_id)
         error_message = type(error).__name__
+        if failure.kind is FailureKind.SECURITY:
+            run_status = AgentRunStatus.SECURITY_REJECTED
+            feedback_status = FeedbackStatus.SECURITY_REJECTED
+        elif failure.code == "budget_exhausted":
+            run_status = AgentRunStatus.BUDGET_EXHAUSTED
+            feedback_status = FeedbackStatus.FAILED
+        else:
+            run_status = AgentRunStatus.FAILED
+            feedback_status = (
+                FeedbackStatus.NEEDS_HUMAN
+                if failure.code in {"auth_error", "sandbox_auth_error"}
+                else FeedbackStatus.FAILED
+            )
         if (
             feedback is not None
             and feedback.claim_token == run.claim_token
@@ -401,14 +451,16 @@ class GateController:
             await self._feedback_repository.transition(
                 feedback.id,
                 claim_token=run.claim_token,
-                target=FeedbackStatus.FAILED,
-                error_code=error.error_code,
+                target=feedback_status,
+                error_code=failure.code,
                 error_message=error_message,
             )
-        await self._run_repository.fail(
+        return await self._run_repository.fail(
             run_id,
-            error_code=error.error_code,
+            error_code=failure.code,
             error_message=error_message,
+            failure=failure,
+            terminal_status=run_status,
             **usage,
         )
 

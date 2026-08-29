@@ -4,6 +4,13 @@ from decimal import Decimal
 import pytest
 
 from agent.domain.errors import InvalidModelResponseError, ModelProviderError
+from agent.domain.failures import (
+    FailureCause,
+    FailureEvent,
+    FailureHandling,
+    FailureKind,
+    LocatedFailure,
+)
 from agent.domain.gate import GateClassification
 from agent.providers.base import ModelMessage, StructuredModelResponse
 from agent.providers.fake import FakeModelProvider
@@ -197,6 +204,41 @@ def test_langfuse_records_only_summaries_usage_cost_and_route():
     assert client.observations[1].updates[0]["usage_details"]["total"] == 15
     assert client.observations[1].updates[0]["cost_details"]["total"] == 0.001
     assert client.flushed is True
+
+
+def test_langfuse_failure_event_uses_only_masked_structured_fields():
+    client = _FakeLangfuseClient()
+    telemetry = LangfuseTelemetry(
+        public_key="public",
+        secret_key="secret",
+        host="https://cloud.langfuse.com",
+        environment="development",
+        client=client,
+    )
+    telemetry.record_failure(
+        FailureEvent(
+            failure=LocatedFailure(
+                cause=FailureCause(
+                    code="timeout",
+                    kind=FailureKind.TRANSIENT,
+                    component="provider",
+                    operation="generate_test",
+                    safe_details={"detail": "MODEL_API_KEY=must-not-appear"},
+                ),
+                phase="reproducing",
+                node="generate_test_edit",
+            ),
+            attempt=1,
+            max_attempts=3,
+            handling=FailureHandling.TRANSPORT_RETRY,
+            delay_seconds=1,
+        )
+    )
+
+    rendered = repr((client.starts, client.observations[0].updates))
+    assert client.starts[0]["name"] == "failure-attempt"
+    assert "must-not-appear" not in rendered
+    assert "generate_test_edit" in rendered
 
 
 def test_observed_provider_never_sends_message_content_to_telemetry():

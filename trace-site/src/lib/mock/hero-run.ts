@@ -347,6 +347,7 @@ const run: RunPublic = {
   pr_url: "https://github.com/yyqqCoding/MDToWord/pull/1",
   issue_url: null,
   error_code: null,
+  failure: null,
   started_at: "2026-08-11T09:14:22.000Z",
   finished_at: "2026-08-11T09:20:38.000Z",
   classification: {

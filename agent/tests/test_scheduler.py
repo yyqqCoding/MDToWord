@@ -152,3 +152,30 @@ def test_scheduler_resumes_publication_before_claiming_new_feedback():
     run_id, result = asyncio.run(scenario())
 
     assert result == run_id
+
+
+def test_scheduler_forever_contains_single_run_failure():
+    async def scenario():
+        now = datetime.now(UTC)
+        scheduler = FeedbackScheduler(
+            feedback_repository=FakeFeedbackRepository([make_feedback(now)]),
+            run_repository=FakeAgentRunRepository(),
+            controller=object(),
+            lease_seconds=60,
+            max_attempts=3,
+            poll_interval_seconds=0.001,
+        )
+        stop_event = asyncio.Event()
+        calls = 0
+
+        async def failing_once():
+            nonlocal calls
+            calls += 1
+            stop_event.set()
+            raise RuntimeError("secret response body")
+
+        scheduler.run_once = failing_once
+        await scheduler.run_forever(stop_event)
+        return calls
+
+    assert asyncio.run(scenario()) == 1

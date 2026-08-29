@@ -3,8 +3,15 @@ from decimal import Decimal
 from typing import Protocol
 from uuid import UUID
 
-from agent.domain.enums import FeedbackStatus, GateArea, GateCategory, RiskLevel
+from agent.domain.enums import (
+    AgentRunStatus,
+    FeedbackStatus,
+    GateArea,
+    GateCategory,
+    RiskLevel,
+)
 from agent.domain.gate import GateResult
+from agent.domain.failures import FailureSnapshot
 from agent.domain.models import AgentRunRecord, FeedbackRecord
 from agent.domain.reproduction import ReproductionReport
 from agent.domain.repair import RepairReport, ValidationResult
@@ -217,4 +224,6 @@ class AgentRunRepository(Protocol):
         output_tokens: int,
         total_tokens: int,
         estimated_cost: Decimal,
+        failure: FailureSnapshot | None = None,
+        terminal_status: AgentRunStatus = AgentRunStatus.FAILED,
     ) -> AgentRunRecord: ...

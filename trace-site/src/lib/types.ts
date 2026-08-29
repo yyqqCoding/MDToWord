@@ -142,6 +142,23 @@ export interface ValidationPublic {
   failure_code: string | null;
 }
 
+export interface FailurePublic {
+  code: string;
+  kind: "transient" | "invalid" | "business" | "security" | "permanent";
+  component: string;
+  phase: string;
+  node: string;
+  attempt: number;
+  max_attempts: number;
+  handling:
+    | "transport_retry"
+    | "format_revise"
+    | "graph_revise"
+    | "trusted_fallback"
+    | "stale_requeue"
+    | "stop";
+}
+
 export interface RunPublic {
   id: string;
   /** left(md5(feedback_id), 12)，不可逆，仅供展示与检索。 */
@@ -172,6 +189,8 @@ export interface RunPublic {
   pr_url: string | null;
   issue_url: string | null;
   error_code: string | null;
+  /** 公开投影不包含 operation 或 safe_details。 */
+  failure: FailurePublic | null;
   started_at: string;
   finished_at: string | null;
   classification: GateResultPublic | null;

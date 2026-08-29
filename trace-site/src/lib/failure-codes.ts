@@ -35,7 +35,15 @@ const FAILURE_TEXT: Record<string, string> = {
   // ---- 修复与验证阶段 ----
   claim_attempts_exhausted: "领取重试次数耗尽，转人工处理。",
   provider_unavailable: "模型服务在有限重试后仍不可用（传输或上游故障）。",
+  timeout: "模型请求在三次有界尝试后仍然超时。",
+  rate_limit: "模型服务持续限流，已停止本次自动处理。",
+  auth_error: "模型凭据不可用，反馈已转入人工处理队列。",
   invalid_response: "已收到模型响应，但未通过严格 Schema 或本地策略校验。",
+  sandbox_unavailable: "沙箱服务在有界重试和总时限内仍不可用。",
+  sandbox_invalid_response: "沙箱返回了无法通过严格契约校验的响应。",
+  sandbox_auth_error: "沙箱凭据不可用，反馈已转入人工处理队列。",
+  sandbox_job_conflict: "沙箱任务标识与既有请求冲突，已停止执行。",
+  unexpected_error: "运行遇到未登记异常，已安全终结并保留失败位置。",
 };
 
 export function describeFailure(code: string | null | undefined): string | null {

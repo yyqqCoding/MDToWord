@@ -357,6 +357,31 @@ export function RunDetail({ data }: { data: RunDetailData }) {
               )}
             </div>
           )}
+          {run.failure && (
+            <div className="border-t border-line/70 px-5 py-5">
+              <p className="text-sm leading-relaxed text-ink-muted">
+                {describeFailure(run.failure.code)}
+              </p>
+              <dl className="mt-4 grid grid-cols-2 gap-x-5 gap-y-2 rounded-xl border border-line/70 bg-raised/40 p-4 text-left text-xs">
+                <dt className="text-ink-faint">失败码</dt>
+                <dd className="font-mono text-ink-muted">{run.failure.code}</dd>
+                <dt className="text-ink-faint">阶段 / 节点</dt>
+                <dd className="font-mono text-ink-muted">
+                  {run.failure.phase} / {run.failure.node}
+                </dd>
+                <dt className="text-ink-faint">组件 / 类别</dt>
+                <dd className="font-mono text-ink-muted">
+                  {run.failure.component} / {run.failure.kind}
+                </dd>
+                <dt className="text-ink-faint">尝试次数</dt>
+                <dd className="font-mono text-ink-muted">
+                  {run.failure.attempt} / {run.failure.max_attempts}
+                </dd>
+                <dt className="text-ink-faint">最终处理</dt>
+                <dd className="font-mono text-ink-muted">{run.failure.handling}</dd>
+              </dl>
+            </div>
+          )}
         </Card>
 
         <Card delay={260}>

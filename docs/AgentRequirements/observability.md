@@ -65,7 +65,7 @@ Telemetry适配器对领域层只暴露：
 
 ```text
 start_run / start_span / start_generation / start_tool
-record_usage / record_score / end_observation / flush
+record_failure / record_usage / record_score / end_observation / flush
 ```
 
 具体Langfuse SDK类型不进入Graph State和领域Schema。
@@ -126,7 +126,13 @@ schema_errors: "字段路径:Pydantic规则名" 逗号分隔，最多8项，每�
 
 之所以必须在Provider层留痕：该异常用 `from None` 切断链路，Controller 只持久化异常
 类名，CLI 只输出 `error_code`，没有这一项就无法判断 `invalid_response` 卡在哪个字段。
-回传给模型的修正提示是另一份更宽的摘要（含校验器文案），不进日志与Trace。
+回传给模型的修正提示是另一份更宽的摘要（含校验器文案），只进入受限本机日志，不进入
+Langfuse、数据库或公开Trace。
+
+阶段 J 的当前契约由
+[failure-handling-and-retries.md](failure-handling-and-retries.md) 负责：`schema_errors` 可进入
+Langfuse 与私有最终 `safe_details`，但公开 Trace Site 不投影 `safe_details`。本地实现与
+自动测试已经完成；migration 和生产部署状态以实施计划为准。
 
 ## 6. Tool字段
 

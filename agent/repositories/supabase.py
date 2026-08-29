@@ -18,8 +18,10 @@ from agent.domain.errors import (
     ConcurrentFeedbackUpdateError,
     FeedbackNotFoundError,
     RepositoryError,
+    RepositoryUnavailableError,
 )
 from agent.domain.gate import GateResult
+from agent.domain.failures import FailureSnapshot
 from agent.domain.models import AgentRunRecord, FeedbackRecord
 from agent.domain.reproduction import ReproductionReport
 from agent.domain.repair import RepairDisposition, RepairReport, ValidationResult
@@ -786,6 +788,7 @@ class SupabaseAgentRunRepository:
                 ),
                 "error_code": None,
                 "error_message": None,
+                "failure": None,
                 "finished_at": None,
             },
         )
@@ -837,19 +840,25 @@ class SupabaseAgentRunRepository:
         output_tokens: int,
         total_tokens: int,
         estimated_cost: Decimal,
+        failure: FailureSnapshot | None = None,
+        terminal_status: AgentRunStatus = AgentRunStatus.FAILED,
     ) -> AgentRunRecord:
+        _ensure_failure_terminal(terminal_status)
         existing = await self.get(run_id)
         if existing is None:
             raise AgentRunNotFoundError(f"agent run {run_id} does not exist")
-        if existing.status is AgentRunStatus.FAILED:
+        if existing.status is terminal_status:
             return existing
         return await self._patch(
             run_id,
             current=existing.status,
             payload={
-                "status": AgentRunStatus.FAILED.value,
+                "status": terminal_status.value,
                 "error_code": error_code,
                 "error_message": error_message,
+                "failure": (
+                    failure.model_dump(mode="json") if failure is not None else None
+                ),
                 "finished_at": datetime.now(UTC).isoformat(),
                 **_usage_payload(
                     model_calls=model_calls,
@@ -901,14 +910,30 @@ class SupabaseAgentRunRepository:
                 **kwargs,
             )
         except httpx.HTTPError as exc:
-            raise RepositoryError(
-                f"Supabase request failed: {type(exc).__name__}"
+            raise RepositoryUnavailableError(
+                f"Supabase request failed: {type(exc).__name__}",
+                safe_details={"error_type": type(exc).__name__[:120]},
             ) from exc
         if response.status_code >= 400:
-            raise RepositoryError(
-                f"Supabase request failed with status {response.status_code}"
+            error_type = (
+                RepositoryUnavailableError
+                if response.status_code in {408, 429, 500, 502, 503, 504}
+                else RepositoryError
+            )
+            raise error_type(
+                f"Supabase request failed with status {response.status_code}",
+                safe_details={"http_status": response.status_code},
             )
         return response
+
+
+def _ensure_failure_terminal(status: AgentRunStatus) -> None:
+    if status not in {
+        AgentRunStatus.FAILED,
+        AgentRunStatus.SECURITY_REJECTED,
+        AgentRunStatus.BUDGET_EXHAUSTED,
+    }:
+        raise ValueError("invalid failure terminal status")
 
 
 def _usage_payload(

@@ -17,6 +17,7 @@ from agent.domain.enums import (
 )
 from agent.domain.content import contains_mermaid_diagram
 from agent.domain.errors import (
+    AgentError,
     ClaimTokenMismatchError,
     ExternalDependencyError,
     FeedbackNotFoundError,
@@ -26,6 +27,14 @@ from agent.domain.errors import (
     PatchPolicyError,
     PublicationError,
     SourceAccessError,
+)
+from agent.domain.failures import (
+    FailureEvent,
+    FailureHandling,
+    FailureRecorder,
+    LocatedFailure,
+    failure_cause_from_code,
+    failure_cause_from_exception,
 )
 from agent.domain.repair import (
     RepairAttemptArtifact,
@@ -86,7 +95,7 @@ from agent.domain.reproduction import (
 
 
 GRAPH_VERSION = "agent-graph-v9"
-POLICY_VERSION = "publication-policy-v7"
+POLICY_VERSION = "publication-policy-v8"
 
 _ROUTE_TO_FEEDBACK_STATUS = {
     GateRoute.ACCEPTED_BACKEND_BUG: FeedbackStatus.REPRODUCING,
@@ -107,6 +116,7 @@ class ReproductionDependencies:
     edit_tools: StructuredEditTools
     sandbox_client: SandboxClient
     telemetry: Telemetry = field(default_factory=NoopTelemetry)
+    failure_recorder: FailureRecorder = field(default_factory=FailureRecorder)
     # 长源码上下文比 Gate 请求耗时更高，但仍由配置限制在有界范围内。
     model_timeout_seconds: float = 180.0
 
@@ -295,11 +305,21 @@ def build_gate_graph(
             or classification.issue_title is None
             or classification.issue_summary is None
         ):
-            raise IssuePublicationError("issue publication requires a safe draft")
+            raise IssuePublicationError(
+                "issue publication requires a safe draft",
+                operation="publish_issue",
+                phase="publishing_issue",
+                node="publish_issue",
+            )
         task = artifact_store.read_task(state.task_artifact_ref)
         run = await run_repository.get(state.run_id)
         if run is None:
-            raise IssuePublicationError("issue publication run summary is missing")
+            raise IssuePublicationError(
+                "issue publication run summary is missing",
+                operation="publish_issue",
+                phase="publishing_issue",
+                node="publish_issue",
+            )
         run_ref = md5(
             str(state.feedback_id).encode("utf-8"),
             usedforsecurity=False,
@@ -354,7 +374,12 @@ def build_gate_graph(
                     error_code="issue_publication_failed",
                     error_type=type(exc).__name__,
                 )
-                raise IssuePublicationError("issue publication failed") from exc
+                raise IssuePublicationError(
+                    "issue publication failed",
+                    operation="publish_issue",
+                    phase="publishing_issue",
+                    node="publish_issue",
+                ) from exc
             observation.succeed(
                 {
                     "issue_number": publication.issue_number,
@@ -438,6 +463,12 @@ def build_gate_graph(
                         state.run_id
                     )
                 except Exception as exc:
+                    if isinstance(exc, AgentError):
+                        exc.locate(
+                            operation="prepare_source_snapshot",
+                            phase="reproducing",
+                            node="prepare_source",
+                        )
                     observation.fail(
                         error_code=getattr(exc, "error_code", "source_prepare_failed"),
                         error_type=type(exc).__name__,
@@ -550,6 +581,12 @@ def build_gate_graph(
                                 end_line=request.end_line,
                             )
                         except Exception as exc:
+                            if isinstance(exc, AgentError):
+                                exc.locate(
+                                    operation="read_source_file",
+                                    phase="reproducing",
+                                    node="generate_test_edit",
+                                )
                             observation.fail(
                                 error_code=getattr(
                                     exc,
@@ -581,7 +618,7 @@ def build_gate_graph(
                         provider=reproduction.test_provider,
                         timeout_seconds=reproduction.model_timeout_seconds,
                     )
-                except InvalidModelResponseError:
+                except InvalidModelResponseError as exc:
                     fallback = build_conversion_error_test_fallback(
                         task,
                         plan=plan,
@@ -597,6 +634,18 @@ def build_gate_graph(
                     )
                     if fallback is None:
                         raise
+                    reproduction.failure_recorder.record(
+                        FailureEvent(
+                            failure=LocatedFailure(
+                                cause=failure_cause_from_exception(exc),
+                                phase="reproducing",
+                                node="generate_test_edit",
+                            ),
+                            attempt=exc.attempt,
+                            max_attempts=exc.max_attempts,
+                            handling=FailureHandling.TRUSTED_FALLBACK,
+                        )
+                    )
                     # Mermaid 图形与转换崩溃模板只调用已登记 Oracle，可在模型格式重试
                     # 耗尽后确定性接管；其他反馈仍保留严格 Schema 失败边界。
                     execution = ReproductionModelExecution(
@@ -621,6 +670,12 @@ def build_gate_graph(
                         target_test_selector=generated.target_test_selector,
                     )
                 except Exception as exc:
+                    if isinstance(exc, AgentError):
+                        exc.locate(
+                            operation="submit_test_edits",
+                            phase="reproducing",
+                            node="generate_test_edit",
+                        )
                     observation.fail(
                         error_code=getattr(exc, "error_code", "test_edit_rejected"),
                         error_type=type(exc).__name__,
@@ -685,9 +740,36 @@ def build_gate_graph(
 
         def route_after_test_edit(state: AgentState) -> str:
             if state.last_error_code == "test_edit_security_rejected":
+                _record_graph_handling(
+                    reproduction.failure_recorder,
+                    code=state.last_error_code,
+                    component="policy",
+                    operation="submit_test_edits",
+                    phase="reproducing",
+                    node="generate_test_edit",
+                    handling=FailureHandling.STOP,
+                    attempt=state.reproduction_round,
+                    max_attempts=2,
+                )
                 return "finish"
             if state.last_error_code == "invalid_test_edit":
-                return "revise" if state.reproduction_round < 2 else "finish"
+                revise = state.reproduction_round < 2
+                _record_graph_handling(
+                    reproduction.failure_recorder,
+                    code=state.last_error_code,
+                    component="policy",
+                    operation="submit_test_edits",
+                    phase="reproducing",
+                    node="generate_test_edit",
+                    handling=(
+                        FailureHandling.GRAPH_REVISE
+                        if revise
+                        else FailureHandling.STOP
+                    ),
+                    attempt=state.reproduction_round,
+                    max_attempts=2,
+                )
+                return "revise" if revise else "finish"
             return "sandbox"
 
         async def run_reproduction_in_sandbox(state: AgentState) -> dict[str, object]:
@@ -734,6 +816,12 @@ def build_gate_graph(
                         )
                     )
                 except Exception as exc:
+                    if isinstance(exc, AgentError):
+                        exc.locate(
+                            operation="run_reproduction",
+                            phase="reproducing",
+                            node="run_reproduction_in_sandbox",
+                        )
                     observation.fail(
                         error_code=getattr(exc, "error_code", "sandbox_failed"),
                         error_type=type(exc).__name__,
@@ -807,10 +895,28 @@ def build_gate_graph(
                 raise ValueError("reproduction result is not classified")
             if report.disposition in {
                 ReproductionDisposition.REPRODUCED,
-                ReproductionDisposition.SECURITY_REJECTED,
             }:
                 return "finish"
-            return "revise" if state.reproduction_round < 2 else "finish"
+            revise = (
+                report.disposition is not ReproductionDisposition.SECURITY_REJECTED
+                and state.reproduction_round < 2
+            )
+            _record_graph_handling(
+                reproduction.failure_recorder,
+                code=report.failure_code,
+                component="sandbox",
+                operation="classify_reproduction",
+                phase="reproducing",
+                node="classify_reproduction",
+                handling=(
+                    FailureHandling.GRAPH_REVISE
+                    if revise
+                    else FailureHandling.STOP
+                ),
+                attempt=state.reproduction_round,
+                max_attempts=2,
+            )
+            return "revise" if revise else "finish"
 
         async def finish_reproduction(state: AgentState) -> dict[str, object]:
             if state.reproduction_result_ref is None:
@@ -942,6 +1048,12 @@ def build_gate_graph(
                             end_line=end_line,
                         )
                     except Exception as exc:
+                        if isinstance(exc, AgentError):
+                            exc.locate(
+                                operation="read_fix_source_file",
+                                phase="repairing",
+                                node="generate_fix_edit",
+                            )
                         observation.fail(
                             error_code=getattr(exc, "error_code", "source_read_failed"),
                             error_type=type(exc).__name__,
@@ -1016,6 +1128,12 @@ def build_gate_graph(
                         artifact_store.read_patch(submitted.artifact_ref),
                     )
                 except Exception as exc:
+                    if isinstance(exc, AgentError):
+                        exc.locate(
+                            operation="submit_fix_edits",
+                            phase="repairing",
+                            node="generate_fix_edit",
+                        )
                     observation.fail(
                         error_code=getattr(exc, "error_code", "fix_edit_rejected"),
                         error_type=type(exc).__name__,
@@ -1092,13 +1210,60 @@ def build_gate_graph(
 
         def route_after_fix_edit(state: AgentState) -> str:
             if state.last_error_code == "budget_exhausted":
+                _record_graph_handling(
+                    reproduction.failure_recorder,
+                    code=state.last_error_code,
+                    component="runtime",
+                    operation="generate_fix",
+                    phase="repairing",
+                    node="generate_fix_edit",
+                    handling=FailureHandling.STOP,
+                )
                 return "budget"
             if state.last_error_code == "external_dependency_required":
+                _record_graph_handling(
+                    reproduction.failure_recorder,
+                    code=state.last_error_code,
+                    component="policy",
+                    operation="submit_fix_edits",
+                    phase="repairing",
+                    node="generate_fix_edit",
+                    handling=FailureHandling.STOP,
+                    attempt=state.repair_round,
+                    max_attempts=2,
+                )
                 return "finish"
             if state.last_error_code == "fix_edit_security_rejected":
+                _record_graph_handling(
+                    reproduction.failure_recorder,
+                    code=state.last_error_code,
+                    component="policy",
+                    operation="submit_fix_edits",
+                    phase="repairing",
+                    node="generate_fix_edit",
+                    handling=FailureHandling.STOP,
+                    attempt=state.repair_round,
+                    max_attempts=2,
+                )
                 return "finish"
             if state.last_error_code == "invalid_fix_edit":
-                return "revise" if state.repair_round < 2 else "finish"
+                revise = state.repair_round < 2
+                _record_graph_handling(
+                    reproduction.failure_recorder,
+                    code=state.last_error_code,
+                    component="policy",
+                    operation="submit_fix_edits",
+                    phase="repairing",
+                    node="generate_fix_edit",
+                    handling=(
+                        FailureHandling.GRAPH_REVISE
+                        if revise
+                        else FailureHandling.STOP
+                    ),
+                    attempt=state.repair_round,
+                    max_attempts=2,
+                )
+                return "revise" if revise else "finish"
             return "sandbox"
 
         async def run_target_validation(state: AgentState) -> dict[str, object]:
@@ -1151,6 +1316,12 @@ def build_gate_graph(
                         )
                     )
                 except Exception as exc:
+                    if isinstance(exc, AgentError):
+                        exc.locate(
+                            operation="run_target_validation",
+                            phase="repairing",
+                            node="run_target_validation",
+                        )
                     observation.fail(
                         error_code=getattr(exc, "error_code", "sandbox_failed"),
                         error_type=type(exc).__name__,
@@ -1203,6 +1374,15 @@ def build_gate_graph(
 
         def route_after_target(state: AgentState) -> str:
             if state.last_error_code == "budget_exhausted":
+                _record_graph_handling(
+                    reproduction.failure_recorder,
+                    code=state.last_error_code,
+                    component="runtime",
+                    operation="run_target_validation",
+                    phase="repairing",
+                    node="run_target_validation",
+                    handling=FailureHandling.STOP,
+                )
                 return "budget"
             if state.repair_result_ref is None:
                 raise ValueError("repair state is missing classified target result")
@@ -1211,9 +1391,26 @@ def build_gate_graph(
                 raise ValueError("repair target result is not classified")
             if report.disposition is RepairDisposition.TARGET_PASSED:
                 return "validate"
-            if report.disposition is RepairDisposition.SECURITY_REJECTED:
-                return "finish"
-            return "revise" if state.repair_round < 2 else "finish"
+            revise = (
+                report.disposition is not RepairDisposition.SECURITY_REJECTED
+                and state.repair_round < 2
+            )
+            _record_graph_handling(
+                reproduction.failure_recorder,
+                code=report.failure_code,
+                component="sandbox",
+                operation="classify_target_validation",
+                phase="repairing",
+                node="classify_target_validation",
+                handling=(
+                    FailureHandling.GRAPH_REVISE
+                    if revise
+                    else FailureHandling.STOP
+                ),
+                attempt=state.repair_round,
+                max_attempts=2,
+            )
+            return "revise" if revise else "finish"
 
         async def finish_repair_success(state: AgentState) -> dict[str, object]:
             if state.repair_result_ref is None:
@@ -1367,6 +1564,12 @@ def build_gate_graph(
                             )
                         )
                     except Exception as exc:
+                        if isinstance(exc, AgentError):
+                            exc.locate(
+                                operation=operation.replace("-", "_"),
+                                phase="validating",
+                                node="validate_final",
+                            )
                         observation.fail(
                             error_code=getattr(exc, "error_code", "sandbox_failed"),
                             error_type=type(exc).__name__,
@@ -1430,7 +1633,26 @@ def build_gate_graph(
 
         def route_after_final_validation(state: AgentState) -> str:
             if state.last_error_code == "budget_exhausted":
+                _record_graph_handling(
+                    reproduction.failure_recorder,
+                    code=state.last_error_code,
+                    component="runtime",
+                    operation="validate_final",
+                    phase="validating",
+                    node="validate_final",
+                    handling=FailureHandling.STOP,
+                )
                 return "budget"
+            if state.last_error_code is not None:
+                _record_graph_handling(
+                    reproduction.failure_recorder,
+                    code=state.last_error_code,
+                    component="sandbox",
+                    operation="validate_final",
+                    phase="validating",
+                    node="validate_final",
+                    handling=FailureHandling.STOP,
+                )
             return "finish"
 
         async def finish_validation(state: AgentState) -> dict[str, object]:
@@ -1566,6 +1788,12 @@ def build_gate_graph(
                 try:
                     result = await publishing.publisher.publish(request)
                 except Exception as exc:
+                    if isinstance(exc, AgentError):
+                        exc.locate(
+                            operation="publish_pull_request",
+                            phase="publishing",
+                            node="publish_pull_request",
+                        )
                     observation.fail(
                         error_code=getattr(exc, "error_code", "publication_failed"),
                         error_type=type(exc).__name__,
@@ -1639,6 +1867,21 @@ def build_gate_graph(
                             if requeue_target is FeedbackStatus.PENDING
                             else "repository main changed twice before publication"
                         ),
+                    )
+                    _record_graph_handling(
+                        reproduction.failure_recorder,
+                        code="stale_base",
+                        component="publisher",
+                        operation="finish_publication",
+                        phase="publishing",
+                        node="finish_publication",
+                        handling=(
+                            FailureHandling.STALE_REQUEUE
+                            if requeue_target is FeedbackStatus.PENDING
+                            else FailureHandling.STOP
+                        ),
+                        attempt=feedback.stale_requeue_count,
+                        max_attempts=2,
                     )
                 elif feedback.status not in {
                     FeedbackStatus.PENDING,
@@ -1820,6 +2063,40 @@ def build_gate_graph(
         checkpointer=checkpointer,
         interrupt_after=list(interrupt_after) if interrupt_after else None,
         name="feedback-agent" if reproduction is not None else "feedback-gate",
+    )
+
+
+def _record_graph_handling(
+    recorder: FailureRecorder,
+    *,
+    code: str | None,
+    component: str,
+    operation: str,
+    phase: str,
+    node: str,
+    handling: FailureHandling,
+    attempt: int = 1,
+    max_attempts: int = 1,
+) -> None:
+    """记录Graph已决定的处理结果，不反向参与路由。"""
+
+    bounded_attempt = min(max(1, attempt), 3)
+    bounded_max_attempts = min(max(bounded_attempt, max_attempts), 3)
+    recorder.record(
+        FailureEvent(
+            failure=LocatedFailure(
+                cause=failure_cause_from_code(
+                    code or "unexpected_error",
+                    component=component,
+                    operation=operation,
+                ),
+                phase=phase,
+                node=node,
+            ),
+            attempt=bounded_attempt,
+            max_attempts=bounded_max_attempts,
+            handling=handling,
+        )
     )
 
 

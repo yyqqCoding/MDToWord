@@ -7,6 +7,7 @@ from uuid import uuid4
 import httpx
 
 from agent.domain.enums import AgentRunStatus, GateCategory, GateRoute
+from agent.domain.failures import FailureHandling, FailureKind, FailureSnapshot
 from agent.domain.gate import GateResult
 from agent.domain.models import AgentRunRecord
 from agent.domain.repair import RepairDisposition, RepairReport
@@ -177,6 +178,18 @@ def test_supabase_repair_dependency_result_persists_needs_human_route():
 
 def test_supabase_failure_persists_latest_usage_totals():
     run = make_run(status=AgentRunStatus.REPAIRING)
+    failure_snapshot = FailureSnapshot(
+        code="timeout",
+        kind=FailureKind.TRANSIENT,
+        component="provider",
+        operation="generate_test",
+        phase="reproducing",
+        node="generate_test_edit",
+        handling=FailureHandling.STOP,
+        attempt=3,
+        max_attempts=3,
+        safe_details={"timeout_type": "read"},
+    )
 
     async def handler(request: httpx.Request) -> httpx.Response:
         if request.method == "GET":
@@ -189,6 +202,8 @@ def test_supabase_failure_persists_latest_usage_totals():
         assert payload["output_tokens"] == 30
         assert payload["total_tokens"] == 150
         assert payload["estimated_cost"] == "0.012"
+        assert payload["failure"]["node"] == "generate_test_edit"
+        assert payload["failure"]["safe_details"] == {"timeout_type": "read"}
         failed = run.model_copy(
             update={
                 "status": AgentRunStatus.FAILED,
@@ -198,6 +213,7 @@ def test_supabase_failure_persists_latest_usage_totals():
                 "output_tokens": 30,
                 "total_tokens": 150,
                 "estimated_cost": Decimal("0.012"),
+                "failure": failure_snapshot,
                 "finished_at": datetime.now(UTC),
             }
         )
@@ -220,12 +236,14 @@ def test_supabase_failure_persists_latest_usage_totals():
                 output_tokens=30,
                 total_tokens=150,
                 estimated_cost=Decimal("0.012"),
+                failure=failure_snapshot,
             )
 
     failed = asyncio.run(scenario())
 
     assert failed.status is AgentRunStatus.FAILED
     assert failed.total_tokens == 150
+    assert failed.failure == failure_snapshot
 
 
 def test_supabase_finds_publishing_run_as_resumable():
@@ -269,6 +287,7 @@ def test_supabase_retries_only_validated_publication_failure():
             "status": "publishing",
             "error_code": None,
             "error_message": None,
+            "failure": None,
             "finished_at": None,
         }
         publishing = failed.model_copy(

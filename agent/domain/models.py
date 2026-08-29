@@ -14,6 +14,7 @@ from agent.domain.enums import (
     RiskLevel,
 )
 from agent.domain.fingerprints import feedback_fingerprint
+from agent.domain.failures import FailureSnapshot
 from agent.domain.gate import GateResult
 
 
@@ -135,6 +136,7 @@ class AgentRunRecord(BaseModel):
     issue_url: str | None = None
     error_code: str | None = None
     error_message: str | None = None
+    failure: FailureSnapshot | None = None
     started_at: datetime = Field(default_factory=utc_now)
     finished_at: datetime | None = None
 

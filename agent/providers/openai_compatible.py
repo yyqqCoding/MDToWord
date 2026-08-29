@@ -1,7 +1,6 @@
 import asyncio
 import json
 import logging
-import math
 from collections.abc import Awaitable, Callable
 from copy import deepcopy
 from decimal import Decimal
@@ -18,6 +17,17 @@ from agent.domain.errors import (
     ModelRateLimitError,
     ModelSafetyRefusalError,
     ModelTimeoutError,
+)
+from agent.domain.failures import (
+    FailureEvent,
+    FailureHandling,
+    FailureRecorder,
+    LocatedFailure,
+    RetryContext,
+    RetryDecision,
+    RetryPolicy,
+    failure_cause_from_exception,
+    retry_delay,
 )
 from agent.providers.base import (
     ModelMessage,
@@ -48,13 +58,15 @@ class OpenAICompatibleProvider:
         input_cost_per_million: Decimal = Decimal("0"),
         output_cost_per_million: Decimal = Decimal("0"),
         sleep: _Sleep = asyncio.sleep,
+        retry_policy: RetryPolicy | None = None,
+        failure_recorder: FailureRecorder | None = None,
     ) -> None:
         if not api_key.strip() or not model.strip() or not base_url.strip():
             raise ValueError("api_key, model and base_url are required")
         if max_format_retries not in {0, 1}:
             raise ValueError("max_format_retries must be 0 or 1")
-        if max_transport_retries < 0:
-            raise ValueError("max_transport_retries must be non-negative")
+        if max_transport_retries not in {0, 1, 2}:
+            raise ValueError("max_transport_retries must be between 0 and 2")
         self._api_key = api_key
         self.model = model
         self._endpoint = f"{base_url.rstrip('/')}/chat/completions"
@@ -65,6 +77,8 @@ class OpenAICompatibleProvider:
         self._input_cost_per_million = input_cost_per_million
         self._output_cost_per_million = output_cost_per_million
         self._sleep = sleep
+        self._retry_policy = retry_policy or RetryPolicy()
+        self._failure_recorder = failure_recorder or FailureRecorder()
 
     async def aclose(self) -> None:
         if self._owns_client:
@@ -114,6 +128,13 @@ class OpenAICompatibleProvider:
                 output = response_schema.model_validate_json(payload["content"])
             except (ValidationError, ValueError, TypeError) as exc:
                 schema_errors = _schema_error_paths(exc)
+                format_error = InvalidModelResponseError(
+                    "model returned invalid structured output",
+                    schema_errors=schema_errors,
+                    attempt=format_attempt + 1,
+                    max_attempts=self._max_format_retries + 1,
+                    operation="structured_output_validation",
+                )
                 # 这是不合规字段唯一的留痕点：下面用 from None 切断异常链，
                 # controller 只持久化异常类名，cli 只打印 error_code。
                 # 两次尝试都记，便于判断修正提示是否起了作用。
@@ -126,10 +147,15 @@ class OpenAICompatibleProvider:
                     _validation_error_hint(exc),
                 )
                 if format_attempt >= self._max_format_retries:
-                    raise InvalidModelResponseError(
-                        "model returned invalid structured output",
-                        schema_errors=schema_errors,
-                    ) from None
+                    self._record_failure(
+                        format_error,
+                        handling=FailureHandling.STOP,
+                    )
+                    raise format_error from None
+                self._record_failure(
+                    format_error,
+                    handling=FailureHandling.FORMAT_REVISE,
+                )
                 # 不回传无效原文，避免把潜在敏感内容扩大到下一轮上下文。
                 request_messages.append(
                     {
@@ -194,30 +220,69 @@ class OpenAICompatibleProvider:
                 )
             except httpx.TimeoutException as exc:
                 error: ModelProviderError = ModelTimeoutError(
-                    "model request timed out"
+                    "model request timed out",
+                    safe_details={"error_type": type(exc).__name__[:120]},
                 )
             except httpx.HTTPError as exc:
                 error = ModelProviderError(
-                    f"model transport failed: {type(exc).__name__}"
+                    f"model transport failed: {type(exc).__name__}",
+                    safe_details={"error_type": type(exc).__name__[:120]},
                 )
             else:
                 if response.status_code < 400:
                     return _parse_response(response, self)
                 error = _http_error(response)
 
-            if not isinstance(error, (ModelRateLimitError, ModelProviderError)):
+            attempt_number = attempt + 1
+            max_attempts = self._max_transport_retries + 1
+            error.attempt = attempt_number
+            error.max_attempts = max_attempts
+            error.operation = "chat_completions"
+            delay = _transport_retry_delay(attempt_number, response)
+            cause = failure_cause_from_exception(error)
+            decision = self._retry_policy.decide(
+                cause,
+                RetryContext(
+                    attempt=attempt_number,
+                    max_attempts=max_attempts,
+                    operation_id=_schema_name(response_schema),
+                    idempotent=True,
+                ),
+                delay_seconds=delay,
+            )
+            if decision is RetryDecision.STOP:
+                self._record_failure(error, handling=FailureHandling.STOP)
                 raise error
-            retryable = type(error) in {
-                ModelRateLimitError,
-                ModelProviderError,
-                ModelTimeoutError,
-            }
-            if not retryable or attempt >= self._max_transport_retries:
-                raise error
-            # 本地兼容网关的上游 5xx 往往持续数秒；短于 1 秒的重试只会重复击中故障窗。
-            await self._sleep(_transport_retry_delay(attempt, response))
+            self._record_failure(
+                error,
+                handling=FailureHandling.TRANSPORT_RETRY,
+                delay_seconds=delay,
+            )
+            await self._sleep(delay)
 
         raise AssertionError("transport retry loop must return or raise")
+
+    def _record_failure(
+        self,
+        error: Exception,
+        *,
+        handling: FailureHandling,
+        delay_seconds: float | None = None,
+    ) -> None:
+        cause = failure_cause_from_exception(error)
+        self._failure_recorder.record(
+            FailureEvent(
+                failure=LocatedFailure(
+                    cause=cause,
+                    phase="provider",
+                    node=cause.operation,
+                ),
+                attempt=getattr(error, "attempt", 1),
+                max_attempts=getattr(error, "max_attempts", 1),
+                handling=handling,
+                delay_seconds=delay_seconds,
+            )
+        )
 
 
 def _parse_response(
@@ -296,6 +361,7 @@ def _normalized_usage(
 
 def _http_error(response: httpx.Response) -> ModelProviderError:
     status = response.status_code
+    details = {"http_status": status}
     code = ""
     try:
         body = response.json()
@@ -304,19 +370,35 @@ def _http_error(response: httpx.Response) -> ModelProviderError:
     except ValueError:
         pass
     if status in {401, 403}:
-        return ModelAuthError(f"model request rejected with status {status}")
+        return ModelAuthError(
+            f"model request rejected with status {status}",
+            safe_details=details,
+        )
     if status == 429:
-        return ModelRateLimitError("model request was rate limited")
+        return ModelRateLimitError(
+            "model request was rate limited",
+            safe_details=details,
+        )
     if status == 408:
-        return ModelTimeoutError("model request timed out")
+        return ModelTimeoutError("model request timed out", safe_details=details)
     if status == 413 or code in {"context_length_exceeded", "context_too_large"}:
-        return ModelContextTooLargeError("model context is too large")
+        return ModelContextTooLargeError(
+            "model context is too large",
+            safe_details=details,
+        )
     if code in {"content_filter", "safety_refusal"}:
-        return ModelSafetyRefusalError("model request was refused for safety")
+        return ModelSafetyRefusalError(
+            "model request was refused for safety",
+            safe_details=details,
+        )
     if status >= 500:
-        return ModelProviderError(f"model service failed with status {status}")
+        return ModelProviderError(
+            f"model service failed with status {status}",
+            safe_details=details,
+        )
     return InvalidModelResponseError(
-        f"model request was rejected with status {status}"
+        f"model request was rejected with status {status}",
+        safe_details=details,
     )
 
 
@@ -326,19 +408,17 @@ def _transport_retry_delay(
 ) -> float:
     """使用有界退避；429若给出秒数形式 Retry-After，则尊重更长等待。"""
 
-    delay = min(1.0 * (4**attempt), 10.0)
+    requested: float | None = None
     if response is None or response.status_code != 429:
-        return delay
+        return retry_delay(attempt)
     raw = response.headers.get("Retry-After")
     if raw is None:
-        return delay
+        return retry_delay(attempt)
     try:
         requested = float(raw)
     except ValueError:
-        return delay
-    if not math.isfinite(requested) or requested < 0:
-        return delay
-    return min(max(delay, requested), 10.0)
+        requested = None
+    return retry_delay(attempt, requested)
 
 
 def _detail_tokens(usage: dict[str, object], group: str, name: str) -> int:
