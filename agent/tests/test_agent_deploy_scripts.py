@@ -1,9 +1,13 @@
+import re
 import subprocess
+import tomllib
 from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 AGENTCTL = PROJECT_ROOT / "deploy/agent/mdtoword-agentctl"
+INSTALL = PROJECT_ROOT / "deploy/agent/install.sh"
+PRODUCTION_LOCK = PROJECT_ROOT / "deploy/agent/requirements.lock"
 
 
 def _run_worker_check(http_code: str) -> subprocess.CompletedProcess[str]:
@@ -37,3 +41,30 @@ def test_worker_readiness_rejects_pre_authentication_bad_request_behavior():
 
     assert result.returncode == 1
     assert "最后一次 HTTP 状态：400" in result.stderr
+
+
+def test_install_stops_services_before_syncing_locked_dependencies():
+    script = INSTALL.read_text("utf-8")
+
+    stop_scheduler = script.index("systemctl disable --now mdtoword-scheduler.service")
+    stop_worker = script.index("systemctl stop mdtoword-worker.service")
+    ensure_pip = script.index('-m ensurepip --upgrade')
+    install_dependencies = script.index('--requirement "${REQUIREMENTS_LOCK}"')
+    check_dependencies = script.index('-m pip check')
+    restart_worker = script.index("systemctl restart mdtoword-worker.service")
+
+    assert max(stop_scheduler, stop_worker) < ensure_pip
+    assert ensure_pip < install_dependencies < check_dependencies < restart_worker
+    assert "--no-deps" in script
+    assert "--require-hashes" in script
+
+
+def test_production_lock_pins_every_direct_runtime_dependency():
+    project = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text("utf-8"))
+    locked = PRODUCTION_LOCK.read_text("utf-8").lower().replace("_", "-")
+
+    for dependency in project["project"]["dependencies"]:
+        match = re.match(r"[a-z0-9_.-]+", dependency, re.IGNORECASE)
+        assert match is not None
+        name = match.group(0).lower().replace("_", "-")
+        assert re.search(rf"^{re.escape(name)}==", locked, re.MULTILINE), name

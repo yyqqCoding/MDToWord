@@ -300,6 +300,10 @@ export interface RunListItem {
   total_tokens: number;
   pr_url: string | null;
   issue_url: string | null;
+  reproductionDisposition: string | null;
+  validationPassed: boolean | null;
+  hasValidatedPatch: boolean;
+  dry_run: boolean;
   started_at: string;
 }
 

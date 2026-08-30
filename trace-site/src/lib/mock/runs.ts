@@ -24,6 +24,10 @@ export const mockRunList: RunListItem[] = [
     total_tokens: 1_704,
     pr_url: null,
     issue_url: null,
+    reproductionDisposition: null,
+    validationPassed: null,
+    hasValidatedPatch: false,
+    dry_run: false,
     started_at: "2026-08-14T01:09:12.000Z",
   },
   {
@@ -38,6 +42,10 @@ export const mockRunList: RunListItem[] = [
     total_tokens: heroRun.total_tokens,
     pr_url: heroRun.pr_url,
     issue_url: heroRun.issue_url,
+    reproductionDisposition: heroRun.reproduction?.disposition ?? null,
+    validationPassed: heroRun.validation?.passed ?? null,
+    hasValidatedPatch: heroRun.validated_patch_sha256 !== null,
+    dry_run: heroRun.dry_run,
     started_at: heroRun.started_at,
   },
   {
@@ -52,6 +60,10 @@ export const mockRunList: RunListItem[] = [
     total_tokens: 15_402,
     pr_url: null,
     issue_url: null,
+    reproductionDisposition: "not_reproduced",
+    validationPassed: null,
+    hasValidatedPatch: false,
+    dry_run: false,
     started_at: "2026-08-12T03:41:07.000Z",
   },
   {
@@ -66,6 +78,10 @@ export const mockRunList: RunListItem[] = [
     total_tokens: 1_988,
     pr_url: null,
     issue_url: null,
+    reproductionDisposition: null,
+    validationPassed: null,
+    hasValidatedPatch: false,
+    dry_run: false,
     started_at: "2026-08-12T06:22:55.000Z",
   },
 ];

@@ -110,7 +110,27 @@ const OBSERVATION_STAGE: Record<string, StageKey> = {
   finalize: "publish",
 };
 
+const REPAIR_AGENT_OBSERVATIONS = new Set([
+  "repair-agent-model",
+  "read-source-file",
+  "search-source",
+  "submit-test-edits",
+  "submit-fix-edits",
+  "run-sandbox",
+  "complete-reproduction",
+  "complete-repair",
+  "report-blocked",
+  "write-todos",
+]);
+
 export function stageOf(observation: Observation): StageKey | null {
+  // create_agent 的同一工具可能跨复现与修复阶段使用。新 Telemetry 在受信 input
+  // projection 中记录 phase，必须优先于旧固定名称映射，否则修复期读取源码会被算到复现。
+  if (REPAIR_AGENT_OBSERVATIONS.has(observation.name)) {
+    const phase = observation.input?.phase;
+    if (phase === "reproducing") return "reproduce";
+    if (phase === "repairing") return "repair";
+  }
   return OBSERVATION_STAGE[observation.name] ?? null;
 }
 
@@ -321,6 +341,9 @@ export interface OutcomeInput {
   pr_url: string | null;
   issue_url: string | null;
   reproductionDisposition?: string | null;
+  validationPassed?: boolean | null;
+  hasValidatedPatch?: boolean;
+  dry_run?: boolean;
 }
 
 export function outcomeInputOf(run: RunPublic): OutcomeInput {
@@ -330,6 +353,9 @@ export function outcomeInputOf(run: RunPublic): OutcomeInput {
     pr_url: run.pr_url,
     issue_url: run.issue_url,
     reproductionDisposition: run.reproduction?.disposition ?? null,
+    validationPassed: run.validation?.passed ?? null,
+    hasValidatedPatch: run.validated_patch_sha256 !== null,
+    dry_run: run.dry_run,
   };
 }
 
@@ -388,6 +414,22 @@ export function describeOutcome(run: OutcomeInput): OutcomeView {
           label: "重复反馈",
           detail: "已存在处理中的同内容反馈。",
           tone: "neutral",
+        };
+      }
+      if (run.validationPassed === true || run.hasValidatedPatch) {
+        return {
+          label: run.dry_run ? "候选修复已验证" : "修复已验证",
+          detail: run.dry_run
+            ? "候选修复已通过独立验证；本次为演练运行，因此未创建 Pull Request。"
+            : "候选修复已通过独立验证，尚未创建 Pull Request。",
+          tone: "good",
+        };
+      }
+      if (run.validationPassed === false) {
+        return {
+          label: "独立验证未通过",
+          detail: "候选修复未通过独立验证，因此没有创建 Pull Request。",
+          tone: "warn",
         };
       }
       if (

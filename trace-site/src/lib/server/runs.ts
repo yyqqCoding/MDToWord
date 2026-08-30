@@ -28,7 +28,7 @@ import type {
  */
 
 const LIST_COLUMNS =
-  "id,run_ref,status,route,area,category,total_tokens,pr_url,issue_url,started_at,finished_at";
+  "id,run_ref,status,route,area,category,dry_run,total_tokens,validated_patch_sha256,pr_url,issue_url,reproduction,validation,started_at,finished_at";
 const RUNS_CACHE = { revalidate: 60, tags: ["runs"] } as const;
 const PAGE_SIZE = 1000;
 
@@ -52,6 +52,10 @@ function toListItem(run: RunPublic): RunListItem {
     total_tokens: run.total_tokens,
     pr_url: run.pr_url,
     issue_url: run.issue_url,
+    reproductionDisposition: run.reproduction?.disposition ?? null,
+    validationPassed: run.validation?.passed ?? null,
+    hasValidatedPatch: run.validated_patch_sha256 !== null,
+    dry_run: run.dry_run,
     started_at: run.started_at,
   };
 }

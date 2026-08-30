@@ -36,13 +36,15 @@ feedback-repair-run                  root/agent
   publish-issue                      tool（仅 issue_required）
   prepare-source                     span
   reproduce                          agent
-    plan-reproduction                generation
-    search-source/read-source        tool
-    generate-test                    generation
-    run-reproduction                 tool
+    repair-agent-model               generation（create_agent，phase=reproducing）
+    search-source/read-source-file   tool
+    submit-test-edits/run-sandbox    tool
+    complete-reproduction            tool
   repair                             agent
-    generate-fix                     generation
-    run-target-validation            tool
+    repair-agent-model               generation（create_agent，phase=repairing）
+    search-source/read-source-file   tool
+    submit-fix-edits/run-sandbox     tool
+    complete-repair/report-blocked   tool
   validate-final                     span
     reproduce-baseline               tool
     run-target-tests                 tool
@@ -53,6 +55,9 @@ feedback-repair-run                  root/agent
 ```
 
 观察名称保持稳定，轮次、模型和动态ID写入metadata，不写进名称。
+`create_agent` 的读取、Sandbox 和模型名称会跨复现/修复复用；公开 Trace Site 必须优先使用
+脱敏 input projection 中的受信 `phase=reproducing|repairing` 归属阶段，再回退到旧固定名称
+映射。否则修复期源码读取会被误算为复现，且工具循环模型耗时不会进入阶段统计。
 
 ## 4. LangGraph与Langfuse集成
 

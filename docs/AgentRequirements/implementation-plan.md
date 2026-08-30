@@ -1167,7 +1167,7 @@ Cloud，使真实 Gate 调用具备严格结构化输出、有限重试、真实
 | H 公开反馈入口 IP 限流 | Completed | 2026-08-18；插件人工验收 2026-08-19 | 限流/API/插件与自动测试完成；生产 Docker 后端全量 71 passed；Render 黑盒验证伪造头不能绕过、Wi-Fi/手机身份不同、分钟窗口与 `Retry-After` 正确；插件限流提示与输入保留人工验收通过，`0.3.3` 发布构建已准备 |
 | I 功能需求 Issue 路由与展示数据正确性 | Production core accepted / Extension release build pending | 2026-08-24 | Agent 321 passed（5 skipped）且 compileall 通过；Trace Site 10 passed/typecheck 与 Vercel 生产构建通过；migration、App 权限和 ECS 部署完成；真实 run `cc34f82c-...` 创建脱敏 Issue #3，feedback=`issue_opened`，概览 52 次运行与 Supabase 对账一致；扩展 tsc 通过，发布构建待干净原生 binding 环境完成 |
 | J 统一失败处理与重试策略 | Production partial / source fix local pending | 本地回归 2026-08-30 | 生产真实401暴露GitHub源码错误归因缺口；本地补齐源码认证、临时失败三次重试和安全详情。Agent 351 passed、5 skipped且compileall通过；Trace Site 10 passed/typecheck通过，build仍受既有lightningcss原生模块缺失阻断 |
-| K `create_agent` 修复工具循环 | Local implemented / production acceptance pending | 本地回归 2026-08-30 | conversion probe、Middleware、并行、Summary 与 `model-smoke` 已实现；Agent 363 passed（5 skipped）且 compileall 通过；真实主备模型与 Sandbox 证据待部署后登记 |
+| K `create_agent` 修复工具循环 | Production dry-run accepted / publication pending | 生产演练 2026-08-31 | 真实主备模型 smoke 全项通过；真实 run `e035e038-...` 形成候选补丁并通过独立验证，未授权发布；展示与部署回归已本地修复，待重新部署 |
 
 状态只在完成对应验收后更新。已有代码不因存在文件或历史提交自动视为通过。
 
@@ -1306,3 +1306,27 @@ Gate、源码快照、Sandbox Worker、最终独立验证与发布边界不变�
 1. Scheduler 关闭时在生产主机运行 `model-smoke`；
 2. 使用可丢弃反馈分别验证 conversion error 与 conversion success/semantic test 分支；
 3. 核对最终独立验证、FailureSnapshot、Langfuse 用量与发布幂等后才更新为完成。
+
+### 生产演练与后续回归（2026-08-31）
+
+- 生产 `model-smoke` 使用真实主备 OpenAI-compatible API：两者 tool protocol 与并行调用
+  均通过，usage/cache 字段存在，第二次稳定前缀请求命中 5,632 cached tokens；九段 Summary
+  的章节、脱敏、下一步、禁止事项与不伪造成功全部通过；有效窗口 1,000,000 tokens，
+  65%/85%/20% 阈值计算正确。备用工具探测约 122 秒，仍在 240 秒单次上限内；维护者明确
+  不要求为 smoke 增加过程输出；
+- 首次真实 dry-run `08677bc0-...` 在 GitHub 源码读取收到 401；新失败链准确记录
+  `source_auth_error/permanent/repository`、两个受信位置、attempt 1/3 与 STOP，且没有错误
+  重试。更新 Fine-grained PAT 后的新 run `e035e038-09f3-4940-b10d-b6b6870a1021` 完成
+  7 次模型调用、14 次工具调用，基线确认失败、目标测试通过、全量后端 73 passed、DOCX
+  专项通过，生成 3 个文件的候选补丁；因 `--dry-run` 未创建 PR，符合授权边界；
+- 该 run 暴露 Trace Site 旧口径：`completed + accepted_backend_bug + no PR` 被误显示为
+  “无法复现”，PR Diff 缺失被误写成“无补丁”，新 `repair-agent-model` 与复用工具未按
+  `phase` 进入阶段耗时。本地改为 validation 优先、候选补丁文案及 phase 动态归属；
+- 首次部署拉取新代码后，旧 `install.sh` 未同步 `pyproject.toml/uv.lock`，preflight 因
+  `ModuleNotFoundError: langchain_openai` 停止且 Scheduler 未启用。生产人工补齐依赖后通过
+  audit；本地部署脚本现从 `uv.lock` 的精确生产导出安装依赖，兼容 uv 虚拟环境默认无 pip
+  的情况，并在重启服务前执行 `pip check`；
+- 后续本地回归：Agent 365 passed、5 skipped且compileall通过；Trace Site 13 passed、
+  typecheck通过；`uv lock --check`及生产导出内容对账通过。Trace Site生产构建仍被工作区
+  既有 `lightningcss.linux-x64-gnu.node` 缺失阻断，与本次TypeScript改动无关，不伪造为
+  构建通过。上述两项本地修复重新部署前不写成生产完成。

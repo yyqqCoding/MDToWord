@@ -21,7 +21,7 @@ new Function("exports", "module", "require", compiled)(
   module,
   require,
 );
-const { describeOutcome, deriveStages } = module.exports;
+const { describeOutcome, deriveStages, stageOf } = module.exports;
 
 test("安全和无关 route 优先于 completed 通用终态", () => {
   assert.equal(
@@ -62,4 +62,61 @@ test("Issue 结果与 PR 分开显示且不生成代码阶段证据", () => {
   assert.equal(stages.find((stage) => stage.key === "publish").label, "创建 Issue");
   assert.equal(stages.find((stage) => stage.key === "publish").state, "done");
   assert.equal(stages.find((stage) => stage.key === "prepare").state, "skipped");
+});
+
+test("验证通过的 dry-run 优先显示候选修复而不是无法复现", () => {
+  const outcome = describeOutcome({
+    status: "completed",
+    route: "accepted_backend_bug",
+    pr_url: null,
+    issue_url: null,
+    reproductionDisposition: "reproduced",
+    validationPassed: true,
+    hasValidatedPatch: true,
+    dry_run: true,
+  });
+
+  assert.equal(outcome.label, "候选修复已验证");
+  assert.equal(outcome.tone, "good");
+  assert.match(outcome.detail, /演练运行/);
+});
+
+test("独立验证失败不显示成无法复现", () => {
+  assert.equal(
+    describeOutcome({
+      status: "completed",
+      route: "accepted_backend_bug",
+      pr_url: null,
+      issue_url: null,
+      reproductionDisposition: "reproduced",
+      validationPassed: false,
+      hasValidatedPatch: false,
+    }).label,
+    "独立验证未通过",
+  );
+});
+
+test("Repair Agent 的复用工具按受信 phase 归入复现或修复", () => {
+  const observation = {
+    id: "tool-1",
+    name: "read-source-file",
+    type: "tool",
+    startMs: 0,
+    durationMs: 1,
+    status: "success",
+    children: [],
+  };
+
+  assert.equal(
+    stageOf({ ...observation, input: { phase: "reproducing" } }),
+    "reproduce",
+  );
+  assert.equal(
+    stageOf({ ...observation, input: { phase: "repairing" } }),
+    "repair",
+  );
+  assert.equal(
+    stageOf({ ...observation, name: "repair-agent-model", input: { phase: "repairing" } }),
+    "repair",
+  );
 });

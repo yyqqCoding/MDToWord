@@ -186,7 +186,13 @@ export function RunDetail({ data }: { data: RunDetailData }) {
         />
         <StatCard
           label="代码改动"
-          value={diffLines ? `+${diffLines.added} −${diffLines.removed}` : "无补丁"}
+          value={
+            diffLines
+              ? `+${diffLines.added} −${diffLines.removed}`
+              : validation
+                ? "候选补丁"
+                : "无补丁"
+          }
           note={validation ? `${validation.changed_files.length} 个文件` : undefined}
           delay={100}
         />

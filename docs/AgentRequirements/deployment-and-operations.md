@@ -126,6 +126,7 @@ Issue 或部署；当前生产仍运行旧语义并可能产生 `out_of_scope`�
 deploy/agent/install.sh
 deploy/agent/deploy.sh
 deploy/agent/mdtoword-agentctl
+deploy/agent/requirements.lock
 deploy/agent/systemd/mdtoword-worker.service
 deploy/agent/systemd/mdtoword-scheduler.service
 ```
@@ -139,8 +140,11 @@ sudo git -C /opt/mdtoword pull --ff-only origin main
 sudo bash /opt/mdtoword/deploy/agent/deploy.sh
 ```
 
-`deploy.sh` 先停止 Scheduler，再调用底层 `install.sh` 安装 systemd 单元与管理命令、显式
-重启 Worker 以加载本次代码并执行只读审计；随后调用 `enable` 再次审计并要求维护者输入
+`deploy.sh` 先停止 Scheduler，再调用底层 `install.sh`。`install.sh` 会先停止 Scheduler 与
+Worker，使用 Python 自带 `ensurepip` 补齐可能不存在的 pip，再从
+`deploy/agent/requirements.lock` 安装 `uv.lock` 已解析的精确生产依赖并执行 `pip check`；
+依赖完成后才安装 systemd 单元与管理命令、重启 Worker 并执行只读审计。随后调用 `enable`
+再次审计并要求维护者输入
 `ENABLE`，最后输出 Worker 与 Scheduler 状态。任一步失败都会保持 Scheduler 关闭。脚本
 不会创建、复制或输出 Secret，也不会覆盖两份环境文件。审计会等待 Worker 最多 30 秒完成
 端口绑定；未携带凭据的就绪请求必须返回 `401`，同时证明 HTTP 服务和认证边界已经生效，
@@ -162,6 +166,19 @@ sudo mdtoword-agentctl model-smoke  # Scheduler关闭时，用合成数据验证
 `PRODUCTION_SCHEDULER_ENABLED=true`。Scheduler 启动后优先恢复审计中列出的活动 run，随后
 领取 `pending` 反馈；因此启用前必须人工核对两个状态计数对象。`deploy.sh` 只是把既有安全
 顺序编排成一个入口；底层 `install.sh` 单独执行时仍会保持 Scheduler 关闭。
+
+`uv.lock` 是依赖解析权威；每次修改根 `pyproject.toml` 或 `uv.lock` 后必须同步生成生产
+导出，不能手工修改版本：
+
+```bash
+uv export --frozen --no-dev --no-emit-project --no-annotate \
+  --format requirements.txt --output-file deploy/agent/requirements.lock
+```
+
+导出文件列出全部精确版本与制品哈希，生产安装使用 `--no-deps --require-hashes`，避免服务器
+再次解析出另一套依赖图或下载未经锁文件登记的制品。
+项目源码由 systemd 的固定 `WorkingDirectory=/opt/mdtoword` 直接导入，不需要 editable
+安装。依赖安装或 `pip check` 失败时不得启动 Worker 或 Scheduler。
 
 ## 7. 生产巡检与 Provider 排障
 
