@@ -8,7 +8,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from agent.domain.errors import SourceSnapshotError
+from agent.domain.errors import SourceAuthenticationError, SourceSnapshotError
 from agent.workspace.source_repository import (
     GitHubSourceRepository,
     materialize_snapshot_archive,
@@ -80,6 +80,62 @@ def test_github_source_repository_follows_archive_redirect(tmp_path: Path):
         f"/repos/example/md-to-word/tarball/{sha}",
         "/archive.tar.gz",
     ]
+    assert (snapshot.root / "README.md").read_text("utf-8") == "summary\n"
+
+
+def test_github_source_repository_reports_auth_failure_without_retrying(
+    tmp_path: Path,
+):
+    sha = "d" * 40
+    requests = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        return httpx.Response(403, headers={"x-ratelimit-remaining": "10"})
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            repository = GitHubSourceRepository("example/md-to-word", client=client)
+            with pytest.raises(SourceAuthenticationError) as exc_info:
+                await repository.fetch_snapshot(sha, tmp_path / "snapshot")
+            return exc_info.value
+
+    error = asyncio.run(scenario())
+
+    assert requests == 1
+    assert error.attempt == 1
+    assert error.max_attempts == 3
+    assert error.safe_details == {"http_status": 403}
+    assert not (tmp_path / "snapshot").exists()
+
+
+def test_github_source_repository_retries_transient_download(
+    tmp_path: Path,
+):
+    sha = "e" * 40
+    content = _archive({"repo-root/README.md": b"summary\n"})
+    responses = [httpx.Response(503), httpx.Response(200, content=content)]
+    delays = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return responses.pop(0)
+
+    async def sleep(delay: float) -> None:
+        delays.append(delay)
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            repository = GitHubSourceRepository(
+                "example/md-to-word",
+                client=client,
+                sleep=sleep,
+            )
+            return await repository.fetch_snapshot(sha, tmp_path / "snapshot")
+
+    snapshot = asyncio.run(scenario())
+
+    assert delays == [1]
     assert (snapshot.root / "README.md").read_text("utf-8") == "summary\n"
 
 

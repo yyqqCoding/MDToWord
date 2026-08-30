@@ -18,7 +18,7 @@ from agent.domain.enums import (
     RiskLevel,
 )
 from agent.domain.gate import GateClassification
-from agent.domain.errors import PublicationError
+from agent.domain.errors import PublicationError, SourceAuthenticationError
 from agent.domain.failures import FailureEvent, FailureHandling, FailureRecorder
 from agent.domain.models import FeedbackRecord
 from agent.domain.reproduction import (
@@ -98,6 +98,18 @@ class _SourceWorkspace:
     def resolve(self, reference: str):
         assert reference.endswith(BASE_SHA)
         return self.snapshot
+
+
+class _FailingSourceWorkspace:
+    async def prepare(self, run_id):
+        del run_id
+        raise SourceAuthenticationError(
+            "GitHub source authentication failed",
+            attempt=1,
+            max_attempts=3,
+            operation="read_main_revision",
+            safe_details={"http_status": 401},
+        )
 
 
 class _Sandbox:
@@ -286,6 +298,7 @@ async def _run(
     gate_classification: GateClassification | None = None,
     reproduction_plan: ReproductionPlan | None = None,
     failure_recorder: FailureRecorder | None = None,
+    source_workspace=None,
 ):
     feedback = FeedbackRecord(
         id=FEEDBACK_ID,
@@ -299,7 +312,7 @@ async def _run(
     feedbacks = FakeFeedbackRepository([feedback])
     runs = FakeAgentRunRepository()
     artifacts = ArtifactStore(tmp_path / "artifacts")
-    source = _SourceWorkspace(tmp_path / "snapshot")
+    source = source_workspace or _SourceWorkspace(tmp_path / "snapshot")
     sandbox = _Sandbox(outcomes.copy())
     test_provider = FakeModelProvider(
         generated_outputs or [_generated(), _generated()]
@@ -402,6 +415,32 @@ async def _run_stage_e(
         fix_provider,
         artifacts,
     )
+
+
+def test_source_auth_failure_keeps_prepare_source_location_and_needs_human(
+    tmp_path: Path,
+) -> None:
+    outcome, feedback, run, sandbox, test_provider = asyncio.run(
+        _run(
+            tmp_path,
+            [],
+            source_workspace=_FailingSourceWorkspace(),
+        )
+    )
+
+    assert outcome.status is AgentRunStatus.FAILED
+    assert feedback is not None and feedback.status is FeedbackStatus.NEEDS_HUMAN
+    assert feedback.last_error_code == "source_auth_error"
+    assert run is not None and run.failure is not None
+    assert run.failure.code == "source_auth_error"
+    assert run.failure.component == "repository"
+    assert run.failure.phase == "reproducing"
+    assert run.failure.node == "prepare_source"
+    assert run.failure.attempt == 1
+    assert run.failure.max_attempts == 3
+    assert run.failure.safe_details == {"http_status": 401}
+    assert sandbox.jobs == []
+    assert test_provider.requests == []
 
 
 def test_known_target_failure_produces_reproduction_report(tmp_path: Path) -> None:

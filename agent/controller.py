@@ -433,7 +433,8 @@ class GateController:
             run_status = AgentRunStatus.FAILED
             feedback_status = (
                 FeedbackStatus.NEEDS_HUMAN
-                if failure.code in {"auth_error", "sandbox_auth_error"}
+                if failure.code
+                in {"auth_error", "sandbox_auth_error", "source_auth_error"}
                 else FeedbackStatus.FAILED
             )
         if (

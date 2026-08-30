@@ -23,6 +23,7 @@ from agent.domain.errors import (
     ModelAuthError,
     ModelTimeoutError,
     SourceAccessError,
+    SourceAuthenticationError,
 )
 from agent.domain.models import AgentRunRecord, FeedbackRecord
 from agent.graph import PublishingDependencies
@@ -317,6 +318,12 @@ def test_gate_graph_persists_real_provider_usage_and_deterministic_trace_id(
             "source_access_denied",
             FeedbackStatus.SECURITY_REJECTED,
             AgentRunStatus.SECURITY_REJECTED,
+        ),
+        (
+            SourceAuthenticationError("safe message"),
+            "source_auth_error",
+            FeedbackStatus.NEEDS_HUMAN,
+            AgentRunStatus.FAILED,
         ),
         (
             BudgetExceededError("safe message"),

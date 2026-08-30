@@ -203,7 +203,8 @@ class FailureRecorder:
             failure = event.failure
             _LOGGER.warning(
                 "agent failure code=%s kind=%s component=%s operation=%s "
-                "phase=%s node=%s attempt=%s max_attempts=%s handling=%s",
+                "phase=%s node=%s attempt=%s max_attempts=%s handling=%s "
+                "safe_details=%s",
                 failure.cause.code,
                 failure.cause.kind.value,
                 failure.cause.component,
@@ -213,6 +214,7 @@ class FailureRecorder:
                 event.attempt,
                 event.max_attempts,
                 event.handling.value,
+                failure.cause.safe_details,
             )
             if self._sink is not None:
                 self._sink.record_failure(event)
@@ -265,6 +267,7 @@ _KIND_BY_CODE: dict[str, FailureKind] = {
     "sandbox_unavailable": FailureKind.TRANSIENT,
     "skipped_tests_increased": FailureKind.BUSINESS,
     "source_access_denied": FailureKind.SECURITY,
+    "source_auth_error": FailureKind.PERMANENT,
     "source_revision_error": FailureKind.PERMANENT,
     "source_snapshot_error": FailureKind.PERMANENT,
     "stale_base": FailureKind.BUSINESS,
@@ -361,7 +364,14 @@ def _component_for_exception(exc: BaseException) -> str:
         return "sandbox"
     if isinstance(exc, errors.PublicationError):
         return "publisher"
-    if isinstance(exc, errors.RepositoryError):
+    if isinstance(
+        exc,
+        (
+            errors.RepositoryError,
+            errors.SourceRevisionError,
+            errors.SourceSnapshotError,
+        ),
+    ):
         return "repository"
     if isinstance(exc, (errors.PatchPolicyError, errors.ToolAuthorizationError)):
         return "policy"
