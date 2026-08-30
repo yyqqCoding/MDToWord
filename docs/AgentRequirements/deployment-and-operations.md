@@ -155,6 +155,7 @@ sudo mdtoword-agentctl enable   # 审计后要求输入 ENABLE，才开启自动
 sudo mdtoword-agentctl disable  # 立即停止领取，并把生产开关恢复为 false
 sudo mdtoword-agentctl status
 sudo mdtoword-agentctl logs
+sudo mdtoword-agentctl model-smoke  # Scheduler关闭时，用合成数据验证真实主/备模型
 ```
 
 `enable` 会先备份 `controller.env`，再原子更新
@@ -182,6 +183,11 @@ sudo mdtoword-agentctl logs
 - `/models` 返回 200 只验证 Base URL、网络和认证，复杂 `generate-test` 仍可能失败；
 - 配置 `FALLBACK_MODEL_ENABLED=true` 后，前两次临时传输失败仍使用主接口，第三次使用备用
   OpenAI-compatible 接口；日志和 Trace 继续按统一 Provider 口径展示，不区分实际接口；
+- Repair Agent 要求备用模型完整配置。自定义模型若没有 LangChain profile，必须填写
+  `MODEL_CONTEXT_WINDOW` 与 `FALLBACK_MODEL_CONTEXT_WINDOW`，否则 audit 在领取反馈前失败；
+- 部署后先 `disable` Scheduler，再运行 `sudo mdtoword-agentctl model-smoke`。该命令会产生
+  少量模型费用，但只使用合成消息，不读反馈/源码、不启动 Sandbox、不写数据库或 GitHub；
+  输出验证主备 tool calling、只读工具并行、usage/cache 字段、Summary 内容与比例阈值；
 - `GATE_MODEL_TIMEOUT_SECONDS` 默认 30 秒、允许 30～120 秒；调整前应在生产 Agent 主机上
   使用相同模型与结构化请求测量耗时，避免用过长等待掩盖上游故障；
 - 可用 `agent.evals.runner --provider configured --case-id <id>` 验证单条 Gate，但阶段 D

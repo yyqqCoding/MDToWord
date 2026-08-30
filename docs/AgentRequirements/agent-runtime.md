@@ -6,8 +6,9 @@ LangGraph 是编排 Runtime，不是安全边界、模型 Provider、沙箱或�
 负责保存状态、调度节点、表达条件分支、限制循环、处理中断和恢复。确定性步骤与
 LLM 步骤在同一图中显式区分。
 
-MVP 使用一个 Graph，不引入多个自治 Agent。复现和修复分别是一个具有独立工具集
-和轮次上限的 Agentic 子图。
+系统使用一个外层 Graph，不引入多个自治 Agent。Gate 是无工具严格分类节点；复现与修复
+由同一个 `create_agent` 有限 ReAct 工具循环完成。其工具、Middleware、并行和 Summary
+契约以 [repair-agent-loop.md](repair-agent-loop.md) 为唯一权威来源。
 
 ## 2. Graph State
 
@@ -20,7 +21,6 @@ status, route, category, area, risk
 base_sha, extension_version
 task_artifact_ref, source_snapshot_ref
 gate_result, issue_draft_ref
-reproduction_plan
 test_patch_ref, reproduction_result
 fix_patch_ref, validation_result
 reproduction_round, repair_round
@@ -101,14 +101,10 @@ Fake Publisher 结果，不得因为 Issue 不修改代码就绕过 dry-run 边�
 ### 3.3 LLM 节点
 
 - `classify_gate`
-- `plan_reproduction`
-- `generate_test_edit`
-- `revise_test_edit`
-- `generate_fix_edit`
-- `revise_fix_edit`
+- `repair_agent`
 
-所有模型输出经过严格 Schema 校验；Schema 失败最多重试一次格式修正，不进入业务
-修复轮次。模型不能直接写 Graph State，节点先校验再返回允许的字段更新。
+`repair_agent` 使用注册工具改变受信状态，不要求模型先输出固定计划 JSON。模型不能直接
+写业务 Graph State；只有工具与 Controller 能返回允许的字段更新。Gate 仍使用严格 Schema。
 
 ## 4. Feedback Gate
 
@@ -195,63 +191,11 @@ Policy 负责把模型分类规范成稳定 `GateResult`：注入 → `none/prom
 校正是：模型已判定高相关 `bug_report/docx_structure`、无注入和前端依赖，同时 Markdown
 含完整 Mermaid 图时，可把单一 `sufficient_information=false` 校正为继续复现。
 
-## 5. 复现子图
+## 5. 复现与修复工具循环
 
-```text
-plan_reproduction
-  -> inspect_source/read-only tools
-  -> generate_test_edit
-  -> policy_check_test_edit
-       |- Mermaid invalid response/edit -> trusted drawing template
-       `- conversion crash invalid response/test -> trusted conversion template
-  -> run_reproduction_in_sandbox
-       |- target_failure -> reproduction_confirmed
-       |- test_passed -> revise_test_edit (最多 2 轮)
-       |- invalid_test -> revise_test_edit (最多 2 轮)
-       `- security_rejected -> END
-```
-
-`ReproductionPlan` 必须包含：问题假设、确定性 Oracle、目标测试名称、预期失败类型、
-需要读取的文件以及是否可能要求前端同步。
-
-复现成功的含义是：仅在基线应用测试补丁后，指定测试确实执行并发生与计划一致的
-断言失败。导入错误、语法错误、fixture 缺失、超时、容器失败或与问题无关的异常
-都不是成功复现。
-
-两轮仍无法复现时进入 `cannot_reproduce`，不生成修复。
-
-Mermaid 模型输出耗尽一次格式修正仍不符合严格 Schema 时，或第一轮模型编辑无法形成合法
-Python/文本补丁时，由 Controller 生成固定 drawing 测试。`unexpected_conversion_error`
-计划的模型输出耗尽格式修正，或第一轮 Sandbox 测试无效（包括没有 JUnit）时，由
-Controller 生成固定转换测试：读取 `.md` fixture、调用 `convert_markdown_to_docx`，转换
-成功后再调用计划中已登记的受信 Oracle。两类模板都不读取网络、环境变量或任意 XPath，
-仍经过相同 Patch Policy 和全新 Sandbox；其他类别不会触发此回退。
-
-## 6. 修复子图
-
-```text
-repair_scope_policy
-  -> generate_fix_edit
-  -> policy_check_fix_edit
-       `- 未预装的 external dependency / deployment change -> needs_human -> END
-  -> run_target_validation_in_sandbox
-       |- passed -> final_validation
-       |- failed -> summarize_failure -> fresh workspace -> revise_fix_edit
-       `- security_rejected -> END
-```
-
-最多两轮。每轮模型上下文只包含：脱敏反馈摘要、复现计划、目标失败摘要、当前允许
-源码、测试补丁摘要、上一轮修复摘要和剩余预算；不累积完整历史。
-
-生产与 Sandbox 镜像包含同版本的受信 Mermaid CLI、Chromium 和中文字体。Mermaid
-drawing Oracle 已确认复现时，Controller 额外向修复模型提供只读
-`backend/app/mermaid_renderer.py`，允许模型在 `pandoc_runner.py` 接入固定 API，并继续
-进入相同的目标、基线、全量和 DOCX drawing 验证。模型不能修改渲染器或依赖清单。
-
-模型不能修改测试补丁。每轮使用从 `base_sha` 新建的工作区，不在上一轮修改上继续
-叠加。修复若新增未预装的外部可执行程序、Pandoc filter 或需要部署变更，由本地 Policy 直接
-转为 `needs_human`，不启动 Sandbox、也不消耗第二轮模型请求。失败摘要最多 4 KB，并将
-工具输出继续标记为不可信数据。
+本节旧的固定 `ReproductionPlan`、测试生成和修复生成子图已由
+[repair-agent-loop.md](repair-agent-loop.md) 直接替换。实现不得同时保留两套执行路径；
+历史验收事实只保留在 `implementation-plan.md`，不在当前 Runtime 契约中保留第二套流程。
 
 ## 7. 最终验证与发布
 
@@ -284,8 +228,9 @@ generate_structured(messages, response_schema, tools, timeout)
   -> content/tool_calls, usage, model, provider_request_id
 ```
 
-Provider 负责厂商协议、结构化响应、Tool Call 转换、限流重试和 usage 归一化。
-Runtime 禁止根据模型名称分支业务规则。MVP 一个模型；替换模型只改变配置与适配器。
+Gate Provider 负责严格结构化响应。Repair Agent 使用 LangChain ChatModel 与
+`ModelResilienceMiddleware` 处理 tool calling、主/备用接口和 usage；业务规则不得根据
+模型名称分支。具体重试顺序以 `repair-agent-loop.md` 为准。
 
 Provider 错误标准化为：
 
@@ -294,7 +239,9 @@ auth_error, rate_limit, timeout, invalid_response,
 context_too_large, provider_unavailable, safety_refusal
 ```
 
-认证错误不重试；限流和短暂故障指数退避有限重试；非法结构只做一次格式修正。
+认证错误不重试；限流和短暂故障指数退避有限重试。Gate 的非法结构仍做一次格式修正；
+Repair Agent 的业务输出通过工具 Schema 与本地 Policy 校验后作为工具错误返回，不使用
+旧的整段计划 JSON 格式修正。
 429响应带秒数形式`Retry-After`时，Provider在10秒上限内尊重更长等待；非法或负数使用
 本地退避，超过10秒则截断为10秒，避免单次模型调用无限占住单并发Scheduler。
 
@@ -308,16 +255,17 @@ context_too_large, provider_unavailable, safety_refusal
 默认值由 Policy 配置，Runtime 在每个 LLM 和工具节点前检查：
 
 ```text
-MAX_REPRODUCTION_ROUNDS=2
-MAX_REPAIR_ROUNDS=2
-MAX_FORMAT_RETRIES=1
-MAX_MODEL_CALLS_PER_RUN=8
+MAX_REPRODUCTION_ROUNDS=<本地配置>
+MAX_REPAIR_ROUNDS=<本地配置>
+MAX_FORMAT_RETRIES=1  # 仅 Gate 严格输出
+MAX_MODEL_CALLS_PER_RUN=12
 MAX_TOOL_CALLS_PER_RUN=30
-MAX_TOTAL_TOKENS_PER_RUN=<按所选模型配置>
 MAX_SANDBOX_SECONDS_PER_RUN=900
 ```
 
 任一上限触发后进入 `budget_exhausted`，不能由模型请求继续。
+上下文不使用固定总 Token 上限；按主备模型有效窗口的 65%/85% 比例总结和停止，详见
+`repair-agent-loop.md`。
 
 ## 10. 幂等与恢复
 

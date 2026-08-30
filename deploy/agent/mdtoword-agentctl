@@ -99,6 +99,19 @@ check_controller() {
         /bin/bash -c 'set -a; source /etc/mdtoword/controller.env; set +a; cd /opt/mdtoword; exec .venv/bin/python -m agent.operations.preflight'
 }
 
+model_smoke() {
+    if systemctl is-active --quiet "${CONTROLLER_SERVICE}"; then
+        echo "请先执行 sudo mdtoword-agentctl disable，避免验收与 Scheduler 共享模型预算。" >&2
+        exit 1
+    fi
+    check_files
+    runuser -u mdtoword-controller -- env -i \
+        PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+        LANG=C.UTF-8 \
+        HOME=/var/lib/mdtoword-controller \
+        /bin/bash -c 'set -a; source /etc/mdtoword/controller.env; set +a; cd /opt/mdtoword; exec .venv/bin/python -m agent.cli model-smoke'
+}
+
 audit() {
     check_files
     check_worker
@@ -163,6 +176,7 @@ usage() {
   sudo mdtoword-agentctl disable
   sudo mdtoword-agentctl status
   sudo mdtoword-agentctl logs
+  sudo mdtoword-agentctl model-smoke
 EOF
 }
 
@@ -174,6 +188,7 @@ main() {
         disable) disable_scheduler ;;
         status) status_services ;;
         logs) show_logs ;;
+        model-smoke) model_smoke ;;
         *) usage; exit 2 ;;
     esac
 }

@@ -34,12 +34,14 @@ class AgentConfig(BaseModel):
     model_name: str | None = None
     model_api_key: SecretStr | None = None
     model_base_url: str | None = None
+    model_context_window: int | None = Field(default=None, ge=1)
     model_input_cost_per_million: Decimal = Field(default=Decimal("0"), ge=0)
     model_output_cost_per_million: Decimal = Field(default=Decimal("0"), ge=0)
     fallback_model_enabled: bool = False
     fallback_model_name: str | None = None
     fallback_model_api_key: SecretStr | None = None
     fallback_model_base_url: str | None = None
+    fallback_model_context_window: int | None = Field(default=None, ge=1)
     fallback_model_input_cost_per_million: Decimal = Field(
         default=Decimal("0"),
         ge=0,
@@ -54,9 +56,8 @@ class AgentConfig(BaseModel):
         ge=30.0,
         le=300.0,
     )
-    max_model_calls_per_run: int = Field(default=8, ge=1, le=100)
+    max_model_calls_per_run: int = Field(default=12, ge=1, le=100)
     max_tool_calls_per_run: int = Field(default=30, ge=1, le=1000)
-    max_total_tokens_per_run: int = Field(default=200_000, ge=1)
     max_sandbox_seconds_per_run: int = Field(default=900, ge=1, le=3600)
     backend_baseline_skipped: int = Field(default=0, ge=0)
     langfuse_host: str = "https://cloud.langfuse.com"
@@ -213,6 +214,10 @@ class AgentConfig(BaseModel):
             model_name=_optional_text(values, "MODEL_NAME"),
             model_api_key=_optional_secret(values, "MODEL_API_KEY"),
             model_base_url=_optional_text(values, "MODEL_BASE_URL"),
+            model_context_window=_optional_int_value(
+                values,
+                "MODEL_CONTEXT_WINDOW",
+            ),
             model_input_cost_per_million=_decimal_value(
                 values,
                 "MODEL_INPUT_COST_PER_MILLION",
@@ -235,6 +240,10 @@ class AgentConfig(BaseModel):
                 values,
                 "FALLBACK_MODEL_BASE_URL",
             ),
+            fallback_model_context_window=_optional_int_value(
+                values,
+                "FALLBACK_MODEL_CONTEXT_WINDOW",
+            ),
             fallback_model_input_cost_per_million=_decimal_value(
                 values,
                 "FALLBACK_MODEL_INPUT_COST_PER_MILLION",
@@ -256,17 +265,12 @@ class AgentConfig(BaseModel):
             max_model_calls_per_run=_int_value(
                 values,
                 "MAX_MODEL_CALLS_PER_RUN",
-                8,
+                12,
             ),
             max_tool_calls_per_run=_int_value(
                 values,
                 "MAX_TOOL_CALLS_PER_RUN",
                 30,
-            ),
-            max_total_tokens_per_run=_int_value(
-                values,
-                "MAX_TOTAL_TOKENS_PER_RUN",
-                200_000,
             ),
             max_sandbox_seconds_per_run=_int_value(
                 values,
@@ -487,6 +491,18 @@ def _int_value(values: Mapping[str, str], name: str, default: int) -> int:
         return int(raw)
     except ValueError as exc:
         raise ConfigurationError(f"configuration {name} must be an integer") from exc
+
+
+def _optional_int_value(values: Mapping[str, str], name: str) -> int | None:
+    raw = values.get(name, "").strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise ConfigurationError(
+            f"configuration {name} must be an integer"
+        ) from exc
 
 
 def _float_value(values: Mapping[str, str], name: str, default: float) -> float:

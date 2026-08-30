@@ -222,9 +222,10 @@ stop              当前自动处理终止
 这些值是观测结果，不是一个新的统一状态机。Checkpoint 与发布恢复继续由 LangGraph 与
 Controller 使用原 `run_id`、operation ID 和幂等查询完成。
 
-### 5.3 可选备用模型接口
+### 5.3 备用模型接口
 
-OpenAI-compatible Provider 可选配置一个备用接口，但它仍是同一个 Provider 边界，不增加
+Repair Agent 必须配置备用接口；Gate-only 开发调用可以不启用。它仍是同一个 Provider
+边界，不增加
 供应商路由、供应商状态或新的 handling：
 
 ```text
@@ -242,7 +243,11 @@ attempt 3  备用接口（仅启用且前两次均为 transient 时）
 - 不记录接口名称、Base URL、凭据或主/备用身份，不新增 `provider_failover` 事件；
 - 两套凭据只由受信配置和逐请求 Header 使用，备用配置不进入 Graph State、Artifact、
   数据库或 Trace；
-- Schema 格式修正仍是成功传输后的既有独立轮次，不纳入这三个传输 attempt。
+- Gate 的 Schema 格式修正仍是成功传输后的独立轮次，不纳入这三个传输 attempt；
+- Repair Agent 不再返回整段计划 JSON。tool-call 参数未通过 Schema/Policy 时，错误作为
+  脱敏 `ToolMessage` 返回同一 ReAct 循环；这不是传输重试，也不得切换备用接口；
+- Repair Agent 的 Sandbox Client 自身重试关闭，由 `ToolRetryMiddleware` 执行同一 job 的
+  三次总 attempt；最终独立验证继续由 Client 自身执行三次，二者不得嵌套。
 
 ## 6. 捕获与转换边界
 

@@ -20,6 +20,7 @@ from agent.repositories.supabase import (
     SupabaseFeedbackRepository,
 )
 from agent.scheduler import FeedbackScheduler
+from agent.operations.model_smoke import run_model_smoke
 from agent.workspace.artifacts import ArtifactStore
 from agent.workspace.versioning import read_extension_version
 from agent.telemetry.base import NoopTelemetry
@@ -81,6 +82,10 @@ def build_parser() -> argparse.ArgumentParser:
     scheduler_mode = scheduler_parser.add_mutually_exclusive_group(required=True)
     scheduler_mode.add_argument("--once", action="store_true")
     scheduler_mode.add_argument("--forever", action="store_true")
+    commands.add_parser(
+        "model-smoke",
+        help="run read-only primary/fallback model protocol checks with synthetic data",
+    )
     return parser
 
 
@@ -124,6 +129,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 async def _execute(args: argparse.Namespace) -> int:
     config = AgentConfig.from_env()
+    if args.command == "model-smoke":
+        result = await run_model_smoke(config)
+        _print_json(result)
+        return 0 if result["status"] == "passed" else 1
     if args.command == "checkpoint":
         database_url = config.require_database_url()
         async with open_postgres_checkpointer(

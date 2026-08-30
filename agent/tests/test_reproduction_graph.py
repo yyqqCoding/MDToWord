@@ -525,7 +525,6 @@ def test_invalid_python_edit_is_revised_once_before_sandbox(tmp_path: Path) -> N
     assert len(test_provider.requests) == 2
     assert len(sandbox.jobs) == 1
 
-
 def test_mermaid_invalid_model_edit_uses_trusted_fallback_without_second_call(
     tmp_path: Path,
 ) -> None:
@@ -1225,74 +1224,3 @@ def test_stage_e_budget_exhaustion_blocks_model_and_sandbox_calls(tmp_path: Path
     assert run is not None and run.status is AgentRunStatus.BUDGET_EXHAUSTED
     assert len(fix_provider.requests) == 0
     assert len(sandbox.jobs) == 1
-
-
-def test_stage_d_terminal_checkpoint_can_resume_into_stage_e(tmp_path: Path) -> None:
-    async def scenario():
-        feedback = FeedbackRecord(
-            id=FEEDBACK_ID,
-            feedback_type=FeedbackType.BUG,
-            markdown_content="|a|b|\n|-|-|\n|1|2|",
-            description="exported Word table structure is incorrect",
-            status=FeedbackStatus.CLAIMED,
-            claim_token=UUID("11111111-1111-4111-8111-111111111111"),
-            claimed_at=datetime.now(UTC),
-        )
-        feedbacks = FakeFeedbackRepository([feedback])
-        runs = FakeAgentRunRepository()
-        artifacts = ArtifactStore(tmp_path / "artifacts")
-        source = _SourceWorkspace(tmp_path / "snapshot")
-        sandbox = _Sandbox(
-            [
-                TargetTestOutcome.FAILED,
-                TargetTestOutcome.PASSED,
-                TargetTestOutcome.FAILED,
-                TargetTestOutcome.PASSED,
-                TargetTestOutcome.PASSED,
-            ]
-        )
-        checkpointer = MemorySaver()
-        reproduction = ReproductionDependencies(
-            plan_provider=FakeModelProvider([_plan()]),
-            test_provider=FakeModelProvider([_generated()]),
-            source_workspace=source,
-            edit_tools=StructuredEditTools(
-                PatchBuilder(PatchPolicy.load_default()),
-                artifacts,
-            ),
-            sandbox_client=sandbox,
-        )
-        stage_d = GateController(
-            feedback_repository=feedbacks,
-            run_repository=runs,
-            provider=FakeModelProvider([_classification()]),
-            artifact_store=artifacts,
-            checkpointer=checkpointer,
-            reproduction=reproduction,
-        )
-        first = await stage_d.start(feedback)
-        fix_provider = FakeModelProvider([_fix()])
-        stage_e = GateController(
-            feedback_repository=feedbacks,
-            run_repository=runs,
-            provider=FakeModelProvider([]),
-            artifact_store=artifacts,
-            checkpointer=checkpointer,
-            reproduction=ReproductionDependencies(
-                plan_provider=FakeModelProvider([]),
-                test_provider=FakeModelProvider([]),
-                source_workspace=source,
-                edit_tools=reproduction.edit_tools,
-                sandbox_client=sandbox,
-            ),
-            repair=RepairDependencies(fix_provider=fix_provider),
-        )
-        resumed = await stage_e.resume(first.run_id)
-        return resumed, await feedbacks.get(FEEDBACK_ID), fix_provider, sandbox
-
-    outcome, feedback, fix_provider, sandbox = asyncio.run(scenario())
-
-    assert outcome.completed is True
-    assert feedback is not None and feedback.status is FeedbackStatus.VALIDATED
-    assert len(fix_provider.requests) == 1
-    assert len(sandbox.jobs) == 5

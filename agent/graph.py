@@ -86,6 +86,7 @@ from agent.workspace.validation import (
 )
 from agent.workspace.preparation import SourceWorkspace
 from agent.domain.reproduction import (
+    ExpectedFailureKind,
     ReproductionAttemptArtifact,
     ReproductionDisposition,
     ReproductionReport,
@@ -94,7 +95,7 @@ from agent.domain.reproduction import (
 )
 
 
-GRAPH_VERSION = "agent-graph-v9"
+GRAPH_VERSION = "agent-graph-v10"
 POLICY_VERSION = "publication-policy-v9"
 
 _ROUTE_TO_FEEDBACK_STATUS = {
@@ -119,6 +120,8 @@ class ReproductionDependencies:
     failure_recorder: FailureRecorder = field(default_factory=FailureRecorder)
     # 长源码上下文比 Gate 请求耗时更高，但仍由配置限制在有界范围内。
     model_timeout_seconds: float = 180.0
+    agent_runtime: object | None = None
+    agent_sandbox_client: SandboxClient | None = None
 
 
 @dataclass(frozen=True)
@@ -128,7 +131,8 @@ class RepairDependencies:
     model_timeout_seconds: float = 180.0
     max_model_calls: int = 8
     max_tool_calls: int = 30
-    max_total_tokens: int = 200_000
+    # 仅供未注册到生产图的历史固定节点测试使用；create_agent 路径始终为 None。
+    max_total_tokens: int | None = None
     max_sandbox_seconds: int = 900
     baseline_skipped: int = 0
 
@@ -501,6 +505,63 @@ def build_gate_graph(
             ):
                 raise ValueError("reproduction state is missing gate context")
             task = artifact_store.read_task(state.task_artifact_ref)
+            if reproduction.agent_runtime is not None:
+                from agent.repair_agent.runtime import RepairAgentRuntime
+                from agent.repair_agent.tools import RepairAgentContext
+
+                runtime = reproduction.agent_runtime
+                if not isinstance(runtime, RepairAgentRuntime):
+                    raise TypeError("agent_runtime must be RepairAgentRuntime")
+                outcome = await runtime.run(
+                    RepairAgentContext(
+                        run_id=state.run_id,
+                        feedback_id=state.feedback_id,
+                        task=task,
+                        source_snapshot_ref=state.source_snapshot_ref,
+                        source_workspace=reproduction.source_workspace,
+                        artifact_store=artifact_store,
+                        edit_tools=reproduction.edit_tools,
+                        sandbox_client=(
+                            reproduction.agent_sandbox_client
+                            or reproduction.sandbox_client
+                        ),
+                        max_reproduction_rounds=2,
+                        max_repair_rounds=2,
+                        max_sandbox_seconds=(
+                            repair.max_sandbox_seconds if repair is not None else 900
+                        ),
+                        allow_repair=repair is not None,
+                    ),
+                    category=state.category,
+                )
+                return {
+                    "test_patch_ref": outcome.test_patch_ref,
+                    "fix_patch_ref": outcome.fix_patch_ref,
+                    "target_test_selector": outcome.target_test_selector,
+                    "expected_failure_kind": outcome.expected_failure_kind,
+                    "reproduction_result_ref": outcome.reproduction_result_ref,
+                    "repair_result_ref": outcome.repair_result_ref,
+                    "fix_summary": outcome.fix_summary,
+                    "reproduction_round": outcome.reproduction_round,
+                    "repair_round": outcome.repair_round,
+                    "model_calls": state.model_calls + outcome.model_calls,
+                    "tool_calls": state.tool_calls + outcome.tool_calls,
+                    "sandbox_duration_ms": (
+                        state.sandbox_duration_ms + outcome.sandbox_duration_ms
+                    ),
+                    "usage": {
+                        "input_tokens": state.usage.input_tokens + outcome.input_tokens,
+                        "output_tokens": state.usage.output_tokens + outcome.output_tokens,
+                        "total_tokens": state.usage.total_tokens + outcome.total_tokens,
+                        "estimated_cost": (
+                            state.usage.estimated_cost + outcome.estimated_cost
+                        ),
+                    },
+                    "agent_blocked_code": outcome.blocked_code,
+                    "agent_blocked_summary": outcome.blocked_summary,
+                    "agent_final_phase": outcome.final_phase,
+                    "last_error_code": outcome.blocked_code,
+                }
             snapshot = reproduction.source_workspace.resolve(state.source_snapshot_ref)
             allowed_source_paths = SourceReader(snapshot.root).list_readable_paths()
             execution = await plan_reproduction(
@@ -516,6 +577,79 @@ def build_gate_graph(
                 "reproduction_plan_ref": plan_ref,
                 "model_calls": state.model_calls + execution.model_calls,
                 "usage": _add_usage(state, execution),
+            }
+
+        def route_after_repair_agent(state: AgentState) -> str:
+            if state.agent_blocked_code is None:
+                return "finish"
+            if (
+                state.agent_final_phase == "repairing"
+                and state.repair_result_ref is not None
+            ):
+                return "finish"
+            if (
+                state.agent_blocked_code == "cannot_reproduce"
+                and state.reproduction_result_ref is not None
+            ):
+                return "finish"
+            return "blocked"
+
+        def route_after_agent_reproduction_finish(state: AgentState) -> str:
+            if state.status is not AgentRunStatus.REPAIRING:
+                return "end"
+            return "failure" if state.agent_blocked_code else "success"
+
+        async def finish_agent_blocked(state: AgentState) -> dict[str, object]:
+            code = state.agent_blocked_code or "needs_human"
+            summary = state.agent_blocked_summary or "repair agent could not continue"
+            feedback = await _owned_feedback(
+                feedback_repository,
+                state.feedback_id,
+                state.claim_token,
+            )
+            target = (
+                FeedbackStatus.CANNOT_REPRODUCE
+                if code == "cannot_reproduce"
+                else FeedbackStatus.NEEDS_HUMAN
+            )
+            if feedback.status is FeedbackStatus.REPRODUCING:
+                await feedback_repository.transition(
+                    feedback.id,
+                    claim_token=state.claim_token,
+                    target=target,
+                    error_code=code,
+                    error_message=summary,
+                )
+            elif feedback.status is not target:
+                raise ClaimTokenMismatchError("blocked repair was finalized elsewhere")
+            report = ReproductionReport(
+                disposition=ReproductionDisposition.NOT_REPRODUCED,
+                round=max(1, min(state.reproduction_round or 1, 2)),
+                target_test_selector=(
+                    state.target_test_selector
+                    or f"test_feedback_{state.feedback_id.hex[:8]}_blocked"
+                ),
+                expected_failure_kind=(
+                    ExpectedFailureKind(state.expected_failure_kind)
+                    if state.expected_failure_kind
+                    else ExpectedFailureKind.ASSERTION
+                ),
+                failure_code=code,
+                failure_summary=summary,
+            )
+            await run_repository.complete_reproduction(
+                state.run_id,
+                report,
+                **_usage_arguments(state),
+            )
+            return {
+                "status": AgentRunStatus.COMPLETED,
+                "route": (
+                    GateRoute.NEEDS_HUMAN.value
+                    if target is FeedbackStatus.NEEDS_HUMAN
+                    else state.route
+                ),
+                "last_error_code": code,
             }
 
         async def generate_test_edit(state: AgentState) -> dict[str, object]:
@@ -1098,7 +1232,10 @@ def build_gate_graph(
             next_round = state.repair_round + 1
             if (
                 next_model_calls > repair.max_model_calls
-                or int(next_usage["total_tokens"]) > repair.max_total_tokens
+                or (
+                    repair.max_total_tokens is not None
+                    and int(next_usage["total_tokens"]) > repair.max_total_tokens
+                )
             ):
                 return {
                     "repair_round": next_round,
@@ -1498,11 +1635,34 @@ def build_gate_graph(
                 or state.source_snapshot_ref is None
                 or state.test_patch_ref is None
                 or state.fix_patch_ref is None
-                or state.reproduction_plan_ref is None
+                or (
+                    reproduction.agent_runtime is None
+                    and state.reproduction_plan_ref is None
+                )
             ):
                 raise ValueError("final validation state is incomplete")
             snapshot = reproduction.source_workspace.resolve(state.source_snapshot_ref)
-            plan = artifact_store.read_reproduction_plan(state.reproduction_plan_ref)
+            if reproduction.agent_runtime is not None:
+                if (
+                    state.target_test_selector is None
+                    or state.expected_failure_kind is None
+                ):
+                    raise ValueError("repair agent validation contract is incomplete")
+                target_test_selector = state.target_test_selector
+                expected_failure_kind = ExpectedFailureKind(
+                    state.expected_failure_kind
+                )
+                trusted_check = "target_regression"
+            else:
+                assert state.reproduction_plan_ref is not None
+                plan = artifact_store.read_reproduction_plan(
+                    state.reproduction_plan_ref
+                )
+                target_test_selector = plan.target_test_selector
+                expected_failure_kind = plan.expected_failure_kind
+                trusted_check = (
+                    plan.oracle.trusted_assertion_name() or plan.oracle.kind.value
+                )
             test_patch = artifact_store.read_patch(state.test_patch_ref)
             fix_patch = artifact_store.read_patch(state.fix_patch_ref)
             validated = compose_validated_patch(snapshot.root, test_patch, fix_patch)
@@ -1543,7 +1703,7 @@ def build_gate_graph(
                     fix_patch_sha256=(
                         _sha256_bytes(fix_patch) if include_fix else None
                     ),
-                    target_test_selector=plan.target_test_selector,
+                    target_test_selector=target_test_selector,
                     expires_at=datetime.now(UTC) + timedelta(minutes=15),
                 )
                 with repair.telemetry.start_tool(
@@ -1602,14 +1762,13 @@ def build_gate_graph(
                 }
 
             baseline_result, target_result, full_result = results
-            trusted_check = plan.oracle.trusted_assertion_name() or plan.oracle.kind.value
             validation = build_validation_result(
                 base_sha=state.base_sha,
                 source_snapshot_sha256=snapshot.source_snapshot_sha256,
                 test_patch_sha256=_sha256_bytes(test_patch),
                 fix_patch_sha256=_sha256_bytes(fix_patch),
-                target_test_selector=plan.target_test_selector,
-                expected_failure_kind=plan.expected_failure_kind,
+                target_test_selector=target_test_selector,
+                expected_failure_kind=expected_failure_kind,
                 trusted_docx_check=trusted_check,
                 baseline_result=baseline_result,
                 target_result=target_result,
@@ -1958,6 +2117,78 @@ def build_gate_graph(
                 "last_error_code": "budget_exhausted",
             }
 
+        if reproduction.agent_runtime is not None:
+            # 新实现直接把复现与修复交给一个 create_agent 工具循环；旧固定模型节点不注册，
+            # 因此生产图不存在双轨或按失败回退到旧路径的行为。
+            builder.add_node("prepare_source", prepare_source)
+            builder.add_node("repair_agent", create_reproduction_plan)
+            builder.add_node("finish_reproduction", finish_reproduction)
+            builder.add_node("finish_agent_blocked", finish_agent_blocked)
+            gate_targets = {"prepare_source": "prepare_source", "end": END}
+            if publishing is not None and publishing.issue_publisher is not None:
+                gate_targets["publish_issue"] = "publish_issue"
+            builder.add_conditional_edges(
+                "route_feedback",
+                route_after_gate,
+                gate_targets,
+            )
+            builder.add_edge("prepare_source", "repair_agent")
+            builder.add_conditional_edges(
+                "repair_agent",
+                route_after_repair_agent,
+                {
+                    "finish": "finish_reproduction",
+                    "blocked": "finish_agent_blocked",
+                },
+            )
+            builder.add_edge("finish_agent_blocked", END)
+            if repair is None:
+                builder.add_edge("finish_reproduction", END)
+            else:
+                builder.add_node("finish_repair_success", finish_repair_success)
+                builder.add_node("finish_repair_failure", finish_repair_failure)
+                builder.add_node("validate_final", validate_final)
+                builder.add_node("finish_validation", finish_validation)
+                builder.add_node("finish_budget_exhausted", finish_budget_exhausted)
+                if publishing is not None and publishing.publisher is not None:
+                    builder.add_node("publish_pull_request", publish_pull_request)
+                    builder.add_node("finish_publication", finish_publication)
+                builder.add_conditional_edges(
+                    "finish_reproduction",
+                    route_after_agent_reproduction_finish,
+                    {
+                        "success": "finish_repair_success",
+                        "failure": "finish_repair_failure",
+                        "end": END,
+                    },
+                )
+                builder.add_edge("finish_repair_failure", END)
+                builder.add_edge("finish_repair_success", "validate_final")
+                builder.add_conditional_edges(
+                    "validate_final",
+                    route_after_final_validation,
+                    {
+                        "budget": "finish_budget_exhausted",
+                        "finish": "finish_validation",
+                    },
+                )
+                if publishing is None or publishing.publisher is None:
+                    builder.add_edge("finish_validation", END)
+                else:
+                    builder.add_conditional_edges(
+                        "finish_validation",
+                        route_after_validation_finish,
+                        {"publish": "publish_pull_request", "end": END},
+                    )
+                    builder.add_edge("publish_pull_request", "finish_publication")
+                    builder.add_edge("finish_publication", END)
+                builder.add_edge("finish_budget_exhausted", END)
+            return builder.compile(
+                checkpointer=checkpointer,
+                interrupt_after=list(interrupt_after) if interrupt_after else None,
+                name="feedback-repair-agent",
+            )
+
         builder.add_node("prepare_source", prepare_source)
         builder.add_node("plan_reproduction", create_reproduction_plan)
         builder.add_node("generate_test_edit", generate_test_edit)
@@ -2128,7 +2359,6 @@ def _budget_allows(
     return (
         state.model_calls + model_calls <= limits.max_model_calls
         and state.tool_calls + tool_calls <= limits.max_tool_calls
-        and state.usage.total_tokens <= limits.max_total_tokens
         and state.sandbox_duration_ms <= limits.max_sandbox_seconds * 1000
     )
 

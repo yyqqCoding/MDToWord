@@ -10,6 +10,7 @@ import psycopg
 
 from agent.config import AgentConfig
 from agent.domain.errors import ConfigurationError
+from agent.repair_agent.models import build_chat_model_bundle
 
 
 _FEEDBACK_ATTENTION_STATUSES = (
@@ -59,6 +60,7 @@ def validate_controller_config(config: AgentConfig) -> str:
 
     database_url = config.require_database_url()
     config.require_model_settings()
+    build_chat_model_bundle(config)
     config.require_langfuse_settings()
     config.require_stage_c_controller_settings()
     config.require_stage_f_publisher_settings()

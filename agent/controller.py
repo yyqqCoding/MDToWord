@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from agent.domain.enums import AgentRunStatus, FeedbackStatus, GateRoute
-from agent.domain.errors import AgentRunNotFoundError
+from agent.domain.errors import AgentRunNotFoundError, CheckpointConfigurationError
 from agent.domain.failures import (
     FailureEvent,
     FailureHandling,
@@ -34,6 +34,10 @@ from agent.reproduction import (
     TEST_GENERATION_PROMPT_VERSION,
 )
 from agent.repair import FIX_GENERATION_PROMPT_VERSION
+from agent.repair_agent.runtime import (
+    REPAIR_AGENT_PROMPT_VERSION,
+    REPAIR_SUMMARY_PROMPT_VERSION,
+)
 from agent.repositories.base import AgentRunRepository, FeedbackRepository
 from agent.state import AgentState
 from agent.telemetry.base import NoopTelemetry, RunTrace, Telemetry
@@ -109,6 +113,10 @@ class GateController:
                 failure_recorder=self._failure_recorder,
             )
         self._reproduction_enabled = observed_reproduction is not None
+        self._agentic_repair_enabled = bool(
+            observed_reproduction is not None
+            and observed_reproduction.agent_runtime is not None
+        )
         observed_repair = None
         if repair is not None:
             observed_repair = replace(
@@ -171,15 +179,22 @@ class GateController:
             prompt_versions={
                 "gate": GATE_PROMPT_VERSION,
                 **(
-                    {
-                        "plan_reproduction": REPRODUCTION_PLAN_PROMPT_VERSION,
-                        "generate_test": TEST_GENERATION_PROMPT_VERSION,
-                        **(
-                            {"generate_fix": FIX_GENERATION_PROMPT_VERSION}
-                            if self._repair_enabled
-                            else {}
-                        ),
-                    }
+                    (
+                        {
+                            "repair_agent": REPAIR_AGENT_PROMPT_VERSION,
+                            "repair_summary": REPAIR_SUMMARY_PROMPT_VERSION,
+                        }
+                        if self._agentic_repair_enabled
+                        else {
+                            "plan_reproduction": REPRODUCTION_PLAN_PROMPT_VERSION,
+                            "generate_test": TEST_GENERATION_PROMPT_VERSION,
+                            **(
+                                {"generate_fix": FIX_GENERATION_PROMPT_VERSION}
+                                if self._repair_enabled
+                                else {}
+                            ),
+                        }
+                    )
                     if self._reproduction_enabled
                     else {}
                 ),
@@ -246,18 +261,15 @@ class GateController:
         config = _thread_config(run_id)
         snapshot = await self.graph.aget_state(config)
         if snapshot.values:
-            if (
-                self._repair_enabled
-                and run.status is AgentRunStatus.REPAIRING
-                and not snapshot.next
-            ):
-                # 阶段 D 的旧 Graph 已在 finish_reproduction 后到达 END；升级到阶段 E
-                # 时从该确定性节点追加新 checkpoint，使同一 run 继续而不重跑 Gate。
-                await self.graph.aupdate_state(
-                    config,
-                    {},
-                    as_node="finish_reproduction",
+            if snapshot.values.get("schema_version") != 3:
+                error = CheckpointConfigurationError(
+                    "checkpoint schema is incompatible with repair agent v3",
+                    phase=run.status.value,
+                    node="controller_resume",
+                    operation="resume_checkpoint",
                 )
+                failed = await self._finalize_run_failure(run_id, error)
+                return _outcome_from_run(failed)
             return await self._invoke_resumed(
                 None,
                 run,
@@ -434,7 +446,12 @@ class GateController:
             feedback_status = (
                 FeedbackStatus.NEEDS_HUMAN
                 if failure.code
-                in {"auth_error", "sandbox_auth_error", "source_auth_error"}
+                in {
+                    "auth_error",
+                    "sandbox_auth_error",
+                    "source_auth_error",
+                    "external_dependency_required",
+                }
                 else FeedbackStatus.FAILED
             )
         if (

@@ -13,6 +13,9 @@ GitHub 发布、数据库更新、Trace 写入和状态转换不作为模型工�
 
 ## 2. 模型可用工具
 
+本节工具由 `create_agent` 按当前阶段动态暴露。旧的“先返回 ReproductionPlan，再由固定
+Graph 节点消费”已被直接替换；模型通过工具参数逐步提交测试、修复和完成结论。
+
 ### 2.1 `search_source`
 
 用途：在只读源码快照中搜索符号或文本。
@@ -53,29 +56,30 @@ GitHub 发布、数据库更新、Trace 写入和状态转换不作为模型工�
 输入包含 `edits`、`target_test_selector`、`oracle`、`expected_failure_kind` 和简短说明。
 此工具只生成和检查补丁，不执行代码。
 
-### 2.4 `run_reproduction`
+### 2.4 `run_sandbox`
 
-用途：在基线应用 `test.patch` 并执行固定目标测试。
+用途：根据受信 `phase` 在基线应用 `test.patch`，或应用 `test.patch + fix.patch`，执行
+当前已登记的固定目标测试。
 
 ```json
 {
-  "test_patch_ref": "artifact://.../test.patch",
-  "target_test_selector": "feedback_ab12cd",
-  "expected_failure_kind": "assertion"
+  "reason": "验证当前候选"
 }
 ```
 
-模型不能指定 pytest 参数。Controller 将请求转换为固定 Sandbox Job。
+模型不能传 patch 路径、pytest 参数、job ID 或命令。Controller 从受信 State 构造固定
+Sandbox Job。
 
 ### 2.5 `submit_fix_edits`
 
 用途：提交允许后端源码的结构化编辑，由 Workspace 生成 `fix.patch`。此工具不得
 编辑测试补丁、新增测试、配置、依赖或 Agent 文件。
 
-### 2.6 `run_target_validation`
+### 2.6 `complete_reproduction` / `complete_repair` / `report_blocked`
 
-用途：在全新基线中应用 test 与 fix patch，运行固定目标测试并返回结构化摘要。
-全量验证由确定性 Graph 节点执行，模型没有直接调用权限。
+完成工具只声明“请求结束当前阶段”。工具必须检查受信 Sandbox 结果、patch 引用和阶段
+字段齐全才会写入 terminal；`report_blocked` 只接受稳定原因枚举和脱敏摘要。全量验证由
+确定性 Graph 节点执行，模型没有直接调用权限。
 
 ## 3. 结构化编辑
 
@@ -107,62 +111,43 @@ GitHub 发布、数据库更新、Trace 写入和状态转换不作为模型工�
 - Workspace 在临时基线上应用编辑后用 Git 生成确定性 diff；
 - 后续检查与发布只使用生成的 patch，不再信任模型原始编辑。
 
-## 4. 生成测试契约
+## 4. 提交测试契约
 
-`TestGenerationResult`：
+`submit_test_edits` 直接使用判别式工具参数：编辑、目标 selector、预期失败类型和人类可读
+理由。它不再嵌套 `oracle.parameters` 通用对象，也不要求模型预先列出未知问题类别。
+
+受信 conversion probe 已证明转换抛错时，Controller 固定生成转换测试并关闭
+`submit_test_edits`；转换成功时模型提交语义测试代码，Patch Policy、AST 检查和 Sandbox
+共同验证其是否真正证明用户问题。DOCX 专项 Validator 的名称与参数只能由受信代码登记，
+不能由模型提供任意 XPath、Python 回调或动态参数字典。
+
+工具参数：
 
 ```text
 edits: Edit[]
 target_test_selector: string
-oracle:
-  kind: conversion_success | conversion_error | docx_xpath | text_absent | style_present
-  parameters:
-    validator: registered-validator | null
-    minimum: integer | null
-    text: string | null
-    style: string | null
 expected_failure_kind: assertion | unexpected_conversion_error
 reason: string
-files_needed_for_fix: string[]
-extension_sync_required: bool
 ```
 
 测试统一追加到 `backend/tests/test_feedback_regressions.py`，名称为
 `test_feedback_<feedback-id前8位>_<行为>`。不得包含完整 UUID、联系方式或完整问题
 描述。测试必须离线、确定且不读取环境 Secret。
 
-模型接口使用严格 Structured Outputs：每个对象属性都进入 `required`，未使用字段以
-`null` 表示，动态参数字典禁止进入模型 Schema。结构格式错误最多修正一次，修正提示
-只包含 Pydantic 字段路径/错误类型，不包含原始输出；通过 Schema 后若违反固定测试路径
-或受信断言 Policy，也只允许一次不回传测试源码的本地规则修正。
-
-`extension_sync_required` 只是审查元数据；当前修复若必须修改扩展才能成立，应在 Gate
-阶段以 `requires_extension_change=true` 路由为 `issue_required`，不得生成测试或补丁。
-
-`files_needed_for_fix` 只接受 Policy `write.fix_exact` 中的路径，即
-`backend/app/normalizer.py` 与 `backend/app/pandoc_runner.py`；不确定时填空数组。
-`backend/app/mermaid_renderer.py` 可读不可写，是模型最常猜错的一项，拒绝消息因此直接
-列出白名单 —— 该消息会进入格式修正提示，只说「invalid」模型无从改起。
-
 新建文件（含 `backend/tests/fixtures/feedback/` 下的固件）必须用 `full_file`。
-`backend/tests/test_feedback_regressions.py` 已存在且非空时，Controller 在
-`regression_append_context` 中提供最短唯一文件尾部 `append_anchor`；模型必须用
-`search_replace`，让 `search` 精确等于该锚点、`replace` 先原样保留锚点再追加新测试。
-只有该文件为空时才允许 `full_file`。这些跨字段规则同时写进 `generate_test.md` 并由
-本地 Policy 校验：严格 Structured Outputs 要求所有字段都出现，但无法从 Schema 推断
-文件是否存在、模式选择和只能追加的约束。
+已有 `backend/tests/test_feedback_regressions.py` 必须用唯一 `search_replace` 追加，不能
+覆盖或弱化已有测试；仅空文件允许 `full_file`。selector 必须使用当前 feedback 的 8 位
+前缀。工具 Schema 只负责字段结构，本地 Patch/AST Policy 继续负责跨字段与源码安全规则；
+拒绝原因作为脱敏 ToolMessage 返回 Agent 修正，不重新请求整段计划 JSON。
 
 ## 5. 生成修复契约
 
-`FixGenerationResult`：
+`submit_fix_edits` 参数：
 
 ```text
 edits: Edit[]
 summary: string
-behavior_changes: string[]
-risk_level: low | medium | high
-manual_review_notes: string[]
-extension_sync_required: bool
+risk: low | medium | high
 ```
 
 风险等级仅用于 PR 展示，不改变 Policy。高风险结果仍须通过相同检查，并在 PR 中

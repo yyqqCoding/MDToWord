@@ -21,8 +21,8 @@ class AgentState(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    # v2 增加 area 与 Issue 发布引用；仍接受 v1 以恢复升级前 checkpoint。
-    schema_version: Literal[1, 2] = 2
+    # v3 直接替换旧计划 JSON 路径；旧 checkpoint 不跨不兼容 Schema 恢复。
+    schema_version: Literal[3] = 3
     run_id: UUID
     feedback_id: UUID
     # claim token 是恢复条件更新所需的租约能力，只存放在私有 checkpoint 中。
@@ -40,6 +40,14 @@ class AgentState(BaseModel):
     source_snapshot_ref: str | None = None
     gate_result_ref: str | None = None
     reproduction_plan_ref: str | None = None
+    target_test_selector: str | None = Field(
+        default=None,
+        pattern=r"^[a-z0-9_]{1,80}$",
+    )
+    expected_failure_kind: str | None = None
+    agent_blocked_code: str | None = None
+    agent_blocked_summary: str | None = None
+    agent_final_phase: str | None = None
     test_patch_ref: str | None = None
     reproduction_result_ref: str | None = None
     fix_patch_ref: str | None = None

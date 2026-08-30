@@ -87,6 +87,9 @@ SQL migration 为 [001_agent_foundation.sql](migrations/001_agent_foundation.sql
 - `FALLBACK_MODEL_ENABLED=true` 时，`FALLBACK_MODEL_NAME/API_KEY/BASE_URL` 必须完整配置。
   Provider 仍按统一 `openai_compatible` 处理：前两次临时传输失败继续请求主接口，第三次
   请求备用接口，总 attempt 不超过三次；认证、权限、配置和其他永久错误不会切换；
+- Repair Agent 必须启用备用模型。LangChain 未登记自定义模型窗口时，还要配置
+  `MODEL_CONTEXT_WINDOW` 与 `FALLBACK_MODEL_CONTEXT_WINDOW`；系统取两者较小值，在
+  65% 总结、85% 停止并保留最近 20%；
 - `LANGFUSE_HOST` 必须与 Cloud 项目区域一致，例如美国区
   `https://cloud.langfuse.com` 或日本区 `https://jp.cloud.langfuse.com`；
 - `SUPABASE_AGENT_KEY` 与 Feedback API 凭据必须不同，只能由自托管 Controller 使用；
@@ -94,8 +97,9 @@ SQL migration 为 [001_agent_foundation.sql](migrations/001_agent_foundation.sql
   `agent_runs.estimated_cost` 才会大于 `0`。Langfuse 自行推算的展示成本不会回写数据库。
 - 阶段 D 的长源码请求默认允许 180 秒，可用
   `REPRODUCTION_MODEL_TIMEOUT_SECONDS` 在 30～300 秒内调整；Gate 使用上述独立短请求超时。
-- 阶段 E 默认限制 8 次模型、30 次工具、200,000 tokens 和 900 秒 Sandbox；配置名见
-  `.env.example`。`BACKEND_BASELINE_SKIPPED` 必须填写当前固定后端基线值，当前为 `0`。
+- Repair Agent 默认限制 12 次模型轮次、30 次工具和 900 秒 Sandbox；不再使用绑定具体
+  模型的固定总 Token 上限。配置名见 `.env.example`。`BACKEND_BASELINE_SKIPPED` 必须填写
+  当前固定后端基线值，当前为 `0`。
 
 加载 `.env` 后，对可丢弃的 `pending` 反馈运行真实 Gate：
 
@@ -107,7 +111,8 @@ set +a
   --provider configured
 ```
 
-真实 Provider 仍然没有任何工具权限，使用严格 JSON Schema，格式错误最多修正一次。
+Gate Provider 仍然没有任何工具权限并使用严格 JSON Schema；后端缺陷阶段使用
+`create_agent` 注册的受限工具循环。
 Provider usage 写入 `agent_runs`；Langfuse 只接收哈希和结构化摘要，不发送完整
 Markdown、联系方式、Prompt 或密钥。Langfuse 导出失败不改变 Gate 路由；模型/API
 重试耗尽会把运行和反馈终结为 `failed`，避免 Scheduler 无限恢复同一运行。

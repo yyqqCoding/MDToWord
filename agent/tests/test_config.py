@@ -159,25 +159,27 @@ def test_fallback_model_is_optional_and_requires_complete_enabled_settings(
     assert "fallback-secret" not in repr(configured)
 
 
-def test_stage_e_budgets_are_bounded_and_configurable(tmp_path: Path):
+def test_repair_agent_budgets_and_context_windows_are_configurable(tmp_path: Path):
     config = AgentConfig.from_env(
         {
             "SUPABASE_URL": "https://example.supabase.co",
             "SUPABASE_AGENT_KEY": "secret",
             "MAX_MODEL_CALLS_PER_RUN": "10",
             "MAX_TOOL_CALLS_PER_RUN": "40",
-            "MAX_TOTAL_TOKENS_PER_RUN": "250000",
             "MAX_SANDBOX_SECONDS_PER_RUN": "1200",
             "BACKEND_BASELINE_SKIPPED": "1",
+            "MODEL_CONTEXT_WINDOW": "131072",
+            "FALLBACK_MODEL_CONTEXT_WINDOW": "65536",
         },
         project_root=tmp_path,
     )
 
     assert config.max_model_calls_per_run == 10
     assert config.max_tool_calls_per_run == 40
-    assert config.max_total_tokens_per_run == 250_000
     assert config.max_sandbox_seconds_per_run == 1200
     assert config.backend_baseline_skipped == 1
+    assert config.model_context_window == 131_072
+    assert config.fallback_model_context_window == 65_536
 
 
 def test_checkpoint_database_url_is_optional_until_runtime_needs_it(tmp_path: Path):

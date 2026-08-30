@@ -20,24 +20,21 @@ def test_agent_state_contains_only_recoverable_metadata():
 
     dumped = state.model_dump(mode="json")
 
-    assert dumped["schema_version"] == 2
+    assert dumped["schema_version"] == 3
     assert "markdown_content" not in dumped
     assert "contact" not in dumped
 
 
-def test_agent_state_v2_still_accepts_v1_checkpoint():
-    state = AgentState(
-        schema_version=1,
-        run_id=uuid4(),
-        feedback_id=uuid4(),
-        claim_token=uuid4(),
-        trace_id="trace-v1",
-        status=AgentRunStatus.GATING,
-    )
-
-    assert state.schema_version == 1
-    assert state.area is None
-    assert state.issue_publication_result_ref is None
+def test_agent_state_v3_rejects_incompatible_checkpoint():
+    with pytest.raises(ValidationError):
+        AgentState(
+            schema_version=2,
+            run_id=uuid4(),
+            feedback_id=uuid4(),
+            claim_token=uuid4(),
+            trace_id="trace-v2",
+            status=AgentRunStatus.GATING,
+        )
 
 
 def test_agent_state_rejects_large_user_fields():

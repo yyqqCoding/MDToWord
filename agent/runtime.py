@@ -1,7 +1,7 @@
 """统一装配真实 D→E→F Controller，CLI 与生产 Scheduler 共享同一配置边界。"""
 
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import AsyncIterator, Literal
 
 import httpx
@@ -16,6 +16,8 @@ from agent.graph import (
     ReproductionDependencies,
 )
 from agent.operations.site_notify import TraceSiteNotifier, build_trace_site_notifier
+from agent.repair_agent.models import build_chat_model_bundle
+from agent.repair_agent.runtime import RepairAgentRuntime
 from agent.providers.openai_compatible import OpenAICompatibleProvider
 from agent.publishing.github import (
     GitHubAppTokenProvider,
@@ -47,6 +49,13 @@ class ConfiguredRuntime:
     run_repository: SupabaseAgentRunRepository
     # 未配置展示站点回调时为 None，Scheduler 据此完全跳过推送。
     trace_site_notifier: TraceSiteNotifier | None = None
+
+
+class _SilentFailureRecorder(FailureRecorder):
+    """Agent 内 Sandbox attempt 由 Middleware 统一记录，避免 Client 误记为 STOP。"""
+
+    def record(self, event: object) -> None:
+        return None
 
 
 @asynccontextmanager
@@ -102,8 +111,10 @@ async def open_configured_runtime(
         reproduction = None
         repair = None
         publishing = None
+        chat_models = None
 
         if stage in {"reproduction", "repair", "publication"}:
+            chat_models = build_chat_model_bundle(config)
             repository, read_token, worker_url, worker_credential = (
                 config.require_stage_c_controller_settings()
             )
@@ -138,6 +149,13 @@ async def open_configured_runtime(
                     client=shared_client,
                     failure_recorder=failure_recorder,
                 ),
+                agent_sandbox_client=HttpSandboxClient(
+                    worker_url,
+                    credential=worker_credential,
+                    client=shared_client,
+                    max_transport_retries=0,
+                    failure_recorder=_SilentFailureRecorder(),
+                ),
                 telemetry=telemetry,
                 failure_recorder=failure_recorder,
                 model_timeout_seconds=config.reproduction_model_timeout_seconds,
@@ -150,7 +168,6 @@ async def open_configured_runtime(
                 model_timeout_seconds=config.reproduction_model_timeout_seconds,
                 max_model_calls=config.max_model_calls_per_run,
                 max_tool_calls=config.max_tool_calls_per_run,
-                max_total_tokens=config.max_total_tokens_per_run,
                 max_sandbox_seconds=config.max_sandbox_seconds_per_run,
                 baseline_skipped=config.backend_baseline_skipped,
             )
@@ -221,6 +238,19 @@ async def open_configured_runtime(
             database_url,
             config.checkpoint_schema,
         ) as checkpointer:
+            if reproduction is not None:
+                assert chat_models is not None
+                reproduction = replace(
+                    reproduction,
+                    agent_runtime=RepairAgentRuntime(
+                        chat_models,
+                        checkpointer=checkpointer,
+                        max_model_calls=config.max_model_calls_per_run,
+                        max_tool_calls=config.max_tool_calls_per_run,
+                        failure_recorder=failure_recorder,
+                        telemetry=telemetry,
+                    ),
+                )
             yield ConfiguredRuntime(
                 controller=GateController(
                     feedback_repository=feedback_repository,

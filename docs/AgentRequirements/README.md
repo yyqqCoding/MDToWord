@@ -23,8 +23,9 @@ Agent 服务自动判断：后端缺陷在隔离沙箱中复现、修复和确�
 - 用户只提交原 Markdown 和问题描述，不采集 `expected_behavior`；
 - 插件版本从 `extension/dist/manifest.json` 读取，不逐条向用户采集版本；
 - 每次运行固定一个 `base_sha`，最终产物记录一个 `validated_patch_sha256`；
-- MVP 通常使用一个模型完成门禁、复现规划、测试生成和修复生成；Mermaid 测试生成耗尽
-  格式修正，或第一轮测试编辑无效时，Controller 可用固定受信 drawing 模板继续复现。
+- Gate 保持无工具严格分类；后端修复使用一个 `create_agent` ReAct 工具循环。Controller
+  先执行受信 conversion probe：转换抛错时冻结确定性转换测试，转换成功时由 Agent 根据
+  反馈设计语义测试。旧 `ReproductionPlan` 与通用 Oracle 参数对象被直接替换，不保留双轨。
 - 失败处理使用 `FailureCause + RetryPolicy + FailureRecorder`：适配器标准化错误，调用点
   补充阶段和节点，本地纯策略只决定同输入传输调用的 `RETRY/STOP`；格式修正、业务修订、
   受信 fallback 和 `stale_base` 仍由现有 Provider/Graph 所有。短传输调用包含首次在内最多
@@ -42,6 +43,7 @@ Agent 服务自动判断：后端缺陷在隔离沙箱中复现、修复和确�
 | [requirements.md](requirements.md) | 目标、范围、反馈路由、成功标准与非目标 |
 | [architecture.md](architecture.md) | 部署组件、依赖方向、状态机与数据所有权 |
 | [agent-runtime.md](agent-runtime.md) | LangGraph 状态、节点、有限 ReAct 和恢复语义 |
+| [repair-agent-loop.md](repair-agent-loop.md) | `create_agent` 修复工具循环、Middleware、并行、Summary 与真实模型预检 |
 | [failure-handling-and-retries.md](failure-handling-and-retries.md) | 失败分类、重试策略、最终失败快照与验收契约 |
 | [tool-contracts.md](tool-contracts.md) | 模型可用工具、结构化编辑、验证任务与结果契约 |
 | [security-and-sandbox.md](security-and-sandbox.md) | 信任边界、权限、Prompt Injection、Docker 与补丁策略 |
@@ -51,13 +53,14 @@ Agent 服务自动判断：后端缺陷在隔离沙箱中复现、修复和确�
 
 策略只维护一份：权限、路径白名单和沙箱约束只在
 `security-and-sandbox.md` 定义；状态转换只在 `architecture.md` 定义；工具请求与
-结果 Schema 只在 `tool-contracts.md` 定义；阶段 J 的失败分类与重试决定只在
+结果 Schema 只在 `tool-contracts.md` 定义；Repair Agent 循环只在
+`repair-agent-loop.md` 定义；阶段 J 的失败分类与重试决定只在
 `failure-handling-and-retries.md` 定义。其他文档通过引用使用，不复制规则；生产行为仍以
 已部署 migration、代码版本和 `implementation-plan.md` 的验收状态为准。
 
 ## 当前实现状态
 
-截至 2026-08-29：
+截至 2026-08-30：
 
 - 阶段 A、B1 和 B2 已完成；
 - 阶段 B3 的真实模型分类、Prompt Injection 隔离、Langfuse Trace、Token 统计和默认
@@ -96,6 +99,9 @@ Agent 服务自动判断：后端缺陷在隔离沙箱中复现、修复和确�
   FailureSnapshot、Scheduler 守护和 Trace Site 白名单已完成本地实现；Agent 自动测试与
   Trace Site 测试/类型检查通过；Provider 已在同一三次总 attempt 内支持可选第三次备用
   OpenAI-compatible 接口，Gate 30～120 秒短超时可配置。当前增量尚未生产部署。
+- 阶段 K 的权威契约与本地实现正在开发：生产图已改为 conversion probe 加单个
+  `create_agent` 工具循环，并新增主主备 Middleware、只读并行、比例 Summary 与
+  `model-smoke`；只有完成全量自动测试和维护者真实模型/Sandbox 验收后才可记为完成。
 
 可直接执行的配置和命令见 [agent/README.md](../../agent/README.md)。阶段划分、历史检查点
 和验收证据以 [implementation-plan.md](implementation-plan.md) 为准；本文档中的目标

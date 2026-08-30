@@ -1167,6 +1167,7 @@ Cloud，使真实 Gate 调用具备严格结构化输出、有限重试、真实
 | H 公开反馈入口 IP 限流 | Completed | 2026-08-18；插件人工验收 2026-08-19 | 限流/API/插件与自动测试完成；生产 Docker 后端全量 71 passed；Render 黑盒验证伪造头不能绕过、Wi-Fi/手机身份不同、分钟窗口与 `Retry-After` 正确；插件限流提示与输入保留人工验收通过，`0.3.3` 发布构建已准备 |
 | I 功能需求 Issue 路由与展示数据正确性 | Production core accepted / Extension release build pending | 2026-08-24 | Agent 321 passed（5 skipped）且 compileall 通过；Trace Site 10 passed/typecheck 与 Vercel 生产构建通过；migration、App 权限和 ECS 部署完成；真实 run `cc34f82c-...` 创建脱敏 Issue #3，feedback=`issue_opened`，概览 52 次运行与 Supabase 对账一致；扩展 tsc 通过，发布构建待干净原生 binding 环境完成 |
 | J 统一失败处理与重试策略 | Production partial / source fix local pending | 本地回归 2026-08-30 | 生产真实401暴露GitHub源码错误归因缺口；本地补齐源码认证、临时失败三次重试和安全详情。Agent 351 passed、5 skipped且compileall通过；Trace Site 10 passed/typecheck通过，build仍受既有lightningcss原生模块缺失阻断 |
+| K `create_agent` 修复工具循环 | Local implemented / production acceptance pending | 本地回归 2026-08-30 | conversion probe、Middleware、并行、Summary 与 `model-smoke` 已实现；Agent 363 passed（5 skipped）且 compileall 通过；真实主备模型与 Sandbox 证据待部署后登记 |
 
 状态只在完成对应验收后更新。已有代码不因存在文件或历史提交自动视为通过。
 
@@ -1262,3 +1263,46 @@ Cloud，使真实 Gate 调用具备严格结构化输出、有限重试、真实
   `lightningcss.linux-x64-gnu.node`缺失失败，未安装依赖或将环境错误记为通过；
 - 本节只登记本地修复证据。新错误码、三次GitHub读取attempt及转人工行为仍须部署后用可
   丢弃反馈验收，未取得新run证据前不得写成生产完成。
+
+## 16. 阶段 K：`create_agent` 修复工具循环
+
+**状态：本地实现与自动测试完成，生产验收待执行（2026-08-30）**
+
+权威设计见 [repair-agent-loop.md](repair-agent-loop.md)。本阶段直接替换旧的
+`ReproductionPlan -> generate_test -> generate_fix` 生产路径，不保留按失败回退旧路径；
+Gate、源码快照、Sandbox Worker、最终独立验证与发布边界不变。
+
+### 交付范围
+
+- 受信 conversion probe 先区分转换抛错与转换成功；前者冻结确定性转换测试，后者由
+  `create_agent` 根据反馈与源码构造语义测试；
+- 使用官方 Todo、Summarization、ToolRetry、ToolError、Model/Tool Call Limit，并增加
+  主主备模型重试、阶段工具权限、并行冲突和完成守卫 Middleware；
+- 同批只读工具允许并行，一次最多一个 Sandbox；Worker 本身仍全局单并发；
+- Summary 使用备用模型，有效窗口取主备较小值，65% 触发、85% fail closed、保留 20%，
+  不使用固定总 Token 上限；
+- 新增只读 `mdtoword-agentctl model-smoke`，用合成数据验证主备 profile、tool calling、
+  并行、usage/cache 字段、Summary 内容和比例阈值；
+- State Schema 升至 v3，不兼容旧 checkpoint；部署前必须确认没有需要恢复的活动 run。
+
+### 本地实现证据
+
+- 使用 `langchain.agents.create_agent` 直接替换生产复现与修复模型节点；外层 LangGraph
+  继续拥有 Gate、源码快照、可信终态、独立验证和发布，旧 checkpoint 因 State Schema v3
+  被明确拒绝，不按失败回退旧生产路径；
+- conversion probe、源码读/搜索、测试与修复补丁提交、Sandbox、可信完成/阻塞工具已经接入
+  本地 Policy；同批只读调用可并行，但写工具互斥且至多包含一个 Sandbox 调用；
+- 主模型临时失败按 A/A/B 和 1 秒、2 秒退避，永久错误不重试；Sandbox 工具由
+  Middleware 统一控制包含首次最多三次，底层 Client 不再嵌套重试；
+- Summary 使用备用模型和九段固定恢复契约，按主备有效窗口较小值在 65% 触发、85%
+  fail closed、保留 20%，未设置固定总 Token 上限；
+- 新增只读 `mdtoword-agentctl model-smoke`，不访问数据库、GitHub、Sandbox 或用户源码，
+  用合成消息检查真实主备模型的工具调用、并行、usage/cache 字段及 Summary 合约；
+- `.venv/bin/python -m pytest agent/tests -q`：363 passed、5 skipped；跳过项仍为需要真实
+  Docker 条件的集成测试。`.venv/bin/python -m compileall -q agent` 通过。
+
+### 生产待验收
+
+1. Scheduler 关闭时在生产主机运行 `model-smoke`；
+2. 使用可丢弃反馈分别验证 conversion error 与 conversion success/semantic test 分支；
+3. 核对最终独立验证、FailureSnapshot、Langfuse 用量与发布幂等后才更新为完成。
