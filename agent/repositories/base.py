@@ -69,6 +69,14 @@ class FeedbackRepository(Protocol):
         claim_token: UUID,
     ) -> FeedbackRecord: ...
 
+    async def retry_after_call_budget(
+        self,
+        feedback_id: UUID,
+        *,
+        claim_token: UUID,
+        target: FeedbackStatus,
+    ) -> FeedbackRecord: ...
+
 
 class AgentRunRepository(Protocol):
     async def create(self, run: AgentRunRecord) -> AgentRunRecord: ...
@@ -76,6 +84,13 @@ class AgentRunRepository(Protocol):
     async def get(self, run_id: UUID) -> AgentRunRecord | None: ...
 
     async def find_resumable(self) -> AgentRunRecord | None: ...
+
+    async def retry_after_call_budget(
+        self,
+        run_id: UUID,
+        *,
+        target: AgentRunStatus,
+    ) -> AgentRunRecord: ...
 
     async def mark_gating(self, run_id: UUID) -> AgentRunRecord: ...
 

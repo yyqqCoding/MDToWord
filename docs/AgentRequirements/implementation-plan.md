@@ -1330,3 +1330,21 @@ Gate、源码快照、Sandbox Worker、最终独立验证与发布边界不变�
   typecheck通过；`uv lock --check`及生产导出内容对账通过。Trace Site生产构建仍被工作区
   既有 `lightningcss.linux-x64-gnu.node` 缺失阻断，与本次TypeScript改动无关，不伪造为
   构建通过。上述两项本地修复重新部署前不写成生产完成。
+
+### 调用预算归因与显式续跑回归（2026-08-31）
+
+- 生产 run `80713b39-d2d0-4bc8-a3f6-f7604e829d54` 已完成 conversion-error 基线复现并
+  提交候选修复，但在修复后 Sandbox 前由官方 `ModelCallLimitMiddleware` 抛出
+  `ModelCallLimitExceededError`；旧边界将其误记为 `unexpected_error`、丢失内层累计计量，
+  且终态不能通过 `--resume-run-id` 继续；
+- 默认 `MAX_MODEL_CALLS_PER_RUN` 从 12 调整为 50。官方 Model/Tool Call Limit 改用持久化
+  `thread_limit`，因此同一 run 恢复后沿用已使用次数，不因新的 Graph invoke 重置预算；
+- 官方调用上限异常现在转换为 `budget_exhausted/business`，从 Repair Agent checkpoint
+  补齐真实 phase、模型/工具/Token 增量。预算终态仍不被 Scheduler 自动恢复；只有维护者
+  提高预算并显式指定同一 run ID 时，才可重开原 feedback/run 并复用原 thread、base SHA、
+  对话与候选补丁；其他 `unexpected_error` 不允许重开；
+- 为本次上线前的旧误分类运行增加精确兼容：仅当 FailureSnapshot 的 `error_type` 为官方
+  Model/Tool Call Limit 异常且外层 checkpoint 仍处于 reproducing/repairing 时允许显式续跑；
+- `.venv/bin/python -m pytest agent/tests -q`：369 passed、5 skipped；跳过项仍为需要真实
+  Docker 条件的集成测试。`.venv/bin/python -m compileall -q agent` 通过。当前生产 run 的
+  实际续跑仍待部署后由维护者显式验收，未写成生产完成。

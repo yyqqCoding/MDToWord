@@ -258,12 +258,14 @@ Repair Agent 的业务输出通过工具 Schema 与本地 Policy 校验后作为
 MAX_REPRODUCTION_ROUNDS=<本地配置>
 MAX_REPAIR_ROUNDS=<本地配置>
 MAX_FORMAT_RETRIES=1  # 仅 Gate 严格输出
-MAX_MODEL_CALLS_PER_RUN=12
+MAX_MODEL_CALLS_PER_RUN=50
 MAX_TOOL_CALLS_PER_RUN=30
 MAX_SANDBOX_SECONDS_PER_RUN=900
 ```
 
-任一上限触发后进入 `budget_exhausted`，不能由模型请求继续。
+任一上限触发后进入 `budget_exhausted`，不能由模型请求继续，也不会被 Scheduler 自动
+恢复。维护者提高对应 thread 总预算后，可以显式指定同一 `--resume-run-id`；恢复必须
+复用原 checkpoint、累计计数和候选补丁，不能重新领取 feedback 或重置已用预算。
 上下文不使用固定总 Token 上限；按主备模型有效窗口的 65%/85% 比例总结和停止，详见
 `repair-agent-loop.md`。
 

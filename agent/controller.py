@@ -227,6 +227,8 @@ class GateController:
         run = await self._run_repository.get(run_id)
         if run is None:
             raise ValueError(f"agent run {run_id} does not exist")
+        config = _thread_config(run_id)
+        snapshot = await self.graph.aget_state(config)
         if (
             self._publishing_enabled
             and run.status is AgentRunStatus.FAILED
@@ -238,6 +240,28 @@ class GateController:
                 claim_token=run.claim_token,
             )
             run = await self._run_repository.retry_publication(run.id)
+        if _is_resumable_call_budget_failure(run) and snapshot.values:
+            checkpoint_state = AgentState.model_validate(snapshot.values)
+            if checkpoint_state.schema_version == 3 and checkpoint_state.status in {
+                AgentRunStatus.REPRODUCING,
+                AgentRunStatus.REPAIRING,
+            }:
+                # 预算终态不会被 Scheduler 自动重开；只有维护者显式提供 run_id，且原
+                # checkpoint 仍停在修复节点时，才恢复同一 claim、thread 与候选补丁。
+                feedback_target = (
+                    FeedbackStatus.REPAIRING
+                    if checkpoint_state.status is AgentRunStatus.REPAIRING
+                    else FeedbackStatus.REPRODUCING
+                )
+                await self._feedback_repository.retry_after_call_budget(
+                    run.feedback_id,
+                    claim_token=run.claim_token,
+                    target=feedback_target,
+                )
+                run = await self._run_repository.retry_after_call_budget(
+                    run.id,
+                    target=checkpoint_state.status,
+                )
         if run.status in {
             AgentRunStatus.COMPLETED,
             AgentRunStatus.SECURITY_REJECTED,
@@ -258,8 +282,6 @@ class GateController:
 
         feedback = await self._feedback_repository.get(run.feedback_id)
         feedback_hash = feedback.content_fingerprint if feedback is not None else "unknown"
-        config = _thread_config(run_id)
-        snapshot = await self.graph.aget_state(config)
         if snapshot.values:
             if snapshot.values.get("schema_version") != 3:
                 error = CheckpointConfigurationError(
@@ -407,6 +429,18 @@ class GateController:
                 "failure checkpoint lookup failed: %s",
                 type(checkpoint_error).__name__,
             )
+        # 内层 create_agent 节点尚未返回时，外层 checkpoint 只含进入节点前的累计值；
+        # 预算异常携带该节点的增量，二者相加后才是完整业务 run 计量。
+        for key in {
+            "model_calls",
+            "tool_calls",
+            "input_tokens",
+            "output_tokens",
+            "total_tokens",
+        }:
+            value = getattr(error, f"additional_{key}", None)
+            if isinstance(value, int) and value >= 0:
+                usage[key] += value
         phase = getattr(error, "phase", None) or run.status.value
         node = getattr(error, "node", None) or checkpoint_node or "controller_run"
         operation = getattr(error, "operation", None) or node
@@ -506,6 +540,22 @@ def _is_publication_error(error_code: str | None) -> bool:
         "publication_conflict",
         "issue_publication_failed",
     }
+
+
+def _is_resumable_call_budget_failure(run: AgentRunRecord) -> bool:
+    if (
+        run.status is AgentRunStatus.BUDGET_EXHAUSTED
+        and run.error_code == "budget_exhausted"
+    ):
+        return True
+    # 兼容修复上线前由官方中间件直接抛出、被旧 Failure Finalizer 误分类的运行。
+    return bool(
+        run.status is AgentRunStatus.FAILED
+        and run.error_code == "unexpected_error"
+        and run.failure is not None
+        and run.failure.safe_details.get("error_type")
+        in {"ModelCallLimitExceededError", "ToolCallLimitExceededError"}
+    )
 
 
 def _outcome_from_state(state: AgentState) -> GateRunOutcome:

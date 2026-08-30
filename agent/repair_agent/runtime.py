@@ -12,10 +12,12 @@ from langchain.agents.middleware import (
     ToolCallLimitMiddleware,
     ToolErrorMiddleware,
 )
+from langchain.agents.middleware.model_call_limit import ModelCallLimitExceededError
+from langchain.agents.middleware.tool_call_limit import ToolCallLimitExceededError
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent.domain.errors import InvalidModelResponseError
+from agent.domain.errors import BudgetExceededError, InvalidModelResponseError
 from agent.domain.models import TaskArtifact
 from agent.repair_agent.middleware import (
     CompletionGuardMiddleware,
@@ -115,11 +117,13 @@ class RepairAgentRuntime:
                 ],
             ),
             ModelCallLimitMiddleware(
-                run_limit=max_model_calls,
+                # 一个业务 run 在进程重启后仍复用同一 thread；thread_limit 才不会因
+                # --resume-run-id 创建新的 invoke 而把预算清零。
+                thread_limit=max_model_calls,
                 exit_behavior="error",
             ),
             ToolCallLimitMiddleware(
-                run_limit=max_tool_calls,
+                thread_limit=max_tool_calls,
                 exit_behavior="error",
             ),
             UsageAccountingMiddleware(),
@@ -151,15 +155,45 @@ class RepairAgentRuntime:
             "recursion_limit": 100,
         }
         snapshot = await self._graph.aget_state(config)
-        if snapshot.values:
-            raw_output = await self._graph.ainvoke(None, config, context=context)
-        else:
-            probe = await run_conversion_probe(context)
-            initial = _initial_state(context, category=category, probe=probe)
-            if probe.reproduction_confirmed and not context.allow_repair:
-                initial["terminal"] = "completed"
-                return self._outcome(initial)
-            raw_output = await self._graph.ainvoke(initial, config, context=context)
+        try:
+            if snapshot.values:
+                raw_output = await self._graph.ainvoke(None, config, context=context)
+            else:
+                probe = await run_conversion_probe(context)
+                initial = _initial_state(context, category=category, probe=probe)
+                if probe.reproduction_confirmed and not context.allow_repair:
+                    initial["terminal"] = "completed"
+                    return self._outcome(initial)
+                raw_output = await self._graph.ainvoke(initial, config, context=context)
+        except (ModelCallLimitExceededError, ToolCallLimitExceededError) as exc:
+            # 官方中间件异常没有项目 error_code；在内层 checkpoint 仍停留于待执行节点时
+            # 转成稳定预算错误，让显式恢复可以沿用原 thread 和候选补丁。
+            latest = await self._graph.aget_state(config)
+            values = latest.values or snapshot.values
+            phase = str(values.get("phase", "reproducing"))
+            model_calls = int(values.get("model_calls", 0))
+            tool_calls = int(values.get("tool_calls", 0))
+            error = BudgetExceededError(
+                "repair agent call budget was exhausted",
+                safe_details={
+                    "budget_type": (
+                        "model_calls"
+                        if isinstance(exc, ModelCallLimitExceededError)
+                        else "tool_calls"
+                    ),
+                    "model_calls": model_calls,
+                    "tool_calls": tool_calls,
+                },
+                operation="repair_agent",
+                phase=phase,
+                node="repair_agent",
+            )
+            error.additional_model_calls = model_calls
+            error.additional_tool_calls = tool_calls
+            error.additional_input_tokens = int(values.get("input_tokens", 0))
+            error.additional_output_tokens = int(values.get("output_tokens", 0))
+            error.additional_total_tokens = int(values.get("total_tokens", 0))
+            raise error from exc
         state = RepairAgentState(**raw_output)
         return self._outcome(state)
 

@@ -17,6 +17,7 @@ from agent.domain.errors import (
     ClaimTokenMismatchError,
     ConcurrentFeedbackUpdateError,
     FeedbackNotFoundError,
+    InvalidStatusTransitionError,
     RepositoryError,
     RepositoryUnavailableError,
 )
@@ -260,6 +261,55 @@ class SupabaseFeedbackRepository:
             )
         return _feedback_from_row(rows[0])
 
+    async def retry_after_call_budget(
+        self,
+        feedback_id: UUID,
+        *,
+        claim_token: UUID,
+        target: FeedbackStatus,
+    ) -> FeedbackRecord:
+        current = await self.get(feedback_id)
+        if current is None:
+            raise FeedbackNotFoundError(f"feedback {feedback_id} does not exist")
+        if current.claim_token != claim_token:
+            raise ClaimTokenMismatchError(
+                f"claim token does not own feedback {feedback_id}"
+            )
+        if current.status is target:
+            return current
+        if (
+            current.status is not FeedbackStatus.FAILED
+            or current.last_error_code not in {"budget_exhausted", "unexpected_error"}
+            or target not in {FeedbackStatus.REPRODUCING, FeedbackStatus.REPAIRING}
+        ):
+            raise ConcurrentFeedbackUpdateError(
+                "only an explicitly resumed call-budget failure can be retried"
+            )
+        response = await self._request(
+            "PATCH",
+            "/rest/v1/feedback",
+            params={
+                "id": f"eq.{feedback_id}",
+                "claim_token": f"eq.{claim_token}",
+                "status": f"eq.{FeedbackStatus.FAILED.value}",
+                "last_error_code": f"eq.{current.last_error_code}",
+                "select": "*",
+            },
+            headers={"Prefer": "return=representation"},
+            json={
+                "status": target.value,
+                "last_error_code": None,
+                "last_error_message": None,
+                "updated_at": datetime.now(UTC).isoformat(),
+            },
+        )
+        rows = _response_rows(response)
+        if not rows:
+            raise ConcurrentFeedbackUpdateError(
+                f"feedback {feedback_id} changed during call-budget retry"
+            )
+        return _feedback_from_row(rows[0])
+
     async def _request(
         self,
         method: str,
@@ -363,6 +413,37 @@ class SupabaseAgentRunRepository:
         )
         rows = _response_rows(response)
         return AgentRunRecord.model_validate(rows[0]) if rows else None
+
+    async def retry_after_call_budget(
+        self,
+        run_id: UUID,
+        *,
+        target: AgentRunStatus,
+    ) -> AgentRunRecord:
+        existing = await self.get(run_id)
+        if existing is None:
+            raise AgentRunNotFoundError(f"agent run {run_id} does not exist")
+        if existing.status is target:
+            return existing
+        if (
+            existing.status not in {AgentRunStatus.FAILED, AgentRunStatus.BUDGET_EXHAUSTED}
+            or existing.error_code not in {"budget_exhausted", "unexpected_error"}
+            or target not in {AgentRunStatus.REPRODUCING, AgentRunStatus.REPAIRING}
+        ):
+            raise InvalidStatusTransitionError(
+                "only an explicitly resumed call-budget failure can be retried"
+            )
+        return await self._patch(
+            run_id,
+            current=existing.status,
+            payload={
+                "status": target.value,
+                "error_code": None,
+                "error_message": None,
+                "failure": None,
+                "finished_at": None,
+            },
+        )
 
     async def mark_gating(self, run_id: UUID) -> AgentRunRecord:
         existing = await self.get(run_id)

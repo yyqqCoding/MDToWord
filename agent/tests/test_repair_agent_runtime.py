@@ -5,12 +5,14 @@ from decimal import Decimal
 from pathlib import Path
 from uuid import UUID
 
+import pytest
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import MemorySaver
 
 from agent.domain.models import TaskArtifact
 from agent.domain.enums import FeedbackType
+from agent.domain.errors import BudgetExceededError
 from agent.repair_agent.models import ChatModelBundle, ChatModelProfile
 from agent.repair_agent.runtime import RepairAgentRuntime
 from agent.repair_agent.tools import RepairAgentContext
@@ -213,3 +215,93 @@ def test_conversion_error_probe_flows_into_react_fix_and_completion(tmp_path: Pa
     assert outcome.repair_round == 1
     assert outcome.tool_calls == 5
     assert len(sandbox.jobs) == 2
+
+
+def test_official_model_call_limit_becomes_resumable_budget_error(tmp_path: Path):
+    model = _ToolCallingFakeModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "submit_fix_edits",
+                        "id": "fix",
+                        "args": {
+                            "edits": [
+                                {
+                                    "path": "backend/app/normalizer.py",
+                                    "mode": "search_replace",
+                                    "search": "def normalize(value):\n    return value\n",
+                                    "replace": "def normalize(value):\n    return value.strip()\n",
+                                    "content": None,
+                                }
+                            ],
+                            "summary": "normalize the failing conversion input",
+                            "risk": "low",
+                        },
+                    }
+                ],
+            )
+        ]
+    )
+    profile = ChatModelProfile(
+        role="fake",
+        model_name="fake",
+        source="configured",
+        max_input_tokens=20_000,
+        tool_calling=True,
+    )
+    bundle = ChatModelBundle(
+        primary=model,
+        fallback=model,
+        summary=model,
+        primary_profile=profile,
+        fallback_profile=profile,
+        effective_context_window=20_000,
+        primary_input_cost_per_million=Decimal("0"),
+        primary_output_cost_per_million=Decimal("0"),
+        fallback_input_cost_per_million=Decimal("0"),
+        fallback_output_cost_per_million=Decimal("0"),
+    )
+    source = _SourceWorkspace(tmp_path / "source")
+    artifacts = ArtifactStore(tmp_path / "artifacts")
+    sandbox = _Sandbox()
+    runtime = RepairAgentRuntime(
+        bundle,
+        checkpointer=MemorySaver(),
+        max_model_calls=1,
+        max_tool_calls=30,
+    )
+    context = RepairAgentContext(
+        run_id=RUN_ID,
+        feedback_id=FEEDBACK_ID,
+        task=TaskArtifact(
+            feedback_id=FEEDBACK_ID,
+            feedback_type=FeedbackType.BUG,
+            description="conversion raises for this formula",
+            markdown_content="$$x$$",
+            content_fingerprint="b" * 64,
+        ),
+        source_snapshot_ref="source://synthetic",
+        source_workspace=source,
+        artifact_store=artifacts,
+        edit_tools=StructuredEditTools(PatchBuilder(PatchPolicy.load_default()), artifacts),
+        sandbox_client=sandbox,
+        max_reproduction_rounds=2,
+        max_repair_rounds=2,
+        max_sandbox_seconds=900,
+    )
+
+    with pytest.raises(BudgetExceededError) as exc_info:
+        asyncio.run(runtime.run(context, category="conversion_crash"))
+
+    error = exc_info.value
+    assert error.phase == "repairing"
+    assert error.node == "repair_agent"
+    assert error.safe_details == {
+        "budget_type": "model_calls",
+        "model_calls": 1,
+        "tool_calls": 3,
+    }
+    assert error.additional_model_calls == 1
+    assert artifacts.path_for(RUN_ID, "fix.patch").read_bytes()

@@ -385,3 +385,47 @@ def test_supabase_pr_opened_persists_public_url_and_resolution_time():
     assert completed.status is FeedbackStatus.PR_OPENED
     assert completed.pr_url == pr_url
     assert completed.resolved_at is not None
+
+
+def test_supabase_explicitly_reopens_call_budget_feedback():
+    failed = make_feedback().model_copy(
+        update={
+            "status": FeedbackStatus.FAILED,
+            "claim_token": uuid4(),
+            "last_error_code": "unexpected_error",
+            "last_error_message": "ModelCallLimitExceededError",
+        }
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json=[failed.model_dump(mode="json")])
+        payload = json.loads(request.content)
+        assert payload["status"] == "reproducing"
+        assert payload["last_error_code"] is None
+        reopened = failed.model_copy(
+            update={
+                "status": FeedbackStatus.REPRODUCING,
+                "last_error_code": None,
+                "last_error_message": None,
+            }
+        )
+        return httpx.Response(200, json=[reopened.model_dump(mode="json")])
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            repository = SupabaseFeedbackRepository(
+                "https://example.supabase.co",
+                "agent-secret",
+                client=client,
+            )
+            return await repository.retry_after_call_budget(
+                failed.id,
+                claim_token=failed.claim_token,
+                target=FeedbackStatus.REPRODUCING,
+            )
+
+    reopened = asyncio.run(scenario())
+
+    assert reopened.status is FeedbackStatus.REPRODUCING
+    assert reopened.last_error_code is None

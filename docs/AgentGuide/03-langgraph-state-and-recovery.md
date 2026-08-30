@@ -179,6 +179,7 @@ Scheduler启动后先调用`find_resumable()`。发现未完成运行后：
 - 最多两轮修复生成；
 - Worker请求重复或Agent主进程重启；
 - GitHub发布的幂等重试；
+- 维护者提高调用预算后，显式恢复同一 `budget_exhausted` run；
 - `main`改变后最多重新排队一次。
 
 必须结束或转人工：
@@ -186,7 +187,7 @@ Scheduler启动后先调用`find_resumable()`。发现未完成运行后：
 - 疑似提示注入；
 - 补丁越过文件白名单；
 - 需要新增依赖或修改部署；
-- 预算耗尽；
+- 预算耗尽（Scheduler 必须停止；只有维护者提高预算并显式指定 run ID 才能重开）；
 - 两轮仍无法复现或修复；
 - 第二次遇到`stale_base`。
 
