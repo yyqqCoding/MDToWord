@@ -313,3 +313,51 @@ def test_supabase_retries_only_validated_publication_failure():
 
     assert publishing.status is AgentRunStatus.PUBLISHING
     assert publishing.error_code is None
+
+
+def test_supabase_explicitly_reopens_call_budget_run():
+    failed = make_run(status=AgentRunStatus.BUDGET_EXHAUSTED).model_copy(
+        update={
+            "error_code": "budget_exhausted",
+            "error_message": "BudgetExceededError",
+            "finished_at": datetime.now(UTC),
+        }
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json=[failed.model_dump(mode="json")])
+        payload = json.loads(request.content)
+        assert payload == {
+            "status": "reproducing",
+            "error_code": None,
+            "error_message": None,
+            "failure": None,
+            "finished_at": None,
+        }
+        reopened = failed.model_copy(
+            update={
+                "status": AgentRunStatus.REPRODUCING,
+                "error_code": None,
+                "error_message": None,
+                "finished_at": None,
+            }
+        )
+        return httpx.Response(200, json=[reopened.model_dump(mode="json")])
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            repository = SupabaseAgentRunRepository(
+                "https://example.supabase.co",
+                "agent-secret",
+                client=client,
+            )
+            return await repository.retry_after_call_budget(
+                failed.id,
+                target=AgentRunStatus.REPRODUCING,
+            )
+
+    reopened = asyncio.run(scenario())
+
+    assert reopened.status is AgentRunStatus.REPRODUCING
+    assert reopened.error_code is None

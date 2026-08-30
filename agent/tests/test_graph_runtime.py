@@ -18,6 +18,7 @@ from agent.domain.enums import (
     GateRoute,
 )
 from agent.domain.gate import GateClassification
+from agent.domain.failures import FailureHandling, FailureKind, FailureSnapshot
 from agent.domain.errors import (
     BudgetExceededError,
     ModelAuthError,
@@ -472,3 +473,82 @@ def test_failure_finalization_persists_newer_checkpoint_usage(tmp_path: Path):
     assert failed_feedback is not None
     assert failed_feedback.status is FeedbackStatus.FAILED
     assert failed_feedback.last_error_code == "timeout"
+
+
+def test_explicit_resume_reopens_legacy_model_call_limit_failure(tmp_path: Path):
+    async def scenario():
+        feedback = make_feedback()
+        claim_token = UUID("11111111-1111-4111-8111-111111111111")
+        feedback.status = FeedbackStatus.FAILED
+        feedback.claim_token = claim_token
+        feedback.last_error_code = "unexpected_error"
+        feedback.last_error_message = "ModelCallLimitExceededError"
+        feedback_repository = FakeFeedbackRepository([feedback])
+        run_id = uuid4()
+        failure = FailureSnapshot(
+            code="unexpected_error",
+            kind=FailureKind.PERMANENT,
+            component="runtime",
+            operation="repair_agent",
+            phase="reproducing",
+            node="repair_agent",
+            handling=FailureHandling.STOP,
+            attempt=1,
+            max_attempts=1,
+            safe_details={"error_type": "ModelCallLimitExceededError"},
+        )
+        run = AgentRunRecord(
+            id=run_id,
+            feedback_id=feedback.id,
+            claim_token=claim_token,
+            trace_id="a" * 32,
+            status=AgentRunStatus.FAILED,
+            graph_version="test",
+            policy_version="test",
+            artifact_path=f"run://{run_id}",
+            task_artifact_ref=f"run://{run_id}/task.redacted.json",
+            error_code="unexpected_error",
+            error_message="ModelCallLimitExceededError",
+            failure=failure,
+        )
+        run_repository = FakeAgentRunRepository([run])
+        checkpoint_state = AgentState(
+            run_id=run_id,
+            feedback_id=feedback.id,
+            claim_token=claim_token,
+            trace_id=run.trace_id,
+            status=AgentRunStatus.REPRODUCING,
+            task_artifact_ref=run.task_artifact_ref,
+        )
+
+        class ResumeGraph:
+            async def aget_state(self, config):
+                del config
+                return SimpleNamespace(values=checkpoint_state.model_dump())
+
+            async def ainvoke(self, state, config):
+                del state, config
+                reopened_feedback = await feedback_repository.get(feedback.id)
+                reopened_run = await run_repository.get(run_id)
+                assert reopened_feedback is not None
+                assert reopened_feedback.status is FeedbackStatus.REPRODUCING
+                assert reopened_run is not None
+                assert reopened_run.status is AgentRunStatus.REPRODUCING
+                return checkpoint_state.model_dump()
+
+        controller = GateController(
+            feedback_repository=feedback_repository,
+            run_repository=run_repository,
+            provider=FakeModelProvider([]),
+            artifact_store=ArtifactStore(tmp_path),
+            checkpointer=InMemorySaver(),
+        )
+        controller.graph = ResumeGraph()
+        outcome = await controller.resume(run_id)
+        return outcome, await run_repository.get(run_id), await feedback_repository.get(feedback.id)
+
+    outcome, run, feedback = asyncio.run(scenario())
+
+    assert outcome.status is AgentRunStatus.REPRODUCING
+    assert run is not None and run.error_code is None and run.failure is None
+    assert feedback is not None and feedback.last_error_code is None

@@ -245,6 +245,37 @@ class FakeFeedbackRepository:
             record.updated_at = datetime.now(UTC)
             return record.model_copy(deep=True)
 
+    async def retry_after_call_budget(
+        self,
+        feedback_id: UUID,
+        *,
+        claim_token: UUID,
+        target: FeedbackStatus,
+    ) -> FeedbackRecord:
+        async with self._lock:
+            record = self._records.get(feedback_id)
+            if record is None:
+                raise FeedbackNotFoundError(f"feedback {feedback_id} does not exist")
+            if record.claim_token != claim_token:
+                raise ClaimTokenMismatchError(
+                    f"claim token does not own feedback {feedback_id}"
+                )
+            if record.status is target:
+                return record.model_copy(deep=True)
+            if (
+                record.status is not FeedbackStatus.FAILED
+                or record.last_error_code not in {"budget_exhausted", "unexpected_error"}
+                or target not in {FeedbackStatus.REPRODUCING, FeedbackStatus.REPAIRING}
+            ):
+                raise InvalidStatusTransitionError(
+                    "only an explicitly resumed call-budget failure can be retried"
+                )
+            record.status = target
+            record.last_error_code = None
+            record.last_error_message = None
+            record.updated_at = datetime.now(UTC)
+            return record.model_copy(deep=True)
+
     def _ordered_records(self) -> list[FeedbackRecord]:
         return sorted(self._records.values(), key=lambda item: (item.created_at, str(item.id)))
 
@@ -319,6 +350,31 @@ class FakeAgentRunRepository:
                 key=lambda run: (run.started_at, str(run.id)),
             )
             return resumable[0].model_copy(deep=True) if resumable else None
+
+    async def retry_after_call_budget(
+        self,
+        run_id: UUID,
+        *,
+        target: AgentRunStatus,
+    ) -> AgentRunRecord:
+        async with self._lock:
+            run = self._require(run_id)
+            if run.status is target:
+                return run.model_copy(deep=True)
+            if (
+                run.status not in {AgentRunStatus.FAILED, AgentRunStatus.BUDGET_EXHAUSTED}
+                or run.error_code not in {"budget_exhausted", "unexpected_error"}
+                or target not in {AgentRunStatus.REPRODUCING, AgentRunStatus.REPAIRING}
+            ):
+                raise InvalidStatusTransitionError(
+                    "only an explicitly resumed call-budget failure can be retried"
+                )
+            run.status = target
+            run.error_code = None
+            run.error_message = None
+            run.failure = None
+            run.finished_at = None
+            return run.model_copy(deep=True)
 
     async def mark_gating(self, run_id: UUID) -> AgentRunRecord:
         async with self._lock:

@@ -30,6 +30,7 @@ def test_config_builds_paths_from_project_root(tmp_path: Path):
     assert config.source_workspace_root == tmp_path / "var" / "source-snapshots"
     assert config.extension_manifest_path == tmp_path / "extension" / "dist" / "manifest.json"
     assert config.supabase_agent_key.get_secret_value() == "secret"
+    assert config.max_model_calls_per_run == 50
 
 
 def test_relative_config_paths_are_rooted_at_project(tmp_path: Path):

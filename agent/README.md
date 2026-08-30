@@ -97,7 +97,7 @@ SQL migration 为 [001_agent_foundation.sql](migrations/001_agent_foundation.sql
   `agent_runs.estimated_cost` 才会大于 `0`。Langfuse 自行推算的展示成本不会回写数据库。
 - 阶段 D 的长源码请求默认允许 180 秒，可用
   `REPRODUCTION_MODEL_TIMEOUT_SECONDS` 在 30～300 秒内调整；Gate 使用上述独立短请求超时。
-- Repair Agent 默认限制 12 次模型轮次、30 次工具和 900 秒 Sandbox；不再使用绑定具体
+- Repair Agent 默认限制 50 次模型轮次、30 次工具和 900 秒 Sandbox；不再使用绑定具体
   模型的固定总 Token 上限。配置名见 `.env.example`。`BACKEND_BASELINE_SKIPPED` 必须填写
   当前固定后端基线值，当前为 `0`。
 
@@ -198,8 +198,9 @@ Sandbox。
 
 成功时 feedback 为 `validated`、run 为 `completed`，Artifact 包含 `fix.patch`、
 `validated.patch` 和 `validation.json`。目标修复两轮仍失败
-或最终全量/DOCX 验证失败时不会产生可发布凭据；预算耗尽进入 `budget_exhausted`，之后
-不再调用模型或沙箱。若生成的修复需要新增未预装的外部可执行程序、Pandoc filter 或
+或最终全量/DOCX 验证失败时不会产生可发布凭据；预算耗尽进入 `budget_exhausted`，不会
+被 Scheduler 自动恢复。维护者提高预算后可显式使用同一 `--resume-run-id`，继续原
+checkpoint、累计计数与候选补丁。若生成的修复需要新增未预装的外部可执行程序、Pandoc filter 或
 部署变更，本地 Policy 会在 Sandbox 前把 feedback/run 路由为 `needs_human`，不会继续
 第二轮生成。Mermaid CLI、Chromium 与中文字体已由维护者固定版本并同时放入生产和
 Sandbox 镜像；已复现的 drawing 缺陷会读取只读受信渲染器 API、调用 `generate_fix` 并

@@ -56,7 +56,7 @@ class AgentConfig(BaseModel):
         ge=30.0,
         le=300.0,
     )
-    max_model_calls_per_run: int = Field(default=12, ge=1, le=100)
+    max_model_calls_per_run: int = Field(default=50, ge=1, le=100)
     max_tool_calls_per_run: int = Field(default=30, ge=1, le=1000)
     max_sandbox_seconds_per_run: int = Field(default=900, ge=1, le=3600)
     backend_baseline_skipped: int = Field(default=0, ge=0)
@@ -265,7 +265,7 @@ class AgentConfig(BaseModel):
             max_model_calls_per_run=_int_value(
                 values,
                 "MAX_MODEL_CALLS_PER_RUN",
-                12,
+                50,
             ),
             max_tool_calls_per_run=_int_value(
                 values,
