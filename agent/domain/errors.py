@@ -70,6 +70,12 @@ class RepositoryUnavailableError(RepositoryError):
     error_code = "repository_unavailable"
 
 
+class SourceAuthenticationError(RepositoryError):
+    """GitHub 源码读取凭据失效或没有仓库读取权限。"""
+
+    error_code = "source_auth_error"
+
+
 class SourceRevisionError(AgentError):
     error_code = "source_revision_error"
 

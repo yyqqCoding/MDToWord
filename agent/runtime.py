@@ -117,8 +117,16 @@ async def open_configured_runtime(
                 test_provider=provider,
                 source_workspace=GitHubSourceWorkspace(
                     config.source_workspace_root,
-                    GitHubMainRevisionReader(repository, client=source_client),
-                    GitHubSourceRepository(repository, client=source_client),
+                    GitHubMainRevisionReader(
+                        repository,
+                        client=source_client,
+                        failure_recorder=failure_recorder,
+                    ),
+                    GitHubSourceRepository(
+                        repository,
+                        client=source_client,
+                        failure_recorder=failure_recorder,
+                    ),
                 ),
                 edit_tools=StructuredEditTools(
                     PatchBuilder(PatchPolicy.load_default()),

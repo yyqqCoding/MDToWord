@@ -190,6 +190,13 @@ sudo mdtoword-agentctl logs
 历史 `failed` feedback/run 保留用于审计，不重新打开。修复部署后使用新的 `pending`
 反馈验证；如果当前代码已经解决问题，正确终态是 `cannot_reproduce`，不是创建空修复 PR。
 
+源码准备阶段的稳定错误码必须区分：`source_auth_error`表示`GITHUB_READ_TOKEN`失效或没有
+仓库读取权限，会转入`needs_human`且不重试；`repository_unavailable`表示GitHub只读请求
+在三次有界attempt后仍受限、连接失败或返回5xx；`source_revision_error`只表示main版本
+响应或确定性请求没有通过本地契约。`mdtoword-agentctl audit`当前只验证配置存在，不证明
+Token可被GitHub接受；更新读取Token后应先做一次不输出Token的已认证`commits/main`只读
+探测，再重新启用Scheduler。
+
 阶段 I 上线前，维护者必须在 GitHub App 设置中显式增加 `Issues: Read and write`，随后
 重新执行只读权限预检。预检分别申请 PR 权限组和 Issue 权限组：前者只能含
 `contents:write + pull_requests:write`，后者只能含 `issues:write`；任一响应出现未允许权限

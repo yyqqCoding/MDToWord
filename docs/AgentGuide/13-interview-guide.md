@@ -49,8 +49,10 @@ validated_patch_sha256, pr_url, issue_url, error_code
 ## 6. 模型调用失败怎么办
 
 > Provider把错误统一成认证、限流、超时、响应无效、上下文过大、上游不可用和安全拒绝。
-> 限流、超时和短暂5xx有限重试，认证和上下文过大不重试；已经收到但不符合Schema的响应只
-> 做一次格式修正。错误码写入数据库和Trace，服务器重启后从checkpoint继续。
+> 限流、超时和短暂5xx包含首次最多三次attempt，等待1秒、2秒；启用备用接口时前两次使用
+> 主接口、第三次使用备用接口，但仍作为一个OpenAI-compatible Provider处理。认证和上下文
+> 过大不重试；已经收到但不符合Schema的响应只做一次格式修正。最终失败会记录阶段、节点、
+> 组件、错误码、attempt和handling，服务器重启后仍从checkpoint继续。
 
 ## 7. 工具调用失败怎么办
 

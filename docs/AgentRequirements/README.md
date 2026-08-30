@@ -28,8 +28,9 @@ Agent 服务自动判断：后端缺陷在隔离沙箱中复现、修复和确�
 - 失败处理使用 `FailureCause + RetryPolicy + FailureRecorder`：适配器标准化错误，调用点
   补充阶段和节点，本地纯策略只决定同输入传输调用的 `RETRY/STOP`；格式修正、业务修订、
   受信 fallback 和 `stale_base` 仍由现有 Provider/Graph 所有。短传输调用包含首次在内最多
-  三次，按 1 秒、2 秒指数退避，安全、认证、配置、预算和未知错误不重试。当前工作树已完成
-  本地实现与自动测试；migration、真实 Docker 验证和生产部署仍待维护者执行。
+  三次，按 1 秒、2 秒指数退避；GitHub源码版本与快照的只读GET遵循相同上限，源码认证
+  错误使用独立稳定code并转人工。安全、认证、配置、预算和未知错误不重试。当前工作树已
+  完成本地实现与自动测试；migration、真实 Docker 验证和生产部署仍待维护者执行。
 - 模型 Provider 可选配置一个备用 OpenAI-compatible 接口。它不形成新的供应商领域概念：
   前两次 attempt 使用主接口，第三次使用备用接口，仍共享三次总上限、`transport_retry`
   handling、稳定错误码与统一 `openai_compatible` 观测口径；永久错误不会切换接口。

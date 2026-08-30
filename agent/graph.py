@@ -95,7 +95,7 @@ from agent.domain.reproduction import (
 
 
 GRAPH_VERSION = "agent-graph-v9"
-POLICY_VERSION = "publication-policy-v8"
+POLICY_VERSION = "publication-policy-v9"
 
 _ROUTE_TO_FEEDBACK_STATUS = {
     GateRoute.ACCEPTED_BACKEND_BUG: FeedbackStatus.REPRODUCING,

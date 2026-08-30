@@ -319,15 +319,16 @@ attempt 3 失败 -> STOP，不再等待
 `Retry-After`：等待本地指数退避与该值中的较大值，但仍截断到 10 秒；非法值退回本地
 退避。等待和下一次请求不能放进剩余 deadline 时直接 STOP。
 
-第一版统一短重试只覆盖：
+统一短重试覆盖：
 
 - Model Provider 的 timeout、429、普通传输异常和 5xx；
-- Sandbox Client 的连接异常与 408/429/5xx。
+- Sandbox Client 的连接异常与 408/429/5xx；
+- GitHub 源码版本和快照下载这两个只读 GET 的连接异常、408、限流与 5xx。
 
 通用短重试不覆盖：
 
 - Supabase 状态写入；响应丢失必须按条件更新和现有状态对账；
-- GitHub PR/Issue POST；结果未知时先查询幂等 marker、分支、patch hash 或已有结果；
+- GitHub PR/Issue 等写操作；结果未知时先查询幂等 marker、分支、patch hash 或已有结果；
 - Artifact 写入；继续使用原子临时文件加 rename；
 - Langfuse 与 Trace Site 通知；继续 fail-open 和既有按需自愈。
 
@@ -456,9 +457,14 @@ Worker 必须先在锁内按 `job_id + fingerprint` 查询已保存结果：
 
 ### 8.4 Publisher 与 Repository
 
-Publisher 和 Repository 可以产生 `FailureCause` 并使用统一最终快照，但不接入通用短重试：
+Publisher 和 Repository 可以产生 `FailureCause` 并使用统一最终快照。只有没有外部副作用的
+GitHub 源码版本读取和快照下载接入通用短重试；发布与数据库写入不接入：
 
 - GitHub响应未知时由现有发布恢复先查询结果，不能直接重复 POST；
+- GitHub源码只读GET的连接异常、408、限流和5xx最多三次attempt；每次读取相同仓库、分支
+  或commit，不提高权限、不改变输入；
+- GitHub源码401以及非限流403使用`source_auth_error/permanent`立即STOP，并把feedback置为
+  `needs_human`；404和其他确定性4xx保留为源码revision/snapshot契约错误；
 - Supabase条件更新冲突先读取现状并按 claim token、状态和 operation ID 对账；
 - 认证、权限和完整性失败为 `permanent` 或 `security`；
 - 数据库本身不可用时无法向同一数据库记录失败，先写脱敏结构化日志；原 run 保持可恢复，
@@ -475,7 +481,8 @@ Publisher 和 Repository 可以产生 `FailureCause` 并使用统一最终快照
 | 快照归档含越界路径、不安全entry或完整性逃逸 | `source_snapshot_security_rejected/security` | STOP | 安全终态 |
 | 源码快照无法物化、存储或通过普通格式校验 | `source_snapshot_error/permanent` | STOP | Failure Finalizer |
 | 当前run预算耗尽 | `budget_exhausted/business` | STOP | 既有预算终态 |
-| Repository传输或上游不可用 | `repository_unavailable/transient` | 不参与 | Scheduler恢复边界 |
+| GitHub源码401或非限流403 | `source_auth_error/permanent` | STOP | feedback=`needs_human` |
+| GitHub源码连接异常、408、限流或5xx | `repository_unavailable/transient` | RETRY | attempt耗尽后终结 |
 | Repository确定性契约错误 | `repository_error/permanent` | STOP | 脱敏日志与人工排障 |
 | 未登记普通异常 | `unexpected_error/permanent` | STOP | Failure Finalizer |
 
@@ -605,6 +612,8 @@ failure policy版本。跨字段规则同步写入提示词和本地 Policy，�
 ### 11.2 重试与既有恢复
 
 - Provider timeout、429、传输错误和 5xx 总共最多三次 attempt，等待 1 秒、2 秒；
+- GitHub源码版本和快照只读GET的连接异常、408、限流和5xx同样最多三次attempt；401及非
+  限流403不重试；
 - 合法 Retry-After 被尊重但不超过 10 秒，非法值退回本地退避；
 - Schema仍只格式修正一次；受信转换错误/Mermaid fallback 仍确定性接管且不增加模型调用；
 - 普通业务编辑仍由 Graph 最多修订两轮，路径或权限越界仍立即停止；
@@ -627,8 +636,8 @@ failure policy版本。跨字段规则同步写入提示词和本地 Policy，�
 - `invalid_response.safe_details.schema_errors` 只使用 `_schema_error_paths`，
   `_validation_error_hint` 不进入 Langfuse、数据库或公开投影；
 - Failure Recorder 故障不改变业务结果，Failure Finalizer 故障不会被吞掉；
-- Provider/Sandbox认证失败发生在 claim 后时，run=`failed`、feedback=`needs_human`，且不会
-  自动重新领取；
+- Provider/Sandbox/GitHub源码认证失败发生在 claim 后时，run=`failed`、
+  feedback=`needs_human`，且不会自动重新领取；
 - 日志、Trace、数据库和公开投影均不出现用户原文、contact、Secret、完整Prompt、patch、
   源码或完整工具输出；
 - 现有 checkpoint、预算、PR/Issue幂等、fallback、业务轮次和终态语义除本文明确变更外

@@ -31,7 +31,7 @@ GitHub Pull Request、把功能需求和前端/扩展缺陷变成脱敏 GitHub I
 | 10 | [权限控制](09-permissions.md) | 每个组件能做什么、不能做什么？ |
 | 11 | [Docker沙箱](10-sandbox.md) | 不可信测试和代码在哪里执行？ |
 | 12 | [提示词与工具选择](11-prompts-and-tools.md) | 提示词怎样写？如何避免选错工具？ |
-| 13 | [失败、重试与稳定运行](12-failures-retries-and-stability.md) | 模型、工具、数据库或外部服务失败怎么办？ |
+| 13 | [失败、重试与稳定运行](12-failures-retries-and-stability.md) | 失败怎样归因和重试？主接口失败后怎样使用备用模型API？ |
 | 14 | [面试问答](13-interview-guide.md) | 如何简洁、准确地介绍这个项目？ |
 | 15 | [Agent开发88个真实问题](14-agent-questions-88.md) | 如何结合当前代码回答常见Agent实战问题？ |
 | 16 | [反馈入口限流](15-feedback-rate-limiting.md) | 滑动窗口怎样实现？为什么当前不使用令牌桶或Redis？ |

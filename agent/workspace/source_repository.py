@@ -1,17 +1,36 @@
 """从固定 GitHub commit 获取并安全展开只读源码快照。"""
 
+import asyncio
 import hashlib
+import math
 import os
 import re
 import shutil
 import tarfile
 import tempfile
+from collections.abc import Awaitable, Callable
 from pathlib import Path, PurePosixPath
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent.domain.errors import SourceSnapshotError
+from agent.domain.errors import (
+    AgentError,
+    RepositoryUnavailableError,
+    SourceAuthenticationError,
+    SourceSnapshotError,
+)
+from agent.domain.failures import (
+    FailureEvent,
+    FailureHandling,
+    FailureRecorder,
+    LocatedFailure,
+    RetryContext,
+    RetryDecision,
+    RetryPolicy,
+    failure_cause_from_exception,
+    retry_delay,
+)
 
 
 _GITHUB_REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -19,6 +38,7 @@ _COMMIT_SHA = re.compile(r"^[0-9a-f]{40}$")
 _MAX_ARCHIVE_BYTES = 50 * 1024 * 1024
 _MAX_EXPANDED_BYTES = 100 * 1024 * 1024
 _MAX_MEMBER_BYTES = 10 * 1024 * 1024
+_Sleep = Callable[[float], Awaitable[None]]
 
 
 class SourceSnapshot(BaseModel):
@@ -41,12 +61,22 @@ class GitHubSourceRepository:
         *,
         client: httpx.AsyncClient,
         api_url: str = "https://api.github.com",
+        max_transport_retries: int = 2,
+        sleep: _Sleep = asyncio.sleep,
+        retry_policy: RetryPolicy | None = None,
+        failure_recorder: FailureRecorder | None = None,
     ) -> None:
         if not _GITHUB_REPOSITORY.fullmatch(repository):
             raise SourceSnapshotError("GITHUB_REPOSITORY must use owner/name format")
+        if max_transport_retries not in {0, 1, 2}:
+            raise ValueError("max_transport_retries must be between 0 and 2")
         self._repository = repository
         self._client = client
         self._api_url = api_url.rstrip("/")
+        self._max_transport_retries = max_transport_retries
+        self._sleep = sleep
+        self._retry_policy = retry_policy or RetryPolicy()
+        self._failure_recorder = failure_recorder or FailureRecorder()
 
     async def fetch_snapshot(self, base_sha: str, destination: Path) -> SourceSnapshot:
         if not _COMMIT_SHA.fullmatch(base_sha):
@@ -59,41 +89,7 @@ class GitHubSourceRepository:
         if archive_path.exists():
             raise SourceSnapshotError("snapshot archive destination already exists")
 
-        try:
-            async with self._client.stream(
-                "GET",
-                f"{self._api_url}/repos/{self._repository}/tarball/{base_sha}",
-                # GitHub archive API 正常以 302 跳转到短期下载地址。
-                follow_redirects=True,
-                headers={
-                    "Accept": "application/vnd.github+json",
-                    "X-GitHub-Api-Version": "2022-11-28",
-                },
-            ) as response:
-                if response.status_code >= 400:
-                    raise SourceSnapshotError(
-                        "GitHub snapshot request failed with status "
-                        f"{response.status_code}"
-                    )
-                chunks: list[bytes] = []
-                archive_size = 0
-                # 不信任 Content-Length；流式累计才能覆盖缺失或伪造长度的响应。
-                async for chunk in response.aiter_bytes():
-                    archive_size += len(chunk)
-                    if archive_size > _MAX_ARCHIVE_BYTES:
-                        raise SourceSnapshotError(
-                            "GitHub snapshot archive size is invalid"
-                        )
-                    chunks.append(chunk)
-                content = b"".join(chunks)
-        except SourceSnapshotError:
-            raise
-        except httpx.HTTPError as exc:
-            raise SourceSnapshotError(
-                f"GitHub snapshot request failed: {type(exc).__name__}"
-            ) from exc
-        if not content:
-            raise SourceSnapshotError("GitHub snapshot archive size is invalid")
+        content = await self._download_archive(base_sha)
 
         _atomic_write(archive_path, content)
         try:
@@ -107,6 +103,147 @@ class GitHubSourceRepository:
             root=destination,
             archive_path=archive_path,
         )
+
+    async def _download_archive(self, base_sha: str) -> bytes:
+        max_attempts = self._max_transport_retries + 1
+        for attempt in range(1, max_attempts + 1):
+            response: httpx.Response | None = None
+            try:
+                async with self._client.stream(
+                    "GET",
+                    f"{self._api_url}/repos/{self._repository}/tarball/{base_sha}",
+                    # GitHub archive API 正常以 302 跳转到短期下载地址。
+                    follow_redirects=True,
+                    headers={
+                        "Accept": "application/vnd.github+json",
+                        "X-GitHub-Api-Version": "2022-11-28",
+                    },
+                ) as response:
+                    if response.status_code >= 400:
+                        error: AgentError = _snapshot_http_error(response)
+                    else:
+                        chunks: list[bytes] = []
+                        archive_size = 0
+                        # 不信任 Content-Length；流式累计才能覆盖缺失或伪造长度的响应。
+                        async for chunk in response.aiter_bytes():
+                            archive_size += len(chunk)
+                            if archive_size > _MAX_ARCHIVE_BYTES:
+                                raise SourceSnapshotError(
+                                    "GitHub snapshot archive size is invalid",
+                                    safe_details={"reason": "archive_too_large"},
+                                )
+                            chunks.append(chunk)
+                        content = b"".join(chunks)
+                        if content:
+                            return content
+                        error = SourceSnapshotError(
+                            "GitHub snapshot archive size is invalid",
+                            safe_details={"reason": "archive_empty"},
+                        )
+            except SourceSnapshotError as exc:
+                error = exc
+            except httpx.HTTPError as exc:
+                error = RepositoryUnavailableError(
+                    "GitHub snapshot transport failed",
+                    safe_details={"error_type": type(exc).__name__[:120]},
+                )
+
+            error.attempt = attempt
+            error.max_attempts = max_attempts
+            error.operation = "fetch_source_snapshot"
+            delay = retry_delay(attempt, _retry_after_seconds(response))
+            cause = failure_cause_from_exception(error)
+            decision = self._retry_policy.decide(
+                cause,
+                RetryContext(
+                    attempt=attempt,
+                    max_attempts=max_attempts,
+                    operation_id=f"{self._repository}:{base_sha}",
+                    idempotent=True,
+                ),
+                delay_seconds=delay,
+            )
+            if decision is RetryDecision.STOP:
+                self._record_failure(error, handling=FailureHandling.STOP)
+                raise error
+            self._record_failure(
+                error,
+                handling=FailureHandling.TRANSPORT_RETRY,
+                delay_seconds=delay,
+            )
+            await self._sleep(delay)
+
+        raise AssertionError("GitHub snapshot retry loop must return or raise")
+
+    def _record_failure(
+        self,
+        error: AgentError,
+        *,
+        handling: FailureHandling,
+        delay_seconds: float | None = None,
+    ) -> None:
+        cause = failure_cause_from_exception(error)
+        self._failure_recorder.record(
+            FailureEvent(
+                failure=LocatedFailure(
+                    cause=cause,
+                    phase="repository",
+                    node="fetch_source_snapshot",
+                ),
+                attempt=error.attempt,
+                max_attempts=error.max_attempts,
+                handling=handling,
+                delay_seconds=delay_seconds,
+            )
+        )
+
+
+def _snapshot_http_error(response: httpx.Response) -> AgentError:
+    status = response.status_code
+    details: dict[str, str | int | bool | None] = {"http_status": status}
+    if _is_rate_limited(response):
+        details["rate_limited"] = True
+        return RepositoryUnavailableError(
+            "GitHub snapshot request was rate limited",
+            safe_details=details,
+        )
+    if status == 408 or status >= 500:
+        return RepositoryUnavailableError(
+            f"GitHub snapshot request failed with status {status}",
+            safe_details=details,
+        )
+    if status in {401, 403}:
+        return SourceAuthenticationError(
+            "GitHub source authentication failed",
+            safe_details=details,
+        )
+    details["reason"] = "snapshot_request_rejected"
+    return SourceSnapshotError(
+        f"GitHub snapshot request failed with status {status}",
+        safe_details=details,
+    )
+
+
+def _is_rate_limited(response: httpx.Response) -> bool:
+    if response.status_code == 429:
+        return True
+    return response.status_code == 403 and (
+        response.headers.get("x-ratelimit-remaining") == "0"
+        or response.headers.get("Retry-After") is not None
+    )
+
+
+def _retry_after_seconds(response: httpx.Response | None) -> float | None:
+    if response is None or not _is_rate_limited(response):
+        return None
+    raw = response.headers.get("Retry-After")
+    if raw is None:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    return value if math.isfinite(value) and value >= 0 else None
 
 
 def materialize_snapshot_archive(archive_path: Path, destination: Path) -> None:

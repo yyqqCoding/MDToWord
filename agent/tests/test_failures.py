@@ -134,13 +134,15 @@ def test_unknown_exception_only_records_its_type():
     assert "must-not-appear" not in str(failure.model_dump())
 
 
-def test_failure_recorder_is_fail_open_when_observer_raises():
+def test_failure_recorder_is_fail_open_when_observer_raises(caplog):
     class FailingSink:
         def record_failure(self, event: FailureEvent) -> None:
             del event
             raise RuntimeError("observer unavailable")
 
-    cause = failure_cause_from_exception(ModelTimeoutError("safe"))
+    cause = failure_cause_from_exception(
+        ModelTimeoutError("safe", safe_details={"http_status": 408})
+    )
     event = FailureEvent(
         failure=LocatedFailure(cause=cause, phase="gating", node="classify_gate"),
         attempt=1,
@@ -149,4 +151,7 @@ def test_failure_recorder_is_fail_open_when_observer_raises():
         delay_seconds=1,
     )
 
-    FailureRecorder(FailingSink()).record(event)
+    with caplog.at_level("WARNING"):
+        FailureRecorder(FailingSink()).record(event)
+
+    assert "safe_details={'http_status': 408}" in caplog.text
