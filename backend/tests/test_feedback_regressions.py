@@ -30,3 +30,13 @@ def test_feedback_9eb8eddf_conversion_probe(tmp_path):
     fixture = Path(__file__).parent / "fixtures" / "feedback" / "test_feedback_9eb8eddf_conversion_probe.md"
     markdown = fixture.read_text(encoding="utf-8")
     convert_markdown_to_docx(markdown, tmp_path)
+
+
+def test_feedback_367cfa18_conversion_probe(tmp_path):
+    from pathlib import Path
+
+    from app.pandoc_runner import convert_markdown_to_docx
+
+    fixture = Path(__file__).parent / "fixtures" / "feedback" / "test_feedback_367cfa18_conversion_probe.md"
+    markdown = fixture.read_text(encoding="utf-8")
+    convert_markdown_to_docx(markdown, tmp_path)

@@ -40,6 +40,7 @@ GROUP_ARGUMENT_COMMANDS = {
     "overset",
 }
 CANCEL_COMMAND_PATTERN = re.compile(r"\\[bx]?cancel\b")
+PRESCRIPT_COMMAND_PATTERN = re.compile(r"\\prescript\b")
 
 
 def normalize_markdown(markdown: str) -> str:
@@ -300,8 +301,58 @@ def _strip_unsupported_cancel_commands(content: str) -> str:
     return "".join(result)
 
 
+def _rewrite_prescript_commands(content: str) -> str:
+    """Rewrite mathtools \\prescript into plain TeX left scripts.
+
+    Pandoc's texmath parser does not know the mathtools ``\\prescript``
+    command, so a formula such as ``\\prescript{14}{6}{C}`` cannot be
+    converted to an editable Word equation and aborts the DOCX export.
+    The standard TeX idiom ``{}_{6}^{14}{C}`` attaches the subscript and
+    superscript to an empty atom placed before the base, which puts them on
+    the left of the base (left subscript 6 below, left superscript 14 above)
+    and is supported by texmath.
+    """
+    result: list[str] = []
+    index = 0
+
+    while index < len(content):
+        match = PRESCRIPT_COMMAND_PATTERN.search(content, index)
+        if match is None:
+            result.append(content[index:])
+            break
+
+        result.append(content[index : match.start()])
+        cursor = match.end()
+        groups: list[str] = []
+        ok = True
+        for _ in range(3):
+            while cursor < len(content) and content[cursor].isspace():
+                cursor += 1
+            if cursor >= len(content) or content[cursor] != "{":
+                ok = False
+                break
+            close_index = _find_matching_brace(content, cursor)
+            if close_index is None:
+                ok = False
+                break
+            groups.append(content[cursor + 1 : close_index])
+            cursor = close_index + 1
+
+        if not ok or len(groups) != 3:
+            result.append(content[match.start() : cursor])
+            index = cursor
+            continue
+
+        superscript, subscript, base = groups
+        result.append(f"{{}}_{{{subscript}}}^{{{superscript}}}{base}")
+        index = cursor
+
+    return "".join(result)
+
+
 def _repair_math_content(content: str) -> str:
-    repaired = _strip_unsupported_cancel_commands(content)
+    repaired = _rewrite_prescript_commands(content)
+    repaired = _strip_unsupported_cancel_commands(repaired)
     repaired = re.sub(r"\*\{([^}\n]+)\}", r"_{\1}", repaired)
     repaired = re.sub(r"(?<=[}|])\*([A-Za-z0-9])", r"_\1", repaired)
     repaired = _escape_literal_percent_signs(repaired)
