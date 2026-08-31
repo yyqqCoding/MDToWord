@@ -5,7 +5,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent.domain.errors import SourceAccessError
+from agent.domain.errors import SourceAccessError, SourceRequestError
 from agent.workspace.patch_policy import PatchPolicy
 from agent.workspace.paths import normalize_repository_path, resolve_snapshot_path
 
@@ -51,20 +51,61 @@ class SourceReader:
     ) -> SourceFileResult:
         normalized = normalize_repository_path(path)
         if not self._policy.can_read(normalized):
-            raise SourceAccessError("source path is outside the read allowlist")
+            raise SourceAccessError(
+                "source path is outside the read allowlist",
+                safe_details={"reason": "outside_allowlist"},
+            )
         if start_line < 1 or end_line < start_line or end_line - start_line > 999:
-            raise SourceAccessError("source line range is invalid")
+            raise SourceRequestError(
+                "source line range must start at 1, end after start, and contain at most 1000 lines",
+                safe_details={
+                    "reason": "invalid_line_range",
+                    "path": normalized,
+                    "start_line": start_line,
+                    "end_line": end_line,
+                },
+            )
+        # 即使目标不存在也先走受信解析，以免把断链符号链接误报成可恢复的不存在。
+        candidate = resolve_snapshot_path(self._root, normalized, must_exist=False)
+        if not candidate.exists():
+            raise SourceRequestError(
+                "source path does not exist; use search_source to select an existing path",
+                safe_details={"reason": "path_not_found", "path": normalized},
+            )
         target = resolve_snapshot_path(self._root, normalized, must_exist=True)
         if not target.is_file():
-            raise SourceAccessError("source path is not a regular file")
-        content = _read_limited(target, self._policy.limits.max_file_bytes)
+            raise SourceRequestError(
+                "source path is not a regular file",
+                safe_details={"reason": "not_regular_file", "path": normalized},
+            )
+        content = _read_limited(
+            target,
+            self._policy.limits.max_file_bytes,
+            safe_path=normalized,
+        )
         lines = content.splitlines()
         if start_line > len(lines) and lines:
-            raise SourceAccessError("source line range starts after end of file")
+            raise SourceRequestError(
+                "start_line is after the end of the file; choose a smaller line number",
+                safe_details={
+                    "reason": "line_after_eof",
+                    "path": normalized,
+                    "start_line": start_line,
+                    "total_lines": len(lines),
+                },
+            )
         selected = lines[start_line - 1 : end_line]
         rendered = "\n".join(selected)
         if len(rendered.encode("utf-8")) > self._policy.limits.max_tool_output_bytes:
-            raise SourceAccessError("source tool output exceeds limit")
+            raise SourceRequestError(
+                "source output exceeds the tool limit; request a smaller line range",
+                safe_details={
+                    "reason": "output_limit_exceeded",
+                    "path": normalized,
+                    "start_line": start_line,
+                    "end_line": end_line,
+                },
+            )
         actual_end = start_line + len(selected) - 1 if selected else start_line
         return SourceFileResult(
             path=normalized,
@@ -92,9 +133,18 @@ class SourceReader:
         max_results: int,
     ) -> tuple[SourceSearchResult, ...]:
         if not query or len(query) > 100 or "\x00" in query or "\n" in query:
-            raise SourceAccessError("source search query is invalid")
+            raise SourceRequestError(
+                "search query must contain 1..100 characters on one line",
+                safe_details={"reason": "invalid_search_query"},
+            )
         if max_results < 1 or max_results > 20:
-            raise SourceAccessError("source search result limit is invalid")
+            raise SourceRequestError(
+                "max_results must be between 1 and 20",
+                safe_details={
+                    "reason": "invalid_result_limit",
+                    "max_results": max_results,
+                },
+            )
 
         results: list[SourceSearchResult] = []
         output_bytes = 0
@@ -103,7 +153,11 @@ class SourceReader:
             target = resolve_snapshot_path(self._root, relative, must_exist=True)
             if not target.is_file():
                 continue
-            content = _read_limited(target, self._policy.limits.max_file_bytes)
+            content = _read_limited(
+                target,
+                self._policy.limits.max_file_bytes,
+                safe_path=relative,
+            )
             for line_number, line in enumerate(content.splitlines(), start=1):
                 if query not in line:
                     continue
@@ -147,14 +201,23 @@ def _in_scope(path: str, scope: PathScope) -> bool:
     return path in {"AGENTS.md", "README.md"}
 
 
-def _read_limited(path: Path, max_bytes: int) -> str:
+def _read_limited(path: Path, max_bytes: int, *, safe_path: str) -> str:
     try:
         raw = path.read_bytes()
     except OSError as exc:
-        raise SourceAccessError("source file could not be read") from exc
+        raise SourceRequestError(
+            "source file could not be read; select another search result",
+            safe_details={"reason": "source_unreadable", "path": safe_path},
+        ) from exc
     if len(raw) > max_bytes or b"\x00" in raw:
-        raise SourceAccessError("source file is binary or exceeds size limit")
+        raise SourceRequestError(
+            "source file is binary or exceeds the readable file limit",
+            safe_details={"reason": "file_limit_exceeded", "path": safe_path},
+        )
     try:
         return raw.decode("utf-8")
     except UnicodeDecodeError as exc:
-        raise SourceAccessError("source file is not UTF-8 text") from exc
+        raise SourceRequestError(
+            "source file is not UTF-8 text",
+            safe_details={"reason": "invalid_text_encoding", "path": safe_path},
+        ) from exc

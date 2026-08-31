@@ -56,7 +56,13 @@ class GenerationObservation(Protocol):
 class ToolObservation(Protocol):
     def succeed(self, output_summary: dict[str, object]) -> None: ...
 
-    def fail(self, *, error_code: str, error_type: str) -> None: ...
+    def fail(
+        self,
+        *,
+        error_code: str,
+        error_type: str,
+        safe_details: dict[str, object] | None = None,
+    ) -> None: ...
 
 
 class Telemetry(Protocol):
@@ -97,8 +103,14 @@ class _NoopToolObservation:
     def succeed(self, output_summary: dict[str, object]) -> None:
         del output_summary
 
-    def fail(self, *, error_code: str, error_type: str) -> None:
-        del error_code, error_type
+    def fail(
+        self,
+        *,
+        error_code: str,
+        error_type: str,
+        safe_details: dict[str, object] | None = None,
+    ) -> None:
+        del error_code, error_type, safe_details
 
 
 class NoopTelemetry:

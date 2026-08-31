@@ -88,6 +88,12 @@ class SourceAccessError(AgentError):
     error_code = "source_access_denied"
 
 
+class SourceRequestError(AgentError):
+    """源码工具参数可由模型修正，不表示越权或基础设施故障。"""
+
+    error_code = "source_request_invalid"
+
+
 class InvalidEditError(AgentError):
     error_code = "invalid_edit"
 

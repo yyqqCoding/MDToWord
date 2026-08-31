@@ -1371,3 +1371,16 @@ Gate、源码快照、Sandbox Worker、最终独立验证与发布边界不变�
   另有测试证明跨阶段工具仍安全终结。Agent全量：376 passed、5 skipped，compileall通过；
   Trace Site：14 passed、typecheck通过；build仍被工作区既有
   `lightningcss.linux-x64-gnu.node`缺失阻断。生产部署与重新提交相同反馈待维护者验收。
+
+### Repair Agent源码读取错误恢复（2026-08-31）
+
+- 生产 run `f0f2d212-6935-4294-9c60-a42aa1ca856c` 最后一轮并行执行两个
+  `read_source_file`，其中一个成功、另一个被统一归为`source_access_denied/security`；旧
+  Trace只保存参数名且`safe_details`为空，无法区分越权路径与可纠正的行号、存在性错误；
+- 读取白名单保持不变。绝对路径、路径穿越、隐藏路径、符号链接与白名单外路径继续
+  `source_access_denied/security`并STOP；白名单校验后的不存在、行号、范围、文本/文件限制
+  改为`source_request_invalid/invalid`，通过ToolMessage返回安全原因与
+  `required_action=correct_source_request`，由模型在同一run修正且不重复相同参数；
+- Repair Agent Prompt升至`repair-agent-v3`。并行只读中的可恢复错误不丢弃其他成功结果，
+  真正安全拒绝仍终结run；旧安全终态不恢复，部署后重新提交相同反馈验收。Agent全量：
+  383 passed、5 skipped，compileall通过。

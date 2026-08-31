@@ -10,6 +10,8 @@ from agent.domain.errors import (
     ModelAuthError,
     ModelContextTooLargeError,
     ModelTimeoutError,
+    SourceAccessError,
+    SourceRequestError,
     ToolAuthorizationError,
 )
 from agent.domain.errors import SandboxUnavailableError
@@ -185,6 +187,39 @@ def test_tool_precondition_error_preserves_required_action_for_model():
     assert message is not None
     assert '"error_code": "tool_precondition_failed"' in message
     assert '"required_action": "submit_fix_edits"' in message
+
+
+def test_source_request_error_returns_safe_correction_to_model():
+    message = safe_tool_error(
+        SourceRequestError(
+            "start_line is after the end of the file",
+            safe_details={
+                "reason": "line_after_eof",
+                "path": "backend/app/normalizer.py",
+                "start_line": 500,
+                "total_lines": 120,
+            },
+        ),
+        None,
+    )
+
+    assert message is not None
+    assert '"error_code": "source_request_invalid"' in message
+    assert '"required_action": "correct_source_request"' in message
+    assert '"path": "backend/app/normalizer.py"' in message
+
+
+def test_source_access_error_is_not_returned_to_model():
+    assert (
+        safe_tool_error(
+            SourceAccessError(
+                "source path is outside the read allowlist",
+                safe_details={"reason": "outside_allowlist"},
+            ),
+            None,
+        )
+        is None
+    )
 
 
 def test_sandbox_tool_retry_is_three_total_attempts_with_1_2_backoff():

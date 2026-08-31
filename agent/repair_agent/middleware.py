@@ -237,7 +237,7 @@ class RepairTelemetryMiddleware(AgentMiddleware):
         with self.telemetry.start_generation(
             GenerationTrace(
                 operation="repair_agent_model",
-                prompt_version="repair-agent-v2",
+                prompt_version="repair-agent-v3",
                 provider="openai_compatible",
                 model=model_name,
                 input_summary={
@@ -317,6 +317,7 @@ class RepairTelemetryMiddleware(AgentMiddleware):
                 observation.fail(
                     error_code=getattr(exc, "error_code", "tool_error"),
                     error_type=type(exc).__name__,
+                    safe_details=dict(getattr(exc, "safe_details", {}) or {}),
                 )
                 raise
             status = getattr(result, "status", "success")
@@ -459,7 +460,11 @@ class HardContextLimitMiddleware(AgentMiddleware):
 def safe_tool_error(exc: Exception, request: Any) -> str | None:
     """只把可操作的本地输入错误返回模型，永久基础设施错误继续上抛。"""
 
-    from agent.domain.errors import InvalidEditError, ToolPreconditionError
+    from agent.domain.errors import (
+        InvalidEditError,
+        SourceRequestError,
+        ToolPreconditionError,
+    )
 
     if isinstance(exc, ToolPreconditionError):
         required_action = str(exc.safe_details.get("required_action") or "")[:120]
@@ -468,6 +473,30 @@ def safe_tool_error(exc: Exception, request: Any) -> str | None:
                 "accepted": False,
                 "error_code": "tool_precondition_failed",
                 "required_action": required_action,
+                "message": str(exc).replace("\n", " ")[:600],
+            },
+            ensure_ascii=False,
+        )
+    if isinstance(exc, SourceRequestError):
+        details = {
+            key: value
+            for key, value in exc.safe_details.items()
+            if key
+            in {
+                "reason",
+                "path",
+                "start_line",
+                "end_line",
+                "total_lines",
+                "max_results",
+            }
+        }
+        return json.dumps(
+            {
+                "accepted": False,
+                "error_code": exc.error_code,
+                **details,
+                "required_action": "correct_source_request",
                 "message": str(exc).replace("\n", " ")[:600],
             },
             ensure_ascii=False,
