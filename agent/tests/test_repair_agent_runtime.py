@@ -14,7 +14,11 @@ from langgraph.errors import GraphRecursionError
 
 from agent.domain.models import TaskArtifact
 from agent.domain.enums import FeedbackType
-from agent.domain.errors import BudgetExceededError, ToolAuthorizationError
+from agent.domain.errors import (
+    BudgetExceededError,
+    ToolAuthorizationError,
+    UnexpectedRuntimeError,
+)
 from agent.repair_agent.models import ChatModelBundle, ChatModelProfile
 from agent.repair_agent.runtime import RepairAgentRuntime, _graph_recursion_limit
 from agent.repair_agent.tools import RepairAgentContext
@@ -502,3 +506,38 @@ def test_inner_agent_error_carries_checkpoint_phase_and_usage():
     assert error.additional_model_calls == 4
     assert error.additional_tool_calls == 7
     assert error.additional_total_tokens == 150
+
+
+def test_unknown_inner_error_is_located_and_preserves_checkpoint_usage():
+    class FailingGraph:
+        async def aget_state(self, config):
+            del config
+            return SimpleNamespace(
+                values={
+                    "phase": "repairing",
+                    "model_calls": 6,
+                    "tool_calls": 12,
+                    "input_tokens": 800,
+                    "output_tokens": 200,
+                    "total_tokens": 1_000,
+                }
+            )
+
+        async def ainvoke(self, state, config, *, context):
+            del state, config, context
+            raise RuntimeError("private provider response")
+
+    runtime = object.__new__(RepairAgentRuntime)
+    runtime._graph = FailingGraph()
+    runtime._recursion_limit = 100
+
+    with pytest.raises(UnexpectedRuntimeError) as exc_info:
+        asyncio.run(runtime.run(SimpleNamespace(run_id=RUN_ID), category="conversion_crash"))
+
+    error = exc_info.value
+    assert error.safe_details == {"error_type": "RuntimeError"}
+    assert error.phase == "repairing"
+    assert error.node == "repair_agent"
+    assert error.additional_model_calls == 6
+    assert error.additional_tool_calls == 12
+    assert error.additional_total_tokens == 1_000

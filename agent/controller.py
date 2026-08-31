@@ -240,7 +240,7 @@ class GateController:
                 claim_token=run.claim_token,
             )
             run = await self._run_repository.retry_publication(run.id)
-        if _is_resumable_agent_budget_failure(run) and snapshot.values:
+        if _is_explicitly_resumable_agent_failure(run) and snapshot.values:
             checkpoint_state = AgentState.model_validate(snapshot.values)
             if checkpoint_state.schema_version == 3 and checkpoint_state.status in {
                 AgentRunStatus.REPRODUCING,
@@ -542,13 +542,14 @@ def _is_publication_error(error_code: str | None) -> bool:
     }
 
 
-def _is_resumable_agent_budget_failure(run: AgentRunRecord) -> bool:
+def _is_explicitly_resumable_agent_failure(run: AgentRunRecord) -> bool:
     if (
         run.status is AgentRunStatus.BUDGET_EXHAUSTED
         and run.error_code == "budget_exhausted"
     ):
         return True
-    # 兼容修复上线前由官方中间件或过小Graph step上限直接抛出、被旧Finalizer误分类的运行。
+    # 兼容修复上线前由官方中间件、过小Graph step上限或LangChain 5xx包装直接抛出、被旧
+    # Finalizer误分类的运行。仍需维护者显式指定run ID且checkpoint处于修复流程。
     return bool(
         run.status is AgentRunStatus.FAILED
         and run.error_code == "unexpected_error"
@@ -557,6 +558,7 @@ def _is_resumable_agent_budget_failure(run: AgentRunRecord) -> bool:
         in {
             "GraphRecursionError",
             "ModelCallLimitExceededError",
+            "OpenAIAPIError",
             "ToolCallLimitExceededError",
         }
     )

@@ -650,9 +650,13 @@ def _model_error(exc: Exception, *, attempt: int) -> Exception | None:
         return None
     if isinstance(exc, openai.APIStatusError):
         status = int(exc.status_code)
-        if status in {408, 429, 500, 502, 503, 504}:
-            if status == 429:
-                return ModelRateLimitError("repair model rate limited", **kwargs)
+        if status == 408:
+            return ModelTimeoutError(
+                "repair model request timed out",
+                safe_details={"http_status": status},
+                **kwargs,
+            )
+        if 500 <= status <= 599:
             return ModelProviderError(
                 "repair model upstream unavailable",
                 safe_details={"http_status": status},

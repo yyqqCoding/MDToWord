@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from agent.domain.errors import ModelAuthError, ModelTimeoutError
+from agent.domain.errors import ModelAuthError, ModelTimeoutError, UnexpectedRuntimeError
 from agent.domain.failures import (
     FailureCause,
     FailureEvent,
@@ -138,6 +138,19 @@ def test_unknown_exception_only_records_its_type():
     assert failure.kind is FailureKind.PERMANENT
     assert failure.safe_details == {"error_type": "RuntimeError"}
     assert "must-not-appear" not in str(failure.model_dump())
+
+
+def test_wrapped_unknown_exception_preserves_original_type():
+    failure = failure_cause_from_exception(
+        UnexpectedRuntimeError(
+            "unexpected runtime failure",
+            safe_details={"error_type": "OpenAIAPIError"},
+        ),
+        operation="repair_agent",
+    )
+
+    assert failure.code == "unexpected_error"
+    assert failure.safe_details == {"error_type": "OpenAIAPIError"}
 
 
 def test_tool_precondition_is_invalid_not_security():
