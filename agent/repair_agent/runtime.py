@@ -17,7 +17,11 @@ from langchain.agents.middleware.tool_call_limit import ToolCallLimitExceededErr
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent.domain.errors import BudgetExceededError, InvalidModelResponseError
+from agent.domain.errors import (
+    AgentError,
+    BudgetExceededError,
+    InvalidModelResponseError,
+)
 from agent.domain.models import TaskArtifact
 from agent.repair_agent.middleware import (
     CompletionGuardMiddleware,
@@ -42,7 +46,7 @@ from agent.domain.failures import FailureRecorder
 from agent.telemetry.base import NoopTelemetry, Telemetry
 
 
-REPAIR_AGENT_PROMPT_VERSION = "repair-agent-v1"
+REPAIR_AGENT_PROMPT_VERSION = "repair-agent-v2"
 REPAIR_SUMMARY_PROMPT_VERSION = "repair-summary-v1"
 
 
@@ -111,6 +115,7 @@ class RepairAgentRuntime:
                     "search_source",
                     "submit_test_edits",
                     "submit_fix_edits",
+                    "run_sandbox",
                     "complete_reproduction",
                     "complete_repair",
                     "report_blocked",
@@ -194,6 +199,22 @@ class RepairAgentRuntime:
             error.additional_output_tokens = int(values.get("output_tokens", 0))
             error.additional_total_tokens = int(values.get("total_tokens", 0))
             raise error from exc
+        except AgentError as exc:
+            # create_agent 是外层 Graph 的单个节点；节点内异常发生时，外层 checkpoint
+            # 尚未得到真实阶段和累计计量，因此从内层 thread 补齐后再交给 Finalizer。
+            latest = await self._graph.aget_state(config)
+            values = latest.values or snapshot.values
+            exc.locate(
+                operation=exc.operation or "repair_agent",
+                phase=str(values.get("phase", "reproducing")),
+                node="repair_agent",
+            )
+            exc.additional_model_calls = int(values.get("model_calls", 0))
+            exc.additional_tool_calls = int(values.get("tool_calls", 0))
+            exc.additional_input_tokens = int(values.get("input_tokens", 0))
+            exc.additional_output_tokens = int(values.get("output_tokens", 0))
+            exc.additional_total_tokens = int(values.get("total_tokens", 0))
+            raise
         state = RepairAgentState(**raw_output)
         return self._outcome(state)
 

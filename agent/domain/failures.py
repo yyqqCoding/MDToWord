@@ -279,6 +279,7 @@ _KIND_BY_CODE: dict[str, FailureKind] = {
     "target_validation_timeout": FailureKind.BUSINESS,
     "timeout": FailureKind.TRANSIENT,
     "tool_not_authorized": FailureKind.SECURITY,
+    "tool_precondition_failed": FailureKind.INVALID,
     "unexpected_target_error": FailureKind.BUSINESS,
     "unexpected_error": FailureKind.PERMANENT,
     "workspace_modified": FailureKind.SECURITY,

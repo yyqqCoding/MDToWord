@@ -130,6 +130,12 @@ class ToolAuthorizationError(AgentError):
     error_code = "tool_not_authorized"
 
 
+class ToolPreconditionError(AgentError):
+    """工具属于当前阶段，但尚缺少执行所需的受信状态。"""
+
+    error_code = "tool_precondition_failed"
+
+
 class InvalidArtifactPathError(AgentError):
     error_code = "invalid_artifact_path"
 

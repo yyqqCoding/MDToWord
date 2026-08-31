@@ -143,6 +143,8 @@ Agent执行`flush()`只能保证客户端已经发送，Langfuse服务端建立�
 运行列表和详情先按`route`解释终态，再用intent/area/category细化。因此注入显示“安全拦截”、
 无关显示“已忽略”、Issue路线显示“已创建Issue”，不能因为run统一以`completed`结束就都显示
 成“已结束”。历史`out_of_scope`只做兼容展示，不伪装成新Issue。
+`quarantined_security` route 才表示分类阶段的提示词注入；后续 `security_rejected` 表示本地
+Policy 拒绝越权工具、补丁或工作区变化，不能笼统声称“工具调用为0”。
 
 列表终态列只保留状态徽标，避免在同一单元格重复放置蓝色PR/Issue链接；实际GitHub入口在
 详情页。Issue详情明确说明前端/扩展代码没有被Agent自动修改，PR详情才展示代码diff与验证

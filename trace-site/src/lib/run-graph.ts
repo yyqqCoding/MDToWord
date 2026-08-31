@@ -457,7 +457,8 @@ export function describeOutcome(run: OutcomeInput): OutcomeView {
     case "security_rejected":
       return {
         label: "安全拦截",
-        detail: "检测到提示词注入或越权操作，运行被隔离终止，工具调用为 0。",
+        detail:
+          "本地安全策略拒绝了越权工具、补丁或工作区变更；提示词注入仅在分类阶段单独标识。",
         tone: "serious",
       };
     case "failed":

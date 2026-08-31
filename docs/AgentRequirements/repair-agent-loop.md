@@ -78,9 +78,13 @@ terminal: completed | blocked | null
 - 规划：官方 `write_todos`。
 
 不注册 Shell、通用 Filesystem、任意命令、任意路径、网络、GitHub、数据库或发布工具。
-工具可见性随阶段收窄：转换抛错且已有受信测试时，复现阶段不暴露
-`submit_test_edits`；修复完成前不暴露 `complete_repair`。每个工具在执行函数内部再次校验
-阶段、路径、预算和当前 patch，Middleware 不是唯一安全边界。
+工具可见性同时按阶段和受信子状态收窄：没有测试/修复 patch 时只开放对应提交工具；patch
+提交后只开放 `run_sandbox`；Sandbox 失败后重新开放读取与下一轮提交；通过后只开放对应
+完成工具。已登记于当前阶段、但尚缺前置产物的调用返回结构化
+`tool_precondition_failed` ToolMessage，并要求模型在同一工具循环执行 `required_action`；它
+不是安全拒绝。未登记工具或跨阶段调用仍为 `tool_not_authorized/security` 并立即终结。
+每个工具在执行函数内部再次校验阶段、路径、预算和当前 patch，Middleware 不是唯一安全
+边界。
 
 ### 4.1 并行调用
 
@@ -89,7 +93,7 @@ terminal: completed | blocked | null
 | 同一批次 | 处理 |
 |---|---|
 | 多个只读工具 | 并行执行 |
-| 多个只读工具 + 一个 `run_sandbox` | 允许；只启动一个 Sandbox Job |
+| 多个只读工具 + 一个 `run_sandbox` | 拒绝；patch 待验证子状态只允许单独运行 Sandbox |
 | 两个及以上 `run_sandbox` | 拒绝该批次，要求分轮调用 |
 | 任一 patch 写入 + 其他任意工具 | 拒绝该批次 |
 | 任一完成/阻塞工具 + 其他任意工具 | 拒绝该批次 |
@@ -105,10 +109,10 @@ terminal: completed | blocked | null
 2. `RepairSummarizationMiddleware`：在有效上下文窗口的 65% 触发 Summary；
 3. `ContextBudgetMiddleware`：到 85% 时必须先成功总结，否则停止；
 4. `ModelResilienceMiddleware`：模型临时错误执行主、主、备三次总 attempt；
-5. `PhaseToolPolicyMiddleware`：按阶段收窄可见工具并再次校验调用；
+5. `PhaseToolPolicyMiddleware`：按阶段授权和受信子状态收窄可见工具并再次校验调用；
 6. `ParallelToolPolicyMiddleware`：拒绝有副作用冲突的同批调用；
 7. `ToolRetryMiddleware`：只对幂等 Sandbox 临时传输失败做三次总 attempt；
-8. `ToolErrorMiddleware`：把允许回传的工具参数/Policy 错误转换为脱敏可执行反馈；
+8. `ToolErrorMiddleware`：把允许回传的工具参数和前置条件错误转换为脱敏可执行反馈；
 9. `ModelCallLimitMiddleware`、`ToolCallLimitMiddleware`：执行本地预算；
 10. `CompletionGuardMiddleware`：模型无工具直接作答时要求其继续调用完成或阻塞工具。
 

@@ -6,7 +6,12 @@ from langchain.agents.middleware import ModelRequest, ModelResponse
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from agent.domain.errors import ModelAuthError, ModelContextTooLargeError, ModelTimeoutError
+from agent.domain.errors import (
+    ModelAuthError,
+    ModelContextTooLargeError,
+    ModelTimeoutError,
+    ToolAuthorizationError,
+)
 from agent.domain.errors import SandboxUnavailableError
 from agent.domain.failures import FailureRecorder
 from agent.repair_agent.middleware import (
@@ -16,6 +21,8 @@ from agent.repair_agent.middleware import (
     ParallelToolPolicyMiddleware,
     RepairSummarizationMiddleware,
     RecordingToolRetryMiddleware,
+    _allowed_tool_names,
+    safe_tool_error,
 )
 
 
@@ -77,6 +84,8 @@ def test_model_resilience_does_not_retry_permanent_error():
 def test_parallel_policy_rejects_two_sandboxes_before_execution():
     state = {
         "phase": "repairing",
+        "fix_patch_ref": "run://synthetic/fix.patch",
+        "repair_result_ref": None,
         "messages": [
             AIMessage(
                 content="",
@@ -95,6 +104,87 @@ def test_parallel_policy_rejects_two_sandboxes_before_execution():
     assert len(update["messages"]) == 2
     assert all(isinstance(item, ToolMessage) for item in update["messages"])
     assert all(item.status == "error" for item in update["messages"])
+
+
+def test_repair_tool_visibility_follows_trusted_substate():
+    editing = {"phase": "repairing"}
+    pending_sandbox = {
+        "phase": "repairing",
+        "fix_patch_ref": "run://synthetic/fix.patch",
+        "repair_result_ref": None,
+    }
+    failed_sandbox = {
+        **pending_sandbox,
+        "repair_result_ref": "run://synthetic/repair.json",
+        "repair_confirmed": False,
+    }
+    confirmed = {**failed_sandbox, "repair_confirmed": True}
+
+    assert "submit_fix_edits" in _allowed_tool_names(editing)
+    assert "run_sandbox" not in _allowed_tool_names(editing)
+    assert _allowed_tool_names(pending_sandbox) == frozenset(
+        {"run_sandbox", "report_blocked"}
+    )
+    assert "submit_fix_edits" in _allowed_tool_names(failed_sandbox)
+    assert "run_sandbox" not in _allowed_tool_names(failed_sandbox)
+    assert _allowed_tool_names(confirmed) == frozenset(
+        {"complete_repair", "report_blocked"}
+    )
+
+
+def test_premature_sandbox_call_returns_actionable_tool_message():
+    state = {
+        "phase": "repairing",
+        "messages": [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {"name": "run_sandbox", "args": {"reason": "early"}, "id": "a"}
+                ],
+            )
+        ],
+    }
+
+    update = asyncio.run(ParallelToolPolicyMiddleware().aafter_model(state, None))
+
+    assert update is not None and update["jump_to"] == "model"
+    message = update["messages"][0]
+    assert message.status == "error"
+    assert '"error_code": "tool_precondition_failed"' in message.content
+    assert '"required_action": "submit_fix_edits"' in message.content
+
+
+def test_cross_phase_tool_call_remains_security_error():
+    state = {
+        "phase": "repairing",
+        "messages": [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {"name": "submit_test_edits", "args": {}, "id": "a"}
+                ],
+            )
+        ],
+    }
+
+    with pytest.raises(ToolAuthorizationError):
+        asyncio.run(ParallelToolPolicyMiddleware().aafter_model(state, None))
+
+
+def test_tool_precondition_error_preserves_required_action_for_model():
+    from agent.domain.errors import ToolPreconditionError
+
+    message = safe_tool_error(
+        ToolPreconditionError(
+            "submit_fix_edits must succeed before run_sandbox",
+            safe_details={"required_action": "submit_fix_edits"},
+        ),
+        None,
+    )
+
+    assert message is not None
+    assert '"error_code": "tool_precondition_failed"' in message
+    assert '"required_action": "submit_fix_edits"' in message
 
 
 def test_sandbox_tool_retry_is_three_total_attempts_with_1_2_backoff():

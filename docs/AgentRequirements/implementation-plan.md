@@ -1346,5 +1346,28 @@ Gate、源码快照、Sandbox Worker、最终独立验证与发布边界不变�
 - 为本次上线前的旧误分类运行增加精确兼容：仅当 FailureSnapshot 的 `error_type` 为官方
   Model/Tool Call Limit 异常且外层 checkpoint 仍处于 reproducing/repairing 时允许显式续跑；
 - `.venv/bin/python -m pytest agent/tests -q`：369 passed、5 skipped；跳过项仍为需要真实
-  Docker 条件的集成测试。`.venv/bin/python -m compileall -q agent` 通过。当前生产 run 的
-  实际续跑仍待部署后由维护者显式验收，未写成生产完成。
+  Docker 条件的集成测试。`.venv/bin/python -m compileall -q agent` 通过；该版本后续生产
+  续跑结果与新暴露的工具前置条件问题见下一节。
+
+### Repair Agent工具前置条件回归（2026-08-31）
+
+- 预算提高后，原 run `80713b39-d2d0-4bc8-a3f6-f7604e829d54` 已从同一 checkpoint 继续
+  到发布门禁，因部署本身推进 `main` 而按既有规则进入 `stale_base` 并重排一次，证明续跑
+  复用了原 run 而未重置状态；
+- 基于新 SHA 的 run `25e153bb-510b-48da-83bd-864f802fba89` 在 repairing 阶段尚未提交
+  `fix.patch` 时调用 `run_sandbox`。旧实现同时暴露提交与 Sandbox 工具，并把“缺前置补丁”
+  抛成 `tool_not_authorized/security`；公开页因此误写成提示词注入/零工具，实际 Gate 的
+  `injection_suspected=false` 且 Trace 已有多次只读工具调用；
+- 本地修复把工具集合拆成“阶段授权”和“当前可执行”两层：编辑子状态只开放并行只读与
+  patch 提交，patch 待验证时只开放单个 Sandbox，失败后重开下一轮编辑，通过后只开放完成
+  工具。当前阶段已登记但缺受信前置产物时返回结构化
+  `tool_precondition_failed/invalid` 与 `required_action`，模型在同一 run 内纠正；跨阶段或
+  未登记工具仍为 `tool_not_authorized/security` 并STOP；
+- Repair Agent Prompt升至`repair-agent-v2`；任一预期 `AgentError` 退出时从内层 checkpoint
+  补齐真实 phase 与模型、工具、Token 增量。Trace Site不再把后续Policy拒绝描述成分类阶段
+  提示词注入或声称工具调用为0；
+- 回归用Fake模型先错误调用 `run_sandbox`，确认收到
+  `required_action=submit_fix_edits` 后在同一 Agent run 内提交补丁、运行目标Sandbox并完成；
+  另有测试证明跨阶段工具仍安全终结。Agent全量：376 passed、5 skipped，compileall通过；
+  Trace Site：14 passed、typecheck通过；build仍被工作区既有
+  `lightningcss.linux-x64-gnu.node`缺失阻断。生产部署与重新提交相同反馈待维护者验收。

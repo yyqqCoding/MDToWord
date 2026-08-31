@@ -68,7 +68,9 @@ Graph 节点消费”已被直接替换；模型通过工具参数逐步提交�
 ```
 
 模型不能传 patch 路径、pytest 参数、job ID 或命令。Controller 从受信 State 构造固定
-Sandbox Job。
+Sandbox Job。复现阶段必须先有当前轮 `test_patch_ref`，修复阶段必须先有当前轮
+`fix_patch_ref`；缺少前置产物时返回 `tool_precondition_failed` 与下一项
+`required_action`，由模型在同一 run 内纠正，不得转成安全终态或要求人工重跑。
 
 ### 2.5 `submit_fix_edits`
 
