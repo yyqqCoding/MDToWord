@@ -14,7 +14,7 @@ from agent.domain.policy import (
 from agent.providers.base import ModelMessage, ModelProvider, StructuredModelResponse
 
 
-GATE_PROMPT_VERSION = "gate-v9"
+GATE_PROMPT_VERSION = "gate-v10"
 GATE_TIMEOUT_SECONDS = 30.0
 
 
@@ -23,6 +23,7 @@ class GateExecution:
     """Gate 领域结果及本次模型用量；用户输入不进入该摘要。"""
 
     result: GateResult
+    classification: GateClassification | None = None
     input_tokens: int = 0
     output_tokens: int = 0
     total_tokens: int = 0
@@ -57,6 +58,7 @@ async def execute_feedback_gate(
     duplicate_found: bool = False,
     min_confidence: float = MIN_GATE_CONFIDENCE,
     timeout_seconds: float = GATE_TIMEOUT_SECONDS,
+    system_prompt: str | None = None,
 ) -> GateExecution:
     """执行 Gate 并返回持久化所需的最小模型用量摘要。"""
 
@@ -68,7 +70,7 @@ async def execute_feedback_gate(
         return GateExecution(result=deterministic)
 
     response = await provider.generate_structured(
-        _gate_messages(task),
+        _gate_messages(task, system_prompt=system_prompt),
         GateClassification,
         # Gate 模型从接口层就拿不到工具，而不是依赖 Prompt 自律。
         tools=(),
@@ -86,6 +88,7 @@ async def execute_feedback_gate(
     )
     return GateExecution(
         result=result,
+        classification=response.output,
         input_tokens=response.input_tokens,
         output_tokens=response.output_tokens,
         total_tokens=response.total_tokens,
@@ -93,8 +96,13 @@ async def execute_feedback_gate(
     )
 
 
-def _gate_messages(task: TaskArtifact) -> tuple[ModelMessage, ...]:
-    system_prompt = files("agent.prompts").joinpath("gate.md").read_text("utf-8")
+def _gate_messages(
+    task: TaskArtifact,
+    *,
+    system_prompt: str | None = None,
+) -> tuple[ModelMessage, ...]:
+    if system_prompt is None:
+        system_prompt = files("agent.prompts").joinpath("gate.md").read_text("utf-8")
     untrusted_payload = json.dumps(
         {
             "feedback_type": task.feedback_type.value,

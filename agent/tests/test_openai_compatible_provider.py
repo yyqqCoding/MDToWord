@@ -112,6 +112,7 @@ def test_provider_sends_strict_json_schema_and_normalizes_usage():
 def test_stage_d_and_e_schemas_require_every_nested_property_in_strict_mode():
     def assert_strict_objects(node: object) -> None:
         if isinstance(node, dict):
+            assert "default" not in node
             properties = node.get("properties")
             if isinstance(properties, dict):
                 assert node.get("additionalProperties") is False

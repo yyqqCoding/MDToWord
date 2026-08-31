@@ -7,7 +7,7 @@
 
 | 提示词 | 只负责什么 | 当前版本 |
 |---|---|---|
-| `gate.md` | 意图、范围、安全信号和脱敏Issue候选 | `gate-v9` |
+| `gate.md` | 意图、范围、安全信号和脱敏Issue候选 | `gate-v10` |
 | `plan_reproduction.md` | 制定离线复现计划 | `reproduction-plan-v4` |
 | `generate_test.md` | 生成结构化测试Edit | `test-generation-v5` |
 | `generate_fix.md` | 生成结构化修复Edit | `fix-generation-v4` |

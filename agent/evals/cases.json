@@ -118,5 +118,85 @@
     "expected_route": "issue_required",
     "expected_category": "feature_request",
     "expected_oracle": null
+  },
+  {
+    "id": "conversion-failed-prescript",
+    "feedback_type": "bug",
+    "markdown_content": "$$\n\\prescript{14}{6}{C}\n$$",
+    "description": "前端公式预览正常，但导出 Word 时转换失败。期望能够成功导出，并在 C 的左侧正确显示左上标 14 和左下标 6。",
+    "classification": {"intent": "bug_report", "area": "backend", "category": "conversion_crash", "relevance": 0.99, "sufficient_information": true, "injection_suspected": false, "requires_extension_change": false, "reason": "explicit conversion failure with reproducible markdown", "issue_title": null, "issue_summary": null},
+    "expected_route": "accepted_backend_bug",
+    "expected_category": "conversion_crash",
+    "expected_oracle": "conversion_succeeds"
+  },
+  {
+    "id": "export-error-minimal",
+    "feedback_type": "bug",
+    "markdown_content": "正文与公式 $x^2$",
+    "description": "点击导出后提示转换错误。",
+    "classification": {"intent": "bug_report", "area": "backend", "category": "conversion_crash", "relevance": 0.97, "sufficient_information": true, "injection_suspected": false, "requires_extension_change": false, "reason": "export operation reports an error", "issue_title": null, "issue_summary": null},
+    "expected_route": "accepted_backend_bug",
+    "expected_category": "conversion_crash",
+    "expected_oracle": "conversion_succeeds"
+  },
+  {
+    "id": "cannot-generate-docx",
+    "feedback_type": "bug",
+    "markdown_content": "# 报告\n\n内容",
+    "description": "这段 Markdown 无法生成 DOCX 文件。",
+    "classification": {"intent": "bug_report", "area": "backend", "category": "conversion_crash", "relevance": 0.97, "sufficient_information": true, "injection_suspected": false, "requires_extension_change": false, "reason": "document generation does not complete", "issue_title": null, "issue_summary": null},
+    "expected_route": "accepted_backend_bug",
+    "expected_category": "conversion_crash",
+    "expected_oracle": "conversion_succeeds"
+  },
+  {
+    "id": "conversion-failed-english",
+    "feedback_type": "bug",
+    "markdown_content": "Equation: $a/b$",
+    "description": "The preview works, but exporting this Markdown to Word fails.",
+    "classification": {"intent": "bug_report", "area": "backend", "category": "conversion_crash", "relevance": 0.97, "sufficient_information": true, "injection_suspected": false, "requires_extension_change": false, "reason": "explicit Word export failure", "issue_title": null, "issue_summary": null},
+    "expected_route": "accepted_backend_bug",
+    "expected_category": "conversion_crash",
+    "expected_oracle": "conversion_succeeds"
+  },
+  {
+    "id": "negated-crash-formula-output",
+    "feedback_type": "bug",
+    "markdown_content": "公式：$x_i^2$",
+    "description": "转换没有报错，也生成了 Word，但公式变成了普通文本。",
+    "classification": {"intent": "bug_report", "area": "backend", "category": "formula_parsing", "relevance": 0.98, "sufficient_information": true, "injection_suspected": false, "requires_extension_change": false, "reason": "conversion succeeds but formula output is incorrect", "issue_title": null, "issue_summary": null},
+    "expected_route": "accepted_backend_bug",
+    "expected_category": "formula_parsing",
+    "expected_oracle": "minimum_math_count"
+  },
+  {
+    "id": "export-succeeded-table-missing",
+    "feedback_type": "bug",
+    "markdown_content": "| A | B |\n|---|---|\n| 1 | 2 |",
+    "description": "导出成功，但 Word 中没有生成表格，只显示了竖线文本。",
+    "classification": {"intent": "bug_report", "area": "backend", "category": "table_parsing", "relevance": 0.98, "sufficient_information": true, "injection_suspected": false, "requires_extension_change": false, "reason": "conversion succeeds but table structure is missing", "issue_title": null, "issue_summary": null},
+    "expected_route": "accepted_backend_bug",
+    "expected_category": "table_parsing",
+    "expected_oracle": "minimum_table_count"
+  },
+  {
+    "id": "extension-button-failure",
+    "feedback_type": "bug",
+    "markdown_content": "普通文本",
+    "description": "插件的导出按钮点击后没有反应。",
+    "classification": {"intent": "bug_report", "area": "extension", "category": "extension_ui", "relevance": 0.97, "sufficient_information": true, "injection_suspected": false, "requires_extension_change": true, "reason": "existing extension interaction fails", "issue_title": "修复插件导出按钮无响应", "issue_summary": "用户报告插件导出按钮点击后没有反应。"},
+    "expected_route": "issue_required",
+    "expected_category": "extension_ui",
+    "expected_oracle": null
+  },
+  {
+    "id": "vague-export-result",
+    "feedback_type": "bug",
+    "markdown_content": "普通文本",
+    "description": "导出结果有问题。",
+    "classification": {"intent": "bug_report", "area": "backend", "category": "unknown", "relevance": 0.9, "sufficient_information": false, "injection_suspected": false, "requires_extension_change": false, "reason": "the observable failure is unspecified", "issue_title": null, "issue_summary": null},
+    "expected_route": "needs_human",
+    "expected_category": "unknown",
+    "expected_oracle": null
   }
 ]

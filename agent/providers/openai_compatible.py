@@ -494,6 +494,14 @@ def _strict_response_schema(
 
     def normalize(node: object) -> None:
         if isinstance(node, dict):
+            # Strict Structured Outputs treats every field as required (nullable
+            # fields use an explicit ``null`` union), so Pydantic defaults are
+            # unnecessary.  More importantly, OpenAI-compatible endpoints
+            # reject keywords next to a ``$ref``; Pydantic emits exactly that
+            # shape for fields with a default enum value (for example Gate's
+            # ``area``).  Remove defaults at every schema level rather than
+            # special-casing one response model.
+            node.pop("default", None)
             properties = node.get("properties")
             if isinstance(properties, dict):
                 # 严格模式要求对象全部属性列入 required；可选值通过 null 表达。

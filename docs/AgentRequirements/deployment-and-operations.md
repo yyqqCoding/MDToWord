@@ -209,6 +209,9 @@ sudo mdtoword-agentctl logs
   使用相同模型与结构化请求测量耗时，避免用过长等待掩盖上游故障；
 - 可用 `agent.evals.runner --provider configured --case-id <id>` 验证单条 Gate，但阶段 D
   仍应以 Langfuse 的具体 generation 节点和数据库阶段字段定位。
+- Prompt A/B评测使用独立的`--provider evaluation`与`EVAL_MODEL_NAME/API_KEY/BASE_URL`；该
+  模式不读取生产`MODEL_*`或`FALLBACK_MODEL_*`、不配置备用模型、不做格式/传输重试，也不写
+  生产Langfuse，确保`--repeat`的每个sample只对应专用接口的一次真实响应。
 
 历史 `failed` feedback/run 保留用于审计，不重新打开。修复部署后使用新的 `pending`
 反馈验证；如果当前代码已经解决问题，正确终态是 `cannot_reproduce`，不是创建空修复 PR。

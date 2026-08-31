@@ -181,7 +181,7 @@ Provider规范化输入、输出、缓存、推理和总Token；一次格式重�
 
 ### 27. 提示词如何区分普通技术文字和Prompt Injection？
 
-不能看到“system prompt”几个字就一律隔离。`gate-v9`要求只有内容试图改变当前分类任务、
+不能看到“system prompt”几个字就一律隔离。`gate-v10`要求只有内容试图改变当前分类任务、
 索要内部信息、要求越权操作或把数据伪装成给模型的指令时，才设置
 `injection_suspected=true`。普通代码和技术讨论仍按产品内容分类。
 

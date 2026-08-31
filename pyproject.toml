@@ -32,7 +32,13 @@ build-backend = "setuptools.build_meta"
 include = ["agent*"]
 
 [tool.setuptools.package-data]
-agent = ["evals/*.json", "migrations/*.sql", "policies/*.json", "prompts/*.md"]
+agent = [
+  "evals/*.json",
+  "evals/prompts/*.md",
+  "migrations/*.sql",
+  "policies/*.json",
+  "prompts/*.md",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["agent/tests"]

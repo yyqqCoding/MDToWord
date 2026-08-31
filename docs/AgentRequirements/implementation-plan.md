@@ -417,6 +417,8 @@ backend/.venv/Scripts/python.exe -m pytest backend/tests -v
 ```bash
 .venv/bin/python -m agent.evals.runner --provider fake
 .venv/bin/python -m agent.evals.runner --provider configured
+.venv/bin/python -m agent.evals.runner --provider evaluation \
+  --prompt gate-v10 --repeat 3
 .venv/bin/python -m agent.cli scheduler --once
 .venv/bin/python -m agent.cli scheduler --forever
 ```
@@ -1306,6 +1308,25 @@ Gate、源码快照、Sandbox Worker、最终独立验证与发布边界不变�
 1. Scheduler 关闭时在生产主机运行 `model-smoke`；
 2. 使用可丢弃反馈分别验证 conversion error 与 conversion success/semantic test 分支；
 3. 核对最终独立验证、FailureSnapshot、Langfuse 用量与发布幂等后才更新为完成。
+
+### Gate Prompt v10 A/B 评测（2026-08-31）
+
+- 使用独立评测配置 `EVAL_MODEL_NAME=gpt-5.6-luna` 和本地 OpenAI-compatible 端点；评测
+  不读取生产主备模型、不写生产 Langfuse，v9 与 v10 使用同一份 20 条脱敏/构造数据；
+- v9 首响应基线：Gate 路由准确率 `0.90`、类别准确率 `0.85`、原始分类准确率
+  `0.684211`、信息充分性 `0.842105`、Schema 合规 `1.0`、注入隔离召回 `1.0`、误报
+  `0.0`。新增的“转换失败/无法生成 DOCX”样本曾被路由为信息不足；
+- v10 首响应：路由、类别、Schema 和信息充分性均为 `1.0`，注入隔离召回 `1.0`、误报
+  `0.0`；关键 10 条在 3 次重复并启用生产一次格式修正后最终路由、类别和 Schema 均为
+  `1.0`。精确的 `conversion-failed-prescript` 三次重复均为
+  `bug_report/backend/conversion_crash`；
+- v10 只强化“先判断转换是否完成”和既有跨字段输出约束，未增加本地语义特例；`gate-v9.md`
+  保留为可重放基线，生产 Prompt 固化为 `gate-v10`。上述是真实评测证据，不代表生产部署
+  已完成；部署后仍需用新的可丢弃反馈做 Gate 黑盒验收；
+- OpenAI-compatible 严格 Schema 兼容性修复移除 Pydantic 默认元数据，避免 `$ref` 与
+  `default` 同级导致严格端点返回 `invalid_json_schema`；Provider 回归测试覆盖该约束。
+- 冻结的 v9/v10 Prompt 纳入 Python 包数据，确保服务器通过可编辑安装或构建包部署时，
+  `--prompt gate-v10` 与生产 Gate 读取到相同文件。
 
 ### 生产演练与后续回归（2026-08-31）
 

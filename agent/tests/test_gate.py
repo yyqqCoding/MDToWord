@@ -472,15 +472,14 @@ def test_gate_prompt_routes_explicit_no_action_test_feedback_as_unrelated():
 def test_gate_prompt_separates_issue_routing_and_incomplete_from_irrelevant():
     prompt = files("agent.prompts").joinpath("gate.md").read_text("utf-8")
 
-    assert "插件按钮位置不方便" in prompt
+    assert "插件按钮点击后没有反应" in prompt
     assert "category=extension_ui" in prompt
     assert "导出不对" in prompt
     assert "sufficient_information=false" in prompt
-    assert "展示、视觉、交互和布局建议" in prompt
+    assert "展示、视觉、交互或布局建议" in prompt
     assert "category=feature_request" in prompt
     assert "backend_normalization" in prompt
-    assert "只有 Word 中的公式结构" in prompt
-    assert "`relevance` 表示与产品的相关程度" in prompt
+    assert "转换没有报错，但 Word 公式错误" in prompt
+    assert "`relevance` 只表示与产品的相关程度" in prompt
     assert "必须不低于 `0.8`" in prompt
-    assert "不能因为无法自动修复而分类为无关内容" in prompt
-    assert prompt.count("分类为 `unrelated`") >= 1
+    assert "只有“结果不对”“不能用”等描述" in prompt

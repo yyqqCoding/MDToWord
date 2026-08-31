@@ -101,7 +101,9 @@ Agent 服务自动判断：后端缺陷在隔离沙箱中复现、修复和确�
   OpenAI-compatible 接口，Gate 30～120 秒短超时可配置。当前增量尚未生产部署。
 - 阶段 K 的权威契约与本地实现正在开发：生产图已改为 conversion probe 加单个
   `create_agent` 工具循环，并新增主主备 Middleware、只读并行、比例 Summary 与
-  `model-smoke`；只有完成全量自动测试和维护者真实模型/Sandbox 验收后才可记为完成。
+  `model-smoke`；Gate Prompt 已通过独立 GPT 评测升级为 `gate-v10`，并保留 `gate-v9`
+  基线；严格 OpenAI-compatible Schema 的默认元数据兼容问题已修复。只有完成全量自动
+  测试和维护者真实模型/Sandbox 验收后才可记为完成。
 
 可直接执行的配置和命令见 [agent/README.md](../../agent/README.md)。阶段划分、历史检查点
 和验收证据以 [implementation-plan.md](implementation-plan.md) 为准；本文档中的目标

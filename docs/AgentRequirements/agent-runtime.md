@@ -143,7 +143,7 @@ issue_summary: string|null
 最终选择 `issue_required` 时二者才必须非空；其他路由必须为 null。标题为单行且不超过
 80 字符，摘要不超过 600 字符，只复述明确需求与现象，不生成用户未提出的验收条件。
 这些跨字段规则既写进 Gate Prompt，也由本地 Policy 分别给出可执行校验错误。实现时须
-同步 bump `GATE_PROMPT_VERSION`；阶段 I 当前版本为 `gate-v9`。
+同步 bump `GATE_PROMPT_VERSION`；当前版本为 `gate-v10`。
 
 ### 4.3 本地路由
 
@@ -246,7 +246,7 @@ Repair Agent 的业务输出通过工具 Schema 与本地 Policy 校验后作为
 本地退避，超过10秒则截断为10秒，避免单次模型调用无限占住单并发Scheduler。
 
 当前OpenAI兼容Chat Completions Provider使用`response_format=json_schema`和
-`strict=true`，并始终传入空工具集合。当前Prompt版本为`gate-v9`、
+`strict=true`，并始终传入空工具集合。当前Prompt版本为`gate-v10`、
 `reproduction-plan-v4`、`test-generation-v5`和`fix-generation-v4`。Provider真实usage
 累计到`agent_runs`；若响应不含成本，则按本地配置单价估算，未配置单价时成本保持`0`。
 
