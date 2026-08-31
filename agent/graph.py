@@ -1,3 +1,11 @@
+"""外层业务 Graph：把反馈、快照、Repair Agent、验证和发布串起来。
+
+本文件的关键边界：
+1. 外层 Graph 决定业务阶段、状态迁移和终态；
+2. 生产路径的 repair_agent 节点只承载内层 create_agent 工具循环；
+3. 模型输出是不可信输入，写文件、运行沙箱和发布仍由受信 Policy 与本地代码控制。
+"""
+
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -165,6 +173,8 @@ def build_gate_graph(
 ):
     """构建可恢复 Graph；后续阶段依赖必须按 D -> E -> F 顺序启用。"""
 
+    # 这里把“业务阶段”和“Agent 探索”分开：外层节点负责不可跳过的边界，
+    # 内层 runtime 只在 repair_agent 这个节点里自主选择已授权工具。
     if repair is not None and reproduction is None:
         raise ValueError("repair graph requires reproduction dependencies")
     if publishing is not None and publishing.publisher is not None and repair is None:
@@ -223,6 +233,7 @@ def build_gate_graph(
         }
 
     async def route_feedback(state: AgentState) -> dict[str, object]:
+        # Gate 结果只决定进入哪条受信分支；模型不能自行选择 publisher 或跳过安全分支。
         if state.gate_result_ref is None:
             raise ValueError("gate state is missing gate_result_ref")
         result = artifact_store.read_gate(state.gate_result_ref)
@@ -457,6 +468,8 @@ def build_gate_graph(
             builder.add_edge("route_feedback", END)
     else:
         async def prepare_source(state: AgentState) -> dict[str, object]:
+            # 先固定 main 快照，再让后续所有工具共享同一版本；否则基线失败和补丁
+            # 可能来自不同代码，后续验证证据无法成立。
             with reproduction.telemetry.start_tool(
                 ToolTrace(
                     operation="prepare-source-snapshot",
@@ -506,6 +519,8 @@ def build_gate_graph(
                 raise ValueError("reproduction state is missing gate context")
             task = artifact_store.read_task(state.task_artifact_ref)
             if reproduction.agent_runtime is not None:
+                # 生产路径把复现与修复交给同一个 inner runtime；函数名保留为 Graph
+                # 节点接口，真正职责由 agent_runtime 分支决定。
                 from agent.repair_agent.runtime import RepairAgentRuntime
                 from agent.repair_agent.tools import RepairAgentContext
 
@@ -580,6 +595,7 @@ def build_gate_graph(
             }
 
         def route_after_repair_agent(state: AgentState) -> str:
+            # 这里只消费 runtime 的受信投影，不解析模型文字；是否完成或阻塞由状态引用决定。
             if state.agent_blocked_code is None:
                 return "finish"
             if (
@@ -2189,6 +2205,8 @@ def build_gate_graph(
                 name="feedback-repair-agent",
             )
 
+        # 未配置 inner runtime 时才编译历史固定节点；这些节点只服务现有单元测试，
+        # 不属于生产 ReAct 路径，也不应被新流程作为隐式回退。
         builder.add_node("prepare_source", prepare_source)
         builder.add_node("plan_reproduction", create_reproduction_plan)
         builder.add_node("generate_test_edit", generate_test_edit)

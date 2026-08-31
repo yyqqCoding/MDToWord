@@ -101,6 +101,8 @@ class RepairAgentRuntime:
             models.summary,
             effective_context_window=models.effective_context_window,
         )
+        # Middleware 顺序是内层运行时的安全边界：先处理上下文，再限制模型和工具能力，
+        # 最后累计用量并阻止普通文本结束。每层都能独立测试，不能依赖模型自律。
         middleware = (
             TodoListMiddleware(),
             summarizer,
@@ -139,8 +141,8 @@ class RepairAgentRuntime:
             UsageAccountingMiddleware(),
             CompletionGuardMiddleware(),
         )
-        # LangGraph step包含Middleware、模型和工具节点，不等于模型调用次数。这个上限只做
-        # 最后的失控保护；正常业务停止由持久化Model/Tool Call Limit拥有。
+        # LangGraph step 包含 Middleware、模型和工具节点，不等于模型调用次数。这个上限只做
+        # 最后的失控保护；正常业务停止由持久化 Model/Tool Call Limit 拥有。
         self._recursion_limit = _graph_recursion_limit(
             max_model_calls=max_model_calls,
             max_tool_calls=max_tool_calls,
@@ -150,6 +152,7 @@ class RepairAgentRuntime:
             files("agent.prompts").joinpath("repair_agent.md").read_text("utf-8")
         )
         self._graph = create_agent(
+            # create_agent 只负责 ReAct 状态机；工具列表是能力白名单，未注册的动作根本不存在。
             models.primary,
             tools=list(REPAIR_TOOLS),
             system_prompt=system_prompt,
@@ -175,8 +178,12 @@ class RepairAgentRuntime:
         baseline_values = dict(snapshot.values or {})
         try:
             if snapshot.values:
+                # 恢复调用传 None，让 checkpoint 成为唯一续跑入口；不能用新的初始消息
+                # 覆盖已经提交的补丁、Sandbox 结果或预算计数。
                 raw_output = await self._graph.ainvoke(None, config, context=context)
             else:
+                # 首次调用先执行受信 conversion probe，再把探针结论作为 inner agent 的
+                # 初始上下文；这样“转换抛错”和“转换成功但结果不符”不会混为一谈。
                 probe = await run_conversion_probe(context)
                 initial = _initial_state(context, category=category, probe=probe)
                 if probe.reproduction_confirmed and not context.allow_repair:
@@ -260,6 +267,7 @@ class RepairAgentRuntime:
             raise InvalidModelResponseError(
                 "repair agent ended without a trusted completion tool"
             )
+        # 外层只接收这个不可变投影；不把整个内层消息树或模型自述泄漏到业务状态。
         baseline = baseline_values or {}
         input_tokens = _counter_delta(state, baseline, "input_tokens")
         output_tokens = _counter_delta(state, baseline, "output_tokens")

@@ -56,6 +56,8 @@ class FeedbackScheduler:
 
     async def _claim_and_run(self) -> GateRunOutcome | None:
         async with self._run_lock:
+            # 恢复优先，避免旧 run 长期占着 claimed/reproducing 状态；没有恢复项
+            # 才领取新反馈，保证单并发下的顺序和可恢复性。
             resumable = await self._run_repository.find_resumable()
             if resumable is not None:
                 return await self._controller.resume(resumable.id)

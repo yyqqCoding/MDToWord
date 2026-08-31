@@ -76,6 +76,8 @@ class ModelResilienceMiddleware(AgentMiddleware):
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
         last_error: Exception | None = None
+        # 总共三次 attempt：主模型、主模型、备用模型。只有可恢复的传输错误才会
+        # 进入下一次；认证、越权、Schema、上下文和安全拒绝直接停止。
         for index, model in enumerate((request.model, request.model, self.fallback_model)):
             try:
                 selected = request if model is request.model else request.override(model=model)
@@ -102,6 +104,7 @@ class ModelResilienceMiddleware(AgentMiddleware):
                 if not retrying:
                     raise mapped from exc
                 assert delay is not None
+                # 先记录本次失败再等待，日志中的 attempt 与真实退避顺序保持一致。
                 await self.sleep(delay)
         assert last_error is not None
         raise last_error
@@ -158,6 +161,8 @@ class RecordingToolRetryMiddleware(ToolRetryMiddleware):
     async def awrap_tool_call(self, request: Any, handler: Any) -> Any:
         if request.tool_call["name"] != "run_sandbox":
             return await handler(request)
+        # 生产 Agent 的 HttpSandboxClient 配置为零次传输重试；这里统一负责 Sandbox
+        # 的三次调用和 1/2 秒退避，避免两层循环叠加成九次请求。
         for index in range(3):
             try:
                 return await handler(request)
@@ -340,6 +345,8 @@ class ParallelToolPolicyMiddleware(AgentMiddleware):
             return None
         calls = message.tool_calls
         names = [str(item.get("name", "")) for item in calls]
+        # LangChain 可能一次返回多个 tool call；先整批做 Policy 检查，再交给 ToolNode，
+        # 这样 patch、完成和 Sandbox 等副作用不会在同一批次并发发生。
         reason = _parallel_rejection_reason(names, state)
         if reason is None:
             return None
@@ -426,6 +433,8 @@ class RepairSummarizationMiddleware(SummarizationMiddleware):
 
     async def abefore_model(self, state: RepairAgentState, runtime: Any) -> dict[str, Any] | None:
         total_tokens = self.token_counter(state["messages"])
+        # soft trigger 触发总结；如果总结服务暂时失败且尚未到 hard limit，让主循环继续，
+        # 到 85% 仍无法压缩时才 fail closed，避免上下文悄悄丢失或无限膨胀。
         try:
             return await super().abefore_model(state, runtime)
         except Exception as exc:
@@ -466,6 +475,7 @@ def safe_tool_error(exc: Exception, request: Any) -> str | None:
         ToolPreconditionError,
     )
 
+    # 返回 None 表示错误不可安全交给模型修正，交由外层异常边界统一归因并终止。
     if isinstance(exc, ToolPreconditionError):
         required_action = str(exc.safe_details.get("required_action") or "")[:120]
         return json.dumps(
@@ -529,6 +539,8 @@ def _phase_authorized_tool_names(state: RepairAgentState) -> frozenset[str]:
 def _allowed_tool_names(state: RepairAgentState) -> frozenset[str]:
     """按阶段内受信产物只暴露当前可执行的下一组工具。"""
 
+    # 工具集合由 checkpoint 中的 phase、patch ref 和 Sandbox result ref 推导；
+    # 不是模型请求里的自由字段，因而恢复/重试后仍会重新计算。
     phase = state.get("phase")
     if phase == "reproducing":
         if state.get("reproduction_confirmed"):

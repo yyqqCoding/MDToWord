@@ -17,6 +17,8 @@ def _merge_latest(left: dict[str, object], right: dict[str, object]) -> dict[str
 class RepairAgentState(AgentState[None], total=False):
     """消息可总结，业务事实由工具写入这些独立字段。"""
 
+    # messages 可以被 SummarizationMiddleware 替换；下面这些字段必须保留，才能在
+    # 总结、进程重启和 --resume-run-id 后继续执行同一条业务链。
     phase: RepairPhase
     run_id: str
     feedback_id: str
@@ -47,4 +49,5 @@ class RepairAgentState(AgentState[None], total=False):
     cache_read_tokens: Annotated[int, add]
     summary_failures: Annotated[int, add]
     premature_final_count: Annotated[int, add]
+    # diagnostics 只保存有限的可观测摘要，不能成为模型绕过 Policy 的第二状态源。
     diagnostics: Annotated[dict[str, object], _merge_latest]

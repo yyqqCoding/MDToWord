@@ -114,6 +114,8 @@ async def open_configured_runtime(
         chat_models = None
 
         if stage in {"reproduction", "repair", "publication"}:
+            # 只有进入复现/修复阶段才装配 ChatModel、源码读取和 Sandbox；Gate-only
+            # 运行保持轻量，也不会在不需要时加载更多凭据。
             chat_models = build_chat_model_bundle(config)
             repository, read_token, worker_url, worker_credential = (
                 config.require_stage_c_controller_settings()
@@ -240,6 +242,8 @@ async def open_configured_runtime(
         ) as checkpointer:
             if reproduction is not None:
                 assert chat_models is not None
+                # Runtime 与外层 Graph 共享同一个 Postgres checkpoint，但使用
+                # repair:<run_id> 独立 thread，内层消息压缩不会污染外层业务状态。
                 reproduction = replace(
                     reproduction,
                     agent_runtime=RepairAgentRuntime(

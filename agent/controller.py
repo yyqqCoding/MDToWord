@@ -1,3 +1,9 @@
+"""Controller 边界：把一次反馈转换成可恢复的外层 Graph 运行。
+
+Controller 不实现模型推理或业务验证；它负责装配依赖、创建 run、传播 trace，
+并在异常离开 Graph 时生成最终 FailureSnapshot。
+"""
+
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from hashlib import sha256
@@ -93,6 +99,8 @@ class GateController:
         self._checkpointer = checkpointer
         self._min_confidence = min_confidence
         self._extension_version = extension_version
+        # Provider wrapper 只负责观测；真正的权限、路由和副作用边界仍由 Graph
+        # 与本地 Policy 决定，避免把业务控制隐藏在观测层。
         observed_reproduction = None
         if reproduction is not None:
             observed_reproduction = replace(
@@ -159,12 +167,15 @@ class GateController:
         if feedback.status is not FeedbackStatus.CLAIMED or feedback.claim_token is None:
             raise ValueError("GateController requires a claimed feedback record")
 
+        # 先把用户原文写成受控 TaskArtifact，再传给 Graph；模型不直接读取数据库对象，
+        # 后续恢复也使用同一个 artifact 引用。
         run_id = uuid4()
         trace_id = _trace_id_for_run(run_id)
         task_ref = self._artifact_store.write_task_ref(
             run_id,
             TaskArtifact.from_feedback(feedback),
         )
+        # run 记录外层业务事实和版本；内层消息、工具调用与中间状态由 checkpoint 保存。
         run = AgentRunRecord(
             id=run_id,
             feedback_id=feedback.id,
@@ -229,6 +240,8 @@ class GateController:
             raise ValueError(f"agent run {run_id} does not exist")
         config = _thread_config(run_id)
         snapshot = await self.graph.aget_state(config)
+        # 恢复先处理“只需发布”和预算/异常等特殊终态，避免重新执行已经完成的副作用；
+        # 普通 repairing/validating 状态才继续进入原 Graph thread。
         if (
             self._publishing_enabled
             and run.status is AgentRunStatus.FAILED
@@ -370,6 +383,7 @@ class GateController:
         )
         with self._telemetry.start_run(trace) as observation:
             try:
+                # Graph 内任何异常统一在这里收口，保证 Scheduler 不会看到无归因的裸异常。
                 output = await self.graph.ainvoke(state, _thread_config(run_id))
             except Exception as exc:
                 failed_run = await self._finalize_run_failure(run_id, exc)
@@ -393,6 +407,8 @@ class GateController:
         run = await self._run_repository.get(run_id)
         if run is None:
             raise AgentRunNotFoundError(f"agent run {run_id} does not exist")
+        # 失败可能发生在数据库汇总前，因此要合并 run、checkpoint 和异常携带的增量，
+        # 这样最终快照中的 attempt、模型调用和工具调用仍然可追踪。
         usage = {
             "model_calls": run.model_calls,
             "tool_calls": run.tool_calls,
@@ -488,6 +504,7 @@ class GateController:
                 }
                 else FeedbackStatus.FAILED
             )
+        # 状态映射只由受信错误类别决定；模型自述或异常原文不能直接决定是否需要人工。
         if (
             feedback is not None
             and feedback.claim_token == run.claim_token

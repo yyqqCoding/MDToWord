@@ -1,187 +1,61 @@
-# 权限控制
+# Policy、工具和权限
 
-## 1. 基本做法
+## 1. Policy 到底是什么
 
-系统不依赖模型“自觉”遵守安全要求，而是让每个组件只能拿到完成当前工作所需的最小权限。
-即使模型判断错误，后续Python检查、服务账号和Docker限制仍然生效。
+Policy 是 Controller 中的确定性授权层，不是 Prompt，也不是一个需要模型调用的 Agent。
+它把当前阶段、状态、路径、补丁和预算转换为“允许/拒绝/恢复”的决定。
 
-## 2. 每个组件能做什么
+Prompt 负责告诉模型目标和可用动作；Policy 负责真正放行动作。模型看不到 Policy 文件，
+所以所有跨字段规则必须同时写进提示词和本地校验。
 
-| 组件 | 可以做 | 不能做 |
-|---|---|---|
-| 浏览器插件 | 调用公开转换和反馈接口 | 直接访问Supabase、Agent或Worker |
-| Feedback API | 写入规定的反馈字段 | 读取Agent运行、领取反馈、调用模型 |
-| Agent主进程 | 领取任务、调用模型、读固定源码、更新状态、提交Sandbox Job | 直接执行模型生成代码、自动合并 |
-| 分类模型 | 返回分类JSON | 使用任何工具 |
-| 复现模型 | 选择允许读取的文件、生成结构化测试Edit | Shell、网络、数据库、GitHub |
-| 修复模型 | 生成白名单内结构化修复Edit | 修改测试、依赖、部署、Agent或扩展 |
-| Sandbox Worker | 校验Job并启动受限容器 | 读取模型、Supabase、Langfuse和GitHub业务密钥 |
-| 任务容器 | 运行固定测试命令 | 外网、Docker Socket、宿主机敏感目录和Secret |
-| GitHub Publisher | 在指定仓库创建分支/提交/PR，或创建脱敏Issue | 修改Secrets、Actions、仓库管理设置、自动合并或自动关闭Issue |
-| Vercel网站服务端 | 读取公开运行视图和Trace快照 | 读取`feedback`表并向浏览器暴露服务密钥 |
+## 2. 阶段能力
 
-## 3. 工具按节点开放
+~~~text
+Gate：无工具
+reproducing：search/read、submit_test_edits、run_sandbox、complete_reproduction
+repairing：search/read、submit_fix_edits、run_sandbox、complete_repair
+任意阶段：report_blocked、write_todos
+外层：源码快照、final validation、PR/Issue Publisher
+~~~
 
-代码中登记了六个工具名称：
+工具未注册就没有执行入口；工具函数仍要检查当前阶段、checkpoint、前置产物、路径、
+预算和幂等关系。
 
-```text
-search_source
-read_source_file
-submit_test_edits
-run_reproduction
-submit_fix_edits
-run_target_validation
-```
+## 3. 读写白名单
 
-每个LangGraph阶段只允许自己的工具：
+读取白名单允许诊断 backend/app 和 backend/tests 的必要 Python 文件，以及项目摘要和
+Agent 规则。写入白名单只允许后端转换实现和反馈回归测试。读取和写入是两份独立权限，
+“能读”不代表“能改”。
 
-| 节点阶段 | 可用工具 |
-|---|---|
-| Gate | 无 |
-| 查看复现所需源码 | `search_source`、`read_source_file` |
-| 提交测试修改 | `submit_test_edits` |
-| 运行复现 | `run_reproduction` |
-| 提交修复修改 | `submit_fix_edits` |
-| 运行目标验证 | `run_target_validation` |
+扩展、依赖、配置、Agent、Dockerfile、部署文件、密钥和测试基础设施不在自动写入范围。
+真实缺陷超出范围时路由 Issue 或人工处理，不能让模型扩大白名单。
 
-未注册工具返回“工具不存在”，已注册但不属于当前节点的工具返回“当前节点无权调用”。两种
-情况都不会进入真实适配器。
+## 4. 参数和补丁校验
 
-当前OpenAI兼容Provider本身不接受模型工具调用；模型返回结构化计划或Edit，Graph再按
-当前节点调用本地工具。这进一步减少了模型在一个响应中任意选择执行能力的机会。
+所有路径必须是仓库相对路径，拒绝绝对路径、..、仓库外符号链接和敏感文件。结构化 Edit
+必须生成可审查 patch，search_replace 恰好命中一次，禁止二进制、权限变化、重命名、
+重叠编辑、删除或弱化测试。
 
-## 4. 源码读取权限
+Sandbox 命令、Job ID、base_sha、测试选择器、超时和容器参数由 Controller 生成；模型
+只能传简短 reason。Publisher 只接受 final validation 通过且 hash 匹配的 Artifact。
 
-源码读取使用独立、指定仓库的只读凭据。模型只能读取Policy白名单中的固定`base_sha`
-快照，不能浏览：
+## 5. 并行和重试也是权限
 
-```text
-.git/**
-.env*
-本机用户目录
-构建产物
-证书和密钥
-未登记的配置
-```
+模型一次响应可以返回多个工具调用，但本地只允许多个无副作用的 search/read 并行。写入、
+Sandbox、完成工具和发布动作必须单独执行。Worker 本身串行。
 
-读取凭据不进入State、提示词、Agent本地运行文件、Worker或Docker容器。
+暂时性模型/Sandbox 传输错误最多三次，等待 1 秒、2 秒；认证、越权、Schema/Policy、
+配置和未知错误不做盲目重试。预算和 recursion limit 也由本地计数器控制。
 
-## 5. 修改权限
+## 6. 如何检查权限没有失效
 
-测试阶段和修复阶段使用不同白名单：
+测试应覆盖：
 
-```text
-测试阶段：
-  backend/tests/test_feedback_regressions.py
-  backend/tests/fixtures/feedback/**/*
+- 未注册、跨阶段、缺少前置产物和重复副作用；
+- 路径穿越、黑名单文件、越界补丁和测试削弱；
+- 多个只读调用并行、写入与 Sandbox 冲突拒绝；
+- retry 只对明确 transient 生效；
+- 注入反馈工具调用数为零；
+- Publisher 拒绝未验证或过期 Artifact。
 
-修复阶段：
-  backend/app/normalizer.py
-  backend/app/pandoc_runner.py
-```
-
-扩大白名单必须由维护者修改代码和权威安全文档。模型不能通过提示词、输出字段或工具参数
-给自己增加可写路径。
-
-## 6. 密钥隔离
-
-生产配置分为两份：
-
-```text
-/etc/mdtoword/controller.env
-  Supabase、模型、Langfuse、GitHub、Worker连接等配置
-
-/etc/mdtoword/worker.env
-  只包含SANDBOX_*配置
-```
-
-Agent主进程和Worker使用不同Linux用户。Worker进程可以通过`docker`组调用Docker Engine，
-但它没有业务密钥；任务容器既没有业务密钥，也没有Docker Socket。
-
-## 7. GitHub权限
-
-读取源码、发布PR和发布Issue使用隔离的权限配置：
-
-- 源码读取凭据只有指定仓库`Contents: Read-only`；
-- 发布时GitHub App为同一仓库换取短期installation token；
-- PR令牌只允许`contents:write + pull_requests:write`；
-- Issue令牌只允许`issues:write`，不继承PR写权限；
-- 如果GitHub返回额外权限，Publisher拒绝继续；
-- token不写入State、文件、Trace或日志。
-
-维护者修改GitHub App注册权限后，还必须在仓库安装实例中批准新增权限；只改App设置页不会
-让既有安装立即获得`issues:write`。部署前的只读预检分别申请PR和Issue令牌，任何一组失败
-都保持Scheduler关闭。
-
-## 8. 网站权限
-
-追踪网站使用服务端密钥，但通用查询函数只允许：
-
-```text
-agent_run_public
-agent_run_traces
-```
-
-读取内部`agent_runs.langfuse_trace_id`只存在两个固定函数中，而且只查询写死的列。浏览器
-拿到的是已经成型的页面数据，不会拿到service role。
-
-## 9. systemd限制
-
-Scheduler和Worker服务还使用：
-
-```text
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=true
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectControlGroups=true
-LockPersonality=true
-RestrictSUIDSGID=true
-UMask=0077
-```
-
-它们只能写入各自指定的`/var/lib`运行目录。systemd限制保护服务进程，Docker参数保护每个
-不可信任务容器，两层不能互相替代。
-
-对应实现：
-
-- [工具授权](../../agent/tools/authorization.py)
-- [补丁Policy](../../agent/workspace/patch_policy.py)
-- [安全权威要求](../AgentRequirements/security-and-sandbox.md)
-- [生产systemd配置](../../deploy/agent/systemd)
-
-## 10. 结合源码看三层权限
-
-第一层是节点工具表：[agent/tools/authorization.py](../../agent/tools/authorization.py)
-
-```python
-_AUTHORIZED = {
-    ToolNode.GATE: frozenset(),
-    ToolNode.REPRODUCTION_INSPECT: frozenset(
-        {ToolName.SEARCH_SOURCE, ToolName.READ_SOURCE_FILE}
-    ),
-    ToolNode.TEST_EDIT: frozenset({ToolName.SUBMIT_TEST_EDITS}),
-    ToolNode.FIX_EDIT: frozenset({ToolName.SUBMIT_FIX_EDITS}),
-}
-```
-
-第二层是路径Policy：[agent/workspace/patch_policy.py](../../agent/workspace/patch_policy.py)
-
-```python
-normalized = normalize_repository_path(path)
-if phase == "test":
-    allowed = normalized in self._test_exact or _has_prefix(
-        normalized, self._test_prefixes
-    )
-elif phase == "fix":
-    allowed = normalized in self._fix_exact
-if not allowed:
-    raise PatchPolicyError("edit path is not allowed for this phase")
-```
-
-第三层是操作系统权限。例如
-[mdtoword-worker.service](../../deploy/agent/systemd/mdtoword-worker.service)使用独立用户、
-`ProtectSystem=strict`、`NoNewPrivileges=true`和唯一可写目录。模型提示词、Python Policy和
-systemd分别解决不同层次的问题，不能互相替代。
+任何安全拒绝都要保留阶段、节点、组件、错误码和安全原因，但不公开敏感输入。

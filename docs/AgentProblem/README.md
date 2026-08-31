@@ -1,63 +1,28 @@
-# Agent 项目问题与解决方案
+# Agent 问题库
 
-本目录按阶段记录 Agent 从基础持久化到真实生产闭环期间遇到的问题与最终解决方案。
-这些文档用于复盘和排障，不是当前接口或安全策略的权威定义；现行规则以
-[AgentRequirements](../AgentRequirements/README.md) 为准。
+本目录记录两类内容：
 
-## 总体方案
+1. [InterviewGuide/agent-interview-questions.md](InterviewGuide/agent-interview-questions.md)：
+   面向面试的高价值问题和解决方案；
+2. 经过归纳、能够反映设计决策的历史结论：只在确实有复用价值时新增，不记录逐条命令、
+   环境故障或一次性操作流水账。
 
-项目包含两条相互独立但最终闭环的链路。
+## 面试文档的写法
 
-### Markdown 转 Word
+每个条目使用：
 
-```text
-浏览器扩展预览
-  -> Render /convert
-  -> 后端 Markdown 归一化
-  -> Mermaid CLI + Chromium 生成 PNG（仅流程图）
-  -> Pandoc 生成 DOCX
-  -> 表格样式与 DOCX 结构后处理
-  -> 用户下载并用 Word 打开
-```
+~~~text
+问题：面试官真正可能追问的通用问题
+解决方案：先讲原则，再讲 MD To Word 的实践；未实现的能力明确标注通用/未来方案
+~~~
 
-公式和表格尽量保持 Word 原生可编辑结构；Mermaid 流程图通过受信本地渲染器转换为
-PNG 后嵌入 Word，因此图内元素不是 Word 原生可编辑形状。
+问题应围绕架构取舍、Agent 控制流、工具和权限、Sandbox、可靠性、评测、Prompt、上下文、
+可观测性和数据闭环。类似问题合并回答，目标是帮助人类理解和复述，不是堆砌术语。
 
-### 用户反馈自动修复
+## 维护规则
 
-```text
-Supabase feedback
-  -> Controller 原子领取
-  -> Gate 分类与安全检查
-  -> 固定 GitHub main/base_sha
-  -> Docker Sandbox 复现
-  -> 受限后端修复
-  -> 全新 Sandbox 独立验证
-  -> GitHub App 创建 PR
-  -> 人工 Review/Merge
-  -> Render 部署
-  -> 原反馈回放
-```
-
-Agent 只自动修改后端白名单文件，不修改扩展、不自动合并，也不直接部署。完整运行拓扑见
-[部署与运行方式](../AgentRequirements/deployment-and-operations.md)。
-
-## 阶段文档
-
-| 阶段 | 主题 | 文档 |
-|---|---|---|
-| A | 基线、配置、数据库和持久化 | [stage-a-foundation.md](stage-a-foundation.md) |
-| B | Gate、LangGraph、模型和 Langfuse | [stage-b-gate-runtime.md](stage-b-gate-runtime.md) |
-| C | 源码工具、Policy 和 Docker Worker | [stage-c-sandbox.md](stage-c-sandbox.md) |
-| D | 自动生成可信复现 | [stage-d-reproduction.md](stage-d-reproduction.md) |
-| E | 修复循环、Mermaid 能力和独立验证 | [stage-e-repair.md](stage-e-repair.md) |
-| F | GitHub App、PR 发布和幂等恢复 | [stage-f-publication.md](stage-f-publication.md) |
-| G | 评估、部署回放和生产运行 | [stage-g-production.md](stage-g-production.md) |
-
-## Docker 结论
-
-- 插件使用的是 Render 后端 Docker；本地 Docker 关闭不影响线上 Word 转换。
-- 本地复现、修复、发布和 Docker 集成测试仍可使用 Docker Desktop/WSL；本地电脑关闭不
-  影响线上插件或生产 Agent。
-- 7×24 小时 Controller、Worker 和 Docker Engine 已部署在独立 Linux ECS。Worker 只监听
-  `127.0.0.1:8090`，不把 Worker 或 Docker Socket 暴露到公开 Render 转换服务。
+- 原始常见问题收集在 docs/AI应用Agent开发面经问题库.md，不在这里整份复制；
+- 面试文档先保持一个主文件，只有达到难以阅读的长度才拆分；
+- 真实项目做法可以提炼为通用面试问题，但不要把未实现的设想写成现状；
+- 低价值部署故障、临时环境问题和重复记录不进入面试文档；
+- 当前系统契约以 docs/AgentRequirements/ 为准，问题库不能反向修改实现口径。

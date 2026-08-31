@@ -1,191 +1,78 @@
-# Langfuse与追踪网站
+# 可观测性与 Trace Site
 
-## 1. 三种记录各自解决什么问题
+## 1. 三类数据各自负责什么
 
-| 位置 | 负责回答的问题 |
-|---|---|
-| Supabase `agent_runs` | 任务现在是什么状态，最后结果是什么？ |
-| Langfuse | 运行中调用了哪些模型和工具，每步耗时和Token是多少？ |
-| 结构化服务日志 | Provider、网络、数据库或Worker为什么失败？ |
+| 数据源 | 负责 | 不负责 |
+|---|---|---|
+| Supabase/PostgreSQL | 反馈、run 状态、阶段、终态、用量和发布 URL | 大日志和完整源码 |
+| checkpoint | Repair Agent 消息、工具循环和恢复位置 | 公开展示和业务统计 |
+| Artifact | 源码快照、patch、JUnit、DOCX 结果和完整受控日志 | 模型权限和业务状态 |
+| Langfuse | 脱敏 generation/tool observation | 业务状态、发布授权 |
+| Trace Site | 从 Supabase 和脱敏快照展示运行摘要 | 重新决定运行是否成功 |
 
-Langfuse是运行过程的观察副本，不是业务状态来源。Langfuse不可用时，Agent仍然可以继续
-修复，最终状态和用量继续写入`agent_runs`。
+Trace Site 缺少 Langfuse observation 不等于 Agent 没有执行；以 Supabase 状态和 Artifact
+验证结果为准。
 
-## 2. Agent向Langfuse写什么
+## 2. 每个运行要能回答什么
 
-一次运行使用稳定的根名称：
+运行摘要至少能定位：
 
-```text
-feedback-repair-run
-```
+~~~text
+run_id / feedback_id（公开页面只使用脱敏引用）
+route、phase、node、status
+base_sha、prompt/model/policy 版本
+model_calls、tool_calls、token/cache、耗时
+FailureSnapshot：kind、code、component、operation、attempt、handling、safe_details
+reproduction、repair、validation 和 publication 结果
+~~~
 
-下面记录：
+错误位置由 Controller 和 Middleware 注入，不能依赖模型自报。未知异常也要有安全异常
+类型、阶段和节点。
 
-- Gate模型调用；
-- 复现计划模型调用；
-- 测试生成模型调用；
-- 修复生成模型调用；
-- 源码读取；
-- 补丁提交；
-- Sandbox Job；
-- GitHub PR或Issue发布；
-- 每次调用的开始时间、耗时、状态、模型、Token和错误码。
+## 3. 脱敏规则
 
-Trace默认不保存完整输入和输出。上传的是脱敏摘要，例如路径、文件数量、哈希、状态和Token，
-不上传联系方式、密钥、完整Markdown、完整源码、完整补丁或完整日志。
+默认不上传：
 
-## 3. Agent什么时候通知网站
+- 原始反馈全文、联系方式和邮箱/电话；
+- 完整源码、完整 patch、命令、环境变量和测试日志；
+- API Key、GitHub Token、数据库 URL、Webhook Secret；
+- 能直接关联用户身份的路径和请求头。
 
-Scheduler完成一次运行并释放单任务锁后，通知模块执行：
+允许上传字段级错误路径、状态、计数、耗时、有限日志尾部和 hash。invalid_response 的
+safe_details 只保留 schema error path，不把含校验器文案或用户正文的 hint 送入 Trace。
 
-1. 只处理已经进入终态的run；
-2. 先调用Langfuse `flush()`，尽量发送尚未上传的记录；
-3. 向Vercel发送HTTP POST；
-4. 请求最多等待10秒；
-5. 无论网站失败、超时还是返回5xx，都不改变Agent运行结果。
+## 4. Trace 树和异步索引
 
-请求只包含：
+一次 run 使用稳定命名的 feedback-repair-run 作为根，Gate、Repair Agent 模型轮次、工具
+和验证作为子 observation。发送前尽量 flush，但 Langfuse 的索引可能晚于请求返回。
 
-```json
-{
-  "run_id": "运行UUID",
-  "status": "completed"
-}
-```
+Trace Site 只有找到稳定根和必要子节点才固化快照；孤立调用、半棵树和真正零调用运行
+要区分处理。完成回调只发送 run_id 和 status，回调失败不能改变 Agent 终态。
 
-并携带`x-webhook-secret`。它不包含Trace内容、反馈内容或补丁。
+## 5. 调试路径
 
-## 4. Vercel收到通知后做什么
+用户给出 run URL 或 UUID 后，维护者按顺序查看：
 
-接口为：
+1. 页面阶段、终态、error_code；
+2. Supabase 中 agent_runs 的 failure 和用量；
+3. Controller/Scheduler/Worker 日志；
+4. checkpoint 中最后的工具调用和 required_action；
+5. Langfuse 对应 generation/tool observation；
+6. Artifact 中 JUnit、patch hash 和 DOCX 摘要。
 
-```text
-POST /api/hooks/run-finished
-```
+不要把完整日志直接粘到公开 Issue 或模型提示词中；先用 FailureSnapshot 的安全字段
+缩小范围。
 
-处理顺序：
+## 6. 指标和评估
 
-1. 检查Webhook Secret；
-2. 检查`run_id`必须是UUID；
-3. 立即让首页和运行列表缓存失效；
-4. 返回HTTP 202，不让Agent等待Langfuse索引；
-5. 在Vercel后台任务中根据`run_id`查询`agent_runs.langfuse_trace_id`；
-6. 调用Langfuse API读取Trace；
-7. 只保留网站需要的安全字段；
-8. 写入Supabase `agent_run_traces`；
-9. 让该运行的详情页缓存失效。
+持续观察：
 
-因此这是：
+- 各 route 和终态数量；
+- 复现成功率、修复成功率、最终验证通过率；
+- provider、tool、Sandbox 和 publication 错误分布；
+- 重试次数、恢复成功率、stale_base 次数；
+- 模型/工具调用、输入输出/cache token、耗时和估算成本；
+- 重复 PR/Issue、越权拒绝和脱敏扫描结果。
 
-> Agent推送完成信号，网站根据ID主动读取真实数据。
-
-## 5. 为什么需要4秒和12秒重试
-
-Agent执行`flush()`只能保证客户端已经发送，Langfuse服务端建立索引仍可能需要几秒。
-网站第一次查询不到时，分别等待4秒和12秒重试，总额外等待16秒。
-
-后台抓取完成后，网站保存的是自己的展示快照。正常页面访问读取Supabase快照，不会每次
-都调用Langfuse，从而避免网站可用性被Langfuse限流或短暂故障影响。
-
-## 6. 通知丢失怎么办
-
-这次推送是`at-most-once`：Agent只尝试一次，不建立复杂消息队列。如果Vercel部署、冷启动
-或网络抖动导致通知丢失，任务详情页有兜底：
-
-```text
-用户打开终态运行详情
-        ↓
-网站发现agent_run_traces不存在或不完整
-        ↓
-当场从Langfuse读取一次
-        ↓
-成功后写回Supabase
-```
-
-页面兜底不重试，避免用户为了查看详情等待十几秒。失败时页面仍可根据`agent_runs`显示
-阶段和最终状态。
-
-## 7. 网站怎样读取数据
-
-浏览器不会直接获得Supabase service role或Langfuse密钥。Vercel服务端读取：
-
-- `agent_run_public`：字段白名单视图，提供运行摘要；
-- `agent_run_traces`：已经整理的Trace树；
-- GitHub公开PR：用于展示代码差异。
-
-公开摘要包含稳定分类`route/area/category`以及互斥的`pr_url/issue_url`。Issue候选标题和摘要
-只存在于私有分类结果和最终GitHub Issue，公开视图不会投影它们，也不会读取`feedback`表。
-
-网站明确不查询`feedback`表。公开视图不包含用户Markdown、联系方式、内部错误正文和
-`langfuse_trace_id`。
-
-## 8. 是否实时
-
-网站不是逐节点实时系统：
-
-- 没有WebSocket或SSE；
-- Agent运行中不会把每个LangGraph节点推给浏览器；
-- Agent进入终态后立即通知网站；
-- 新运行在缓存失效后的下一次页面请求出现；
-- 调用明细通常还要等待Langfuse索引和后台快照抓取。
-
-准确说法是“运行结束后近实时更新”。
-
-## 9. 概览和终态怎样保证语义正确
-
-概览对`agent_run_public`进行全量分页聚合，而不是只统计Supabase默认单页：
-
-- 总运行数：全部run尝试数；
-- 产出PR：唯一非空`pr_url`数量；
-- 平均耗时：全部已有`finished_at`运行的墙钟平均值；
-- Token合计：全部run的`total_tokens`之和。
-
-运行列表和详情先按`route`解释终态，再用intent/area/category细化。因此注入显示“安全拦截”、
-无关显示“已忽略”、Issue路线显示“已创建Issue”，不能因为run统一以`completed`结束就都显示
-成“已结束”。历史`out_of_scope`只做兼容展示，不伪装成新Issue。
-`quarantined_security` route 才表示分类阶段的提示词注入；后续 `security_rejected` 表示本地
-Policy 拒绝越权工具、补丁或工作区变化，不能笼统声称“工具调用为0”。
-
-列表终态列只保留状态徽标，避免在同一单元格重复放置蓝色PR/Issue链接；实际GitHub入口在
-详情页。Issue详情明确说明前端/扩展代码没有被Agent自动修改，PR详情才展示代码diff与验证
-证据。
-
-对应实现：
-
-- [agent/operations/site_notify.py](../../agent/operations/site_notify.py)
-- [Vercel完成回调](../../trace-site/src/app/api/hooks/run-finished/route.ts)
-- [Trace抓取](../../trace-site/src/lib/server/capture.ts)
-- [Supabase读取边界](../../trace-site/src/lib/server/supabase.ts)
-- [Langfuse数据投影](../../trace-site/src/lib/server/langfuse.ts)
-
-## 10. 结合源码看“推信号、站点再拉数据”
-
-[agent/operations/site_notify.py](../../agent/operations/site_notify.py)只发送`run_id`和终态：
-
-```python
-response = await self._client.post(
-    self._endpoint,
-    json={"run_id": str(outcome.run_id), "status": outcome.status.value},
-    headers={"x-webhook-secret": self._secret},
-    timeout=self._timeout_seconds,
-)
-```
-
-Vercel在[route.ts](../../trace-site/src/app/api/hooks/run-finished/route.ts)校验后立即安排后台抓取，
-并先返回`202`：
-
-```typescript
-after(async () => {
-  try {
-    await captureRunTrace(id, { retry: true });
-  } catch {
-    // 抓不到时由详情页按需补抓。
-  }
-  revalidatePath(`/runs/${id}`);
-});
-
-return NextResponse.json({ accepted: true }, { status: 202 });
-```
-
-这两段代码说明：Agent推送的不是完整Trace；`captureRunTrace()`才会读取Supabase摘要和
-Langfuse调用树。站点慢或抓取失败不会阻塞Agent继续领取反馈。
+这些指标用于发现规则和 Prompt 退化，不直接让模型自行修改 Prompt 或 Policy。改变前
+先离线评估，再由维护者审查。

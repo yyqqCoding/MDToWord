@@ -1,173 +1,90 @@
-# 从用户反馈到Pull Request或Issue
+# 一条反馈如何走完
 
-## 1. 一句话说明
+## 1. 先说结论
 
-用户通过浏览器插件提交反馈，Render后端把反馈保存到Supabase。私有ECS上的Scheduler
-每5秒查询一次Supabase，领取反馈后启动LangGraph。分类与本地Policy先决定终点：后端缺陷
-才进入复现、修复、独立验证和PR创建；功能需求与前端/扩展缺陷发布脱敏Issue；无关内容和
-提示词注入直接进入各自终态。模型生成的测试与修改后代码只能在无网络Docker容器中运行，
-PR合并、代码部署和Issue处理仍由维护者完成。
+用户提交的 Markdown、期望结果和联系方式进入 Feedback API。Agent 不会直接相信反馈，也
+不会让模型直接执行代码。它按下面的顺序把“不可信描述”变成“可审查的后端补丁”：
 
-## 2. 完整流程
+~~~text
+提交
+  -> Gate 分类和安全判断
+  -> 按路由结束，或固定 main 快照
+  -> conversion probe
+  -> Repair Agent 工具循环
+  -> 独立全量验证
+  -> PR / Issue / 人工终态
+~~~
 
-```text
-浏览器插件提交反馈
-        ↓ POST /feedback
-Render FastAPI检查客户端IP和提交频率
-        ↓
-Supabase.feedback新增一行，status=pending
-        ↓ 没有数据库推送
-ECS上的Scheduler每5秒查询一次
-        ↓
-Supabase函数原子领取一条反馈，status=claimed
-        ↓
-创建agent_runs和LangGraph初始State
-        ↓
-分类与安全检查
-        ├─ 无关内容 → rejected_irrelevant
-        ├─ 提示词注入 → quarantined_security
-        ├─ 信息不足 → needs_human
-        ├─ 功能需求或前端/扩展Bug
-        │       ↓ 发布脱敏标题和摘要
-        │   GitHub App创建Issue，人工处理
-        └─ 可自动处理的后端Bug
-                ↓
-        从GitHub main取得固定base_sha源码
-                ↓
-        生成回归测试并在Docker中证明原代码失败
-                ↓
-        生成修复补丁并在Docker中运行目标测试
-                ↓
-        用全新Docker容器重新验证基线失败、目标通过、全量测试通过
-                ↓
-        确认GitHub main仍等于base_sha
-                ↓
-        GitHub App创建分支、提交和PR
-                ↓
-        Agent通知Vercel追踪网站本次运行已结束
-                ↓
-维护者查看PR和Word实际效果，人工合并
-        ↓
-Render根据main分支重新部署转换后端
-```
+## 2. Gate 之后的三条路
 
-## 3. 数据分别保存在哪里
+| 反馈 | 后续动作 |
+|---|---|
+| 无关或垃圾 | rejected_irrelevant，结束 |
+| 提示词注入、越权或安全风险 | quarantined_security，工具调用为零 |
+| 信息不足、无法判断 | needs_human |
+| 功能需求、前端/扩展问题 | issue_required，创建脱敏 Issue |
+| 相关且可验证的后端转换问题 | accepted_backend_bug，进入修复 |
 
-| 保存位置 | 保存内容 | 为什么放这里 |
-|---|---|---|
-| `feedback` | 用户反馈、领取状态、重试次数、最终结果 | Supabase是反馈状态的事实来源 |
-| `agent_runs` | 每次运行的阶段、用量、错误、补丁哈希和PR地址 | 用于恢复、排障和网站列表 |
-| PostgreSQL checkpoint表 | 每个LangGraph节点执行后的State快照 | Agent进程重启后继续执行 |
-| Agent服务器运行目录 | 测试补丁、修复补丁、验证结果等大文件 | 避免把大段内容放进State |
-| Langfuse | 模型调用、工具调用、耗时和脱敏摘要 | 用于查看一次运行内部做了什么 |
-| `agent_run_traces` | 网站从Langfuse整理出的安全展示数据 | 页面访问不依赖Langfuse实时可用 |
-| GitHub | 固定源码版本、Agent分支、PR和脱敏Issue | 用于代码审核、需求跟踪和人工处理 |
+Gate 是无工具的严格结构化调用；本地 Policy 负责最终路由。模型说“应该创建 PR”不具备
+发布权限。
 
-## 4. 哪些步骤由模型完成
+## 3. 后端修复主流程
 
-模型只参与四类判断或生成：
+### 3.1 固定版本
 
-1. 分类反馈；
-2. 制定复现计划；
-3. 生成结构化测试修改；
-4. 生成结构化修复修改。
+Controller 读取 GitHub main 的 base_sha，生成只读源码快照。反馈正文、快照和 run_id
+绑定到本次运行，后续工具不能切换到另一个版本。
 
-下列操作都由受信任的Python代码决定，模型没有执行权限：
+### 3.2 先探测转换错误
 
-- 领取反馈和更新数据库状态；
-- 选择进入哪个LangGraph节点；
-- 判断模型输出是否符合Schema；
-- 检查读取路径和修改白名单；
-- 把结构化修改转换成补丁；
-- 决定Docker运行的命令和资源上限；
-- 根据JUnit判断测试失败或通过；
-- 按固定契约创建GitHub分支、PR或Issue；
-- 通知追踪网站。
+受信 conversion probe 只回答一个问题：当前 Markdown 在后端转换阶段是否直接抛错。
 
-## 5. 四条不能混淆的链路
+- 抛错：Controller 固定生成转换回归测试；
+- 不抛错：Repair Agent 根据反馈设计语义测试；
+- 测试无法稳定证明问题：cannot_reproduce 或 needs_human；
+- probe 不代替最终 DOCX 结构验证，也不判断主观视觉偏好。
 
-### 用户反馈链路
+### 3.3 ReAct 工具循环
 
-```text
-插件 → Render /feedback → Supabase.feedback
-```
+内层使用官方 create_agent。模型可以在当前阶段选择下一项已授权动作：
 
-### Agent执行链路
+~~~text
+search/read 源码
+  -> submit_test_edits 或 submit_fix_edits
+  -> run_sandbox
+  -> 读取结构化结果
+  -> 继续编辑，或调用 complete_* / report_blocked
+~~~
 
-```text
-Scheduler → Supabase领取 → LangGraph
-                              ├─ Sandbox Worker → GitHub PR
-                              └─ 脱敏Issue发布 → GitHub Issue
-```
+模型不能选择文件白名单、命令、容器权限、数据库状态或发布动作。只读查询可以并行；
+补丁写入和 Sandbox 串行。
 
-### 运行记录链路
+### 3.4 独立验证和发布
 
-```text
-LangGraph节点/模型/工具 → Langfuse
-LangGraph阶段结果 → Supabase.agent_runs
-大文件 → Agent服务器运行目录
-```
+模型调用 complete_repair 只表示当前目标测试通过。外层 Graph 仍在新容器中检查：
 
-### 追踪网站链路
+1. 基线确实失败；
+2. 修复后目标测试通过；
+3. 全量测试没有回归；
+4. DOCX 结构和受信断言通过；
+5. patch、base_sha 和 Artifact hash 一致。
 
-```text
-Agent结束通知 → Vercel
-Vercel → Supabase读取运行摘要
-Vercel → Langfuse读取调用明细
-Vercel → Supabase.agent_run_traces保存展示快照
-浏览器 → Vercel页面
-```
+全部通过才由 Publisher 创建 PR；功能需求和前端问题由 Issue Publisher 创建脱敏 Issue。
+维护者负责 Review、Merge、部署和 Word 视觉确认。
 
-追踪网站使用“推送通知触发读取”，不是Agent把完整Trace推给网站，也不是浏览器与Agent
-保持WebSocket连接。
+## 4. 出错时发生什么
 
-## 6. 自动化在哪里结束
+错误会被归因为 kind、code、component、operation、phase、node、attempt 和 handling。
+暂时性模型/Sandbox 传输错误最多三次，等待 1 秒、2 秒；认证、越权、永久配置和未知
+异常不做盲目重试。工具参数或缺少前置产物会作为 ToolMessage 返回给模型，在同一 run
+修正。
 
-自动化终点取决于分类结果：后端缺陷最多到“PR已创建”，功能需求与前端/扩展缺陷最多到
-“Issue已创建”，都不代表代码已经上线或需求已经完成。
+如果进程重启，外层数据库状态和内层 repair:<run_id> checkpoint 共同恢复；已完成的
+Sandbox、PR、Issue 通过幂等键和 hash 不重复执行。预算耗尽不会自动清零，维护者提高
+预算后才能显式续跑。
 
-```text
-后端缺陷：Agent验证通过并创建PR → 维护者审查并合并 → Render部署
-Issue路线：Agent发布脱敏Issue → 维护者确认优先级并人工实现或关闭
-```
+## 5. 一次运行的可信结果
 
-保留人工决策是刻意设计：自动测试不能完全替代Word视觉检查，分类模型也不能决定需求优先级
-或直接修改扩展代码。
-
-## 7. 结合源码看主流程
-
-主流程定义在[agent/graph.py](../../agent/graph.py)的`build_gate_graph()`。下面只保留节点注册和
-连线，可以直接看出模型没有控制整个流程，流程由LangGraph固定：
-
-```python
-builder = StateGraph(AgentState)
-builder.add_node("start_gate", start_gate)
-builder.add_node("classify_gate", classify_gate)
-builder.add_node("route_feedback", route_feedback)
-
-builder.add_node("prepare_source", prepare_source)
-builder.add_node("plan_reproduction", create_reproduction_plan)
-builder.add_node("generate_test_edit", generate_test_edit)
-builder.add_node("run_reproduction_in_sandbox", run_reproduction_in_sandbox)
-builder.add_node("classify_reproduction", classify_reproduction)
-```
-
-Issue路线还注册`publish_issue`与`finish_issue_publication`；修复路线继续注册
-`generate_fix_edit`、`run_target_validation`、`validate_final`和`publish_pull_request`。
-条件边由Python函数返回固定名称，不是模型生成下一个节点：
-
-```python
-builder.add_conditional_edges(
-    "classify_reproduction",
-    route_after_reproduction,
-    {"revise": "generate_test_edit", "finish": "finish_reproduction"},
-)
-```
-
-阅读源码时建议按这个顺序：
-
-1. [backend/app/main.py](../../backend/app/main.py)的`feedback()`：反馈怎样写入Supabase；
-2. [agent/scheduler.py](../../agent/scheduler.py)的`run_once()`：Agent怎样领取；
-3. [agent/graph.py](../../agent/graph.py)的`build_gate_graph()`：状态怎样流转；
-4. [agent/sandbox/docker_runner.py](../../agent/sandbox/docker_runner.py)的`execute()`：怎样验证；
-5. [agent/publishing/github.py](../../agent/publishing/github.py)：怎样用隔离令牌创建PR或Issue。
+页面上的阶段和耗时来自 Supabase 业务记录；详细模型调用和工具调用来自脱敏 Langfuse；
+大补丁、JUnit 和日志保留在受控 Artifact。Trace 缺失只表示观测未同步，不代表阶段没有
+执行。最终以数据库终态、验证 Artifact 和 PR/Issue 实际结果为准。

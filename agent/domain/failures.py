@@ -112,6 +112,7 @@ class RetryPolicy:
         *,
         delay_seconds: float = 0,
     ) -> RetryDecision:
+        # 分类已经由受信异常映射完成；这里不猜原因，只检查“是否可安全重试”的四个条件。
         if (
             failure.kind is not FailureKind.TRANSIENT
             or not context.idempotent
@@ -120,6 +121,7 @@ class RetryPolicy:
         ):
             return RetryDecision.STOP
         remaining = context.deadline_remaining_seconds
+        # 即使还有 attempt，也不能让下一次退避超过本次操作的总 deadline。
         if remaining is not None and remaining <= max(0.0, delay_seconds):
             return RetryDecision.STOP
         return RetryDecision.RETRY
@@ -199,6 +201,7 @@ class FailureRecorder:
         self._sink = sink
 
     def record(self, event: FailureEvent) -> None:
+        # 记录器是 fail-open observer：观测系统故障不能反过来阻断业务失败收口。
         try:
             failure = event.failure
             _LOGGER.warning(

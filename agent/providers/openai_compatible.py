@@ -1,3 +1,5 @@
+"""OpenAI-compatible Chat Completions 适配器及严格结构化响应处理。"""
+
 import asyncio
 import json
 import logging
@@ -153,6 +155,8 @@ class OpenAICompatibleProvider:
         provider_request_id = "unknown"
 
         for format_attempt in range(self._max_format_retries + 1):
+            # transport retry 在 _post 内处理；这里仅处理“已收到响应但 Schema/Policy 不合规”
+            # 的格式修正，二者分开统计，避免把不可重试的业务错误当成网络故障。
             payload = await self._post(
                 request_messages,
                 response_schema,
@@ -238,6 +242,8 @@ class OpenAICompatibleProvider:
         timeout_seconds: float | None,
     ) -> dict[str, Any]:
         for attempt in range(self._max_transport_retries + 1):
+            # 三次请求复用同一结构化输入；第三次才切换 fallback target，保证 failover
+            # 是一次受控的传输策略，而不是模型自行改变请求内容。
             target = self._request_target(attempt)
             request_body = {
                 "model": target.model,

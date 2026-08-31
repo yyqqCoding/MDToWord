@@ -80,7 +80,7 @@ AI 网页端给出的内容看着是 Markdown，但**复制到 Word 里往往一
 backend/    🐍 FastAPI + Pandoc 转换服务（归一化 → Pandoc → 三线表后处理）
 extension/  🧩 浏览器扩展（React + TypeScript + Manifest V3 侧边栏）
 agent/      🤖 用户反馈分类、复现、修复、验证与 PR 发布
-docs/       📚 权威设计、部署说明和分阶段问题复盘
+docs/       📚 权威需求、维护者指南和 Agent 面试问题
 logs/       🧪 调试样例与效果图
 ```
 
@@ -162,13 +162,13 @@ docker build -t md-to-word-backend .
 - 扩展不部署到 Render：构建 `extension/dist` 后在浏览器刷新「已解压扩展」即可。
 - Render 后端容器已经包含 Mermaid CLI 与 Chromium；使用线上插件时不需要开启本地
   Docker。
-- Agent Sandbox 当前由本地 Docker Desktop/WSL 提供，仅在运行自动复现、修复、发布或
-  Docker 集成测试时需要开启。7×24 小时自动处理反馈时，应另行部署带 Docker Engine 的
-  私有 Agent 主机，不与公开转换后端混合部署。
+- Agent Sandbox 本地可由 Docker Desktop/WSL 提供；7×24 小时自动处理反馈时，应另行
+  部署带 Docker Engine 的私有 Agent 主机，不与公开转换后端混合部署。
 
 Agent 总体方案和完整流程见
-[部署与运行方式](docs/AgentRequirements/deployment-and-operations.md)，历史问题复盘见
-[AgentProblem](docs/AgentProblem/README.md)。
+[部署与运行方式](docs/AgentRequirements/deployment-and-operations.md)，维护者阅读指南见
+[AgentGuide](docs/AgentGuide/README.md)，面试问题见
+[AgentProblem/InterviewGuide](docs/AgentProblem/InterviewGuide/agent-interview-questions.md)。
 
 ---
 

@@ -1,377 +1,183 @@
 # 工具与数据契约
 
-## 1. 设计原则
+本文定义 Repair Agent 可以调用什么，以及工具如何把不可信请求转换成受信结果。工具不是
+Shell 别名；模型不能提交命令、工作目录、环境变量、网络地址、任意路径或 Job ID。
 
-模型只能请求已注册、参数固定、结果结构化的工具。工具不是 Shell 别名；模型不能
-提交命令字符串、工作目录、环境变量、网络地址或任意文件路径。每次调用都经过：
+## 1. 统一执行顺序
 
-```text
-Schema 校验 -> 当前节点授权 -> 路径/参数 Policy -> 预算检查 -> 执行 -> 结果脱敏
-```
+每个调用都经过同一条本地链路：
 
-GitHub 发布、数据库更新、Trace 写入和状态转换不作为模型工具。
+~~~text
+工具 Schema
+  -> 当前 phase 与 checkpoint 授权
+  -> 路径、补丁、状态和参数 Policy
+  -> model/tool budget
+  -> 受信执行
+  -> 结果脱敏
+  -> ToolMessage + checkpoint
+~~~
 
-## 2. 模型可用工具
+数据库更新、GitHub 发布、Trace 写入和最终状态转换不作为模型工具；它们由外层
+LangGraph 和受信适配器执行。
 
-本节工具由 `create_agent` 按当前阶段动态暴露。旧的“先返回 ReproductionPlan，再由固定
-Graph 节点消费”已被直接替换；模型通过工具参数逐步提交测试、修复和完成结论。
+## 2. 工具清单
 
-### 2.1 `search_source`
+| 工具 | 作用 | 开放阶段 |
+|---|---|---|
+| search_source | 在只读快照中搜索符号或文本 | reproducing、repairing |
+| read_source_file | 读取白名单文件的行范围 | reproducing、repairing |
+| submit_test_edits | 生成并检查测试补丁 | reproducing |
+| run_sandbox | 执行受信固定 Job | 有待验证补丁时 |
+| submit_fix_edits | 生成并检查后端修复补丁 | repairing |
+| complete_reproduction | 确认基线已按预期失败 | reproducing |
+| complete_repair | 确认目标测试已通过 | repairing |
+| report_blocked | 报告无法继续或需人工 | 任意内层阶段 |
+| write_todos | 维护当前任务的 Todo | 任意内层阶段 |
 
-用途：在只读源码快照中搜索符号或文本。
+不注册通用 Shell、Filesystem、网络、GitHub、数据库或发布工具。工具可见性由
+PhaseToolPolicyMiddleware 收窄；执行函数还会再次校验，不能把 Middleware 当作唯一安全
+边界。
 
-```json
-{
-  "query": "normalize_markdown",
-  "path_scope": "backend",
-  "max_results": 20
-}
-```
+## 3. 源码查询
 
-约束：`query` 长度受限；`path_scope` 只能取 Policy 枚举；返回文件、行号和截断片段，
-总输出不超过上下文预算。
+### search_source
 
-### 2.2 `read_source_file`
+输入为 query、受限 path_scope 和 max_results。query 只能作为搜索文本，path_scope
+只能取 Policy 已登记的范围。
 
-用途：读取允许的源码或测试文件。
+### read_source_file
 
-```json
-{
-  "path": "backend/app/normalizer.py",
-  "start_line": 1,
-  "end_line": 240
-}
-```
+输入为仓库相对 path、start_line 和 end_line。路径必须通过读取白名单，行范围和文件大小
+必须在预算内。
 
-约束：路径必须是仓库相对路径且通过读取白名单；拒绝绝对路径、`..`、符号链接、
-隐藏密钥文件和超限范围。
+以下情况不做传输重试：
 
-绝对路径、路径穿越、隐藏路径和符号链接属于
-`source_access_denied/security`，立即终结。已通过安全规范化但位于读取白名单外的路径不查询
-存在性，返回 `source_request_invalid/invalid` 与 `required_action=search_source`；模型必须先
-搜索实际可读路径。已通过读取白名单校验后，文件不存在、
-行号无效、起始行超过文件末尾、输出范围过大等属于
-`source_request_invalid/invalid`；工具返回 `reason`、安全路径、行号和
-`required_action=correct_source_request`，模型必须在同一 run 内修正参数，不对相同请求做
-传输重试。失败调用正常计入工具预算。
+- 绝对路径、路径穿越、仓库外符号链接、隐藏密钥或黑名单路径；
+- 白名单外路径（返回 source_request_invalid 和 required_action=search_source）；
+- 文件不存在、行号错误、范围过大（返回 source_request_invalid 和
+  required_action=correct_source_request）。
 
-`backend/app/**/*.py` 均可只读诊断，但修复写入仍只允许 `normalizer.py` 与
-`pandoc_runner.py`；例如 `main.py`、`settings.py`、`mermaid_renderer.py` 均不可写。
-`reference.docx` 等非 Python 资产不可读。模型不能
-把可执行程序、浏览器参数、环境变量或配置路径作为工具参数。
+模型应根据 ToolMessage 在同一 run 修正参数。安全越权则进入 source_access_denied，
+不要求模型解释或重试。
 
-### 2.3 `submit_test_edits`
+## 4. 结构化编辑
 
-用途：提交回归测试结构化编辑，由 Workspace 生成 `test.patch`。
+模型提交 Edit，而不是 unified diff：
 
-输入包含 `edits`、`target_test_selector`、`oracle`、`expected_failure_kind` 和简短说明。
-此工具只生成和检查补丁，不执行代码。
-
-### 2.4 `run_sandbox`
-
-用途：根据受信 `phase` 在基线应用 `test.patch`，或应用 `test.patch + fix.patch`，执行
-当前已登记的固定目标测试。
-
-```json
-{
-  "reason": "验证当前候选"
-}
-```
-
-模型不能传 patch 路径、pytest 参数、job ID 或命令。Controller 从受信 State 构造固定
-Sandbox Job。复现阶段必须先有当前轮 `test_patch_ref`，修复阶段必须先有当前轮
-`fix_patch_ref`；缺少前置产物时返回 `tool_precondition_failed` 与下一项
-`required_action`，由模型在同一 run 内纠正，不得转成安全终态或要求人工重跑。
-
-### 2.5 `submit_fix_edits`
-
-用途：提交允许后端源码的结构化编辑，由 Workspace 生成 `fix.patch`。此工具不得
-编辑测试补丁、新增测试、配置、依赖或 Agent 文件。
-
-### 2.6 `complete_reproduction` / `complete_repair` / `report_blocked`
-
-完成工具只声明“请求结束当前阶段”。工具必须检查受信 Sandbox 结果、patch 引用和阶段
-字段齐全才会写入 terminal；`report_blocked` 只接受稳定原因枚举和脱敏摘要。全量验证由
-确定性 Graph 节点执行，模型没有直接调用权限。
-
-## 3. 结构化编辑
-
-模型不直接生成 unified diff。支持两种编辑：
-
-```json
+~~~json
 {
   "path": "backend/app/normalizer.py",
   "mode": "search_replace",
   "search": "唯一原文片段",
   "replace": "替换内容"
 }
-```
+~~~
 
-```json
+小型新文件或空目标文件才使用 full_file：
+
+~~~json
 {
-  "path": "backend/app/normalizer.py",
+  "path": "backend/tests/fixtures/feedback/example.md",
   "mode": "full_file",
-  "content": "完整文本内容"
+  "content": "UTF-8 文本"
 }
-```
+~~~
 
-规则：
+Workspace 在固定 base_sha 上应用编辑并生成唯一 patch。规则：
 
-- `search_replace.search` 必须恰好命中一次；
-- 一个响应不能对同一文件提交相互重叠的编辑；
-- 文本必须是 UTF-8，禁止 NUL 和二进制；
-- `full_file` 仅允许用于 Policy 标记为小文件的路径；
-- Workspace 在临时基线上应用编辑后用 Git 生成确定性 diff；
-- 后续检查与发布只使用生成的 patch，不再信任模型原始编辑。
+- search_replace 必须恰好命中一次；
+- 同一响应内同一文件的编辑不能重叠；
+- 禁止 NUL、二进制、符号链接、权限变化、重命名和子模块；
+- 生成后的 patch 重新计算 SHA-256，后续 Sandbox 和发布只信任该 patch；
+- 路径白名单、文件数量、增删行数、patch 大小、git diff --check 和测试削弱检查由本地
+  Policy 负责。
 
-## 4. 提交测试契约
+## 5. 测试补丁
 
-`submit_test_edits` 直接使用判别式工具参数：编辑、目标 selector、预期失败类型和人类可读
-理由。它不再嵌套 `oracle.parameters` 通用对象，也不要求模型预先列出未知问题类别。
+submit_test_edits 接受：
 
-受信 conversion probe 已证明转换抛错时，Controller 固定生成转换测试并关闭
-`submit_test_edits`；转换成功时模型提交语义测试代码，Patch Policy、AST 检查和 Sandbox
-共同验证其是否真正证明用户问题。DOCX 专项 Validator 的名称与参数只能由受信代码登记，
-不能由模型提供任意 XPath、Python 回调或动态参数字典。
-
-工具参数：
-
-```text
+~~~text
 edits: Edit[]
 target_test_selector: string
 expected_failure_kind: assertion | unexpected_conversion_error
-reason: string
-```
+reason: 人类可读的短说明
+~~~
 
-测试统一追加到 `backend/tests/test_feedback_regressions.py`，名称为
-`test_feedback_<feedback-id前8位>_<行为>`。不得包含完整 UUID、联系方式或完整问题
-描述。测试必须离线、确定且不读取环境 Secret。
+测试统一追加到 backend/tests/test_feedback_regressions.py，测试名只使用 feedback 的
+短前缀和行为，不写完整 UUID、联系方式或完整反馈。反馈固件放在
+backend/tests/fixtures/feedback/。
 
-新建文件（含 `backend/tests/fixtures/feedback/` 下的固件）必须用 `full_file`。
-已有 `backend/tests/test_feedback_regressions.py` 必须用唯一 `search_replace` 追加，不能
-覆盖或弱化已有测试；仅空文件允许 `full_file`。selector 必须使用当前 feedback 的 8 位
-前缀。工具 Schema 只负责字段结构，本地 Patch/AST Policy 继续负责跨字段与源码安全规则；
-拒绝原因作为脱敏 ToolMessage 返回 Agent 修正，不重新请求整段计划 JSON。
+conversion probe 已确认后端直接抛错时，Controller 会固定生成转换回归测试，Agent 不再
+重复设计同一测试；转换成功时，Agent 必须提交语义测试，并在基线 Sandbox 证明它确实失败。
+DOCX 断言使用受信 Validator，模型不能传入任意 XPath、Python 回调或动态命令。
 
-## 5. 生成修复契约
+## 6. 修复补丁
 
-`submit_fix_edits` 参数：
+submit_fix_edits 接受 edits、summary 和 risk。它只能修改：
 
-```text
-edits: Edit[]
-summary: string
-risk: low | medium | high
-```
+~~~text
+backend/app/normalizer.py
+backend/app/pandoc_runner.py
+~~~
 
-风险等级仅用于 PR 展示，不改变 Policy。高风险结果仍须通过相同检查，并在 PR 中
-突出显示；命中禁止路径或禁止模式直接 `security_rejected`，不因模型解释而放行。
+不得修改测试、扩展、依赖、配置、Agent、Dockerfile 或部署文件。risk 只用于 PR 展示，
+不改变安全策略；高风险补丁也必须通过同一套检查。
 
-## 6. Sandbox Job
+## 7. Sandbox Job
 
-Controller 只可提交以下 Job 类型：
+run_sandbox 只接受模型可读的 reason。phase、base_sha、patch 引用、测试选择器、命令、
+限制、Job ID 和过期时间全部由 Controller 从 checkpoint 构造。
+
+允许的 Job 类型：
 
 | Job | 固定行为 |
 |---|---|
-| `reproduce_target` | 基线 + test patch，运行目标 pytest |
-| `validate_target` | 基线 + test + fix patch，运行目标 pytest |
-| `validate_full` | 基线 + test + fix patch，运行全量 pytest 与 DOCX 检查 |
-| `compile_patch` | 应用 patch 后执行编译和 diff 检查 |
+| reproduce_target | 基线 + test patch，运行目标测试 |
+| validate_target | 基线 + test + fix patch，运行目标测试 |
+| validate_full | 基线 + test + fix patch，运行全量测试和 DOCX 检查 |
+| compile_patch | 应用 patch 后编译和 diff 检查 |
 
-共同输入：
+Worker 收到结构化 Job 后校验认证、过期时间、Artifact 大小和 SHA-256，使用固定镜像和
+固定 argv。target selector 先匹配安全正则，再作为独立 argv 参数，禁止 shell 拼接。
 
-```text
-job_id, run_id, job_type, base_sha,
-source_snapshot_sha256, test_patch_sha256?, fix_patch_sha256?,
-target_test_selector?, limits, expires_at
-```
+结果至少包括：
 
-Worker 不从模型请求构造命令。映射命令由受信镜像和 Worker 配置定义，例如：
+~~~text
+job_id, status, exit_code, timed_out, started_at, finished_at, duration_ms
+junit_summary, stdout_tail, stderr_tail, docx_summary
+workspace_diff_sha256, resource_summary, error_code
+~~~
 
-```text
-python -m pytest tests/test_feedback_regressions.py -k <validated-selector>
-  -q --junitxml=/result/junit.xml
-python -m pytest -q --junitxml=/result/full-junit.xml
-```
+JUnit 摘要包含总数、失败、错误、跳过、目标是否收集、目标结果和脱敏失败类型。完整
+日志只保留在受控 Artifact；ToolMessage 只返回有限尾部和下一步建议。
 
-`target_test_selector` 必须匹配 `^[a-z0-9_]{1,80}$` 后再进入 argv；不得经 `sh -c`。
+同一 job_id 只能对应同一请求指纹。相同请求可幂等重试并复用已完成结果；不同指纹返回
+conflict。Sandbox 不接受模型命令，也不与其他 Sandbox 并行。
 
-Controller 与 Worker 的内部 HTTP 请求使用 JSON 封装上述 Job，并携带 Base64 编码的
-`source_archive`、`test_patch` 和 `fix_patch`。这些传输字段不是模型工具参数。Worker
-必须先认证，再校验 Job Schema、过期时间、Artifact 是否存在、大小和 SHA-256；同一
-`job_id` 对应不同请求指纹时返回冲突，不能覆盖已有结果。
+## 8. 完成工具
 
-## 7. Sandbox Result
+complete_reproduction 只有在当前轮基线测试按 expected_failure_kind 失败时才成功；
+complete_repair 只有在当前轮目标 Sandbox 通过时才成功；report_blocked 只接受稳定原因
+枚举和脱敏摘要。
 
-```text
-job_id, status, exit_code, timed_out
-started_at, finished_at, duration_ms
-junit_summary
-stdout_tail, stderr_tail
-docx_summary
-workspace_diff_sha256
-resource_summary
-error_code
-```
+完成工具结束的是内层循环，不是整个业务运行。外层仍执行独立的 final validation，
+然后才允许进入 PR/Issue Publisher。普通文字回复不能伪造完成。
 
-`junit_summary` 除总测试数、failures、errors 和 skipped 外，还包含
-`target_collected`、`target_outcome`、`target_failure_type` 与最大 1 KB 的脱敏
-`target_message`。Controller 只依据这些 XML 解析字段判定，不解析 pytest stdout。
+## 9. 错误返回
 
-DOCX 断言固化在 Sandbox 镜像的只读 `/opt/trusted/docx_assertions.py`，测试通过固定
-`PYTHONPATH` 调用。`docx_xpath` 是兼容的 Oracle 类型名，不允许模型传入 XPath；模型
-只能从 `valid_zip`、`required_parts_present`、`xml_parseable`、
-`minimum_table_count`、`minimum_math_count`、`minimum_drawing_count`、
-`paragraph_style_present`、`text_absent` 和 `three_line_table_structure` 中选择已登记断言
-及普通数据参数。
+工具错误优先返回结构化 ToolMessage：
 
-stdout/stderr 各自最多保留 4 KB，先清理控制字符和密钥模式。结果内容仍视为不可信
-数据，只能作为下一轮模型的带边界输入。
+~~~json
+{
+  "ok": false,
+  "error_code": "tool_precondition_failed",
+  "reason": "缺少 test_patch_ref",
+  "required_action": "submit_test_edits"
+}
+~~~
 
-Worker 对已完成 `job_id` 持久化结构化结果；相同请求重试直接返回原结果，不重复启动
-容器。运行时 workspace diff 与授权补丁不一致时返回 `security_rejected`，不能把该次
-执行结果交给后续验证器。
+参数错误、缺少前置产物和可修正的文件请求由模型在同一循环修正；临时网络失败交给
+Middleware 按重试策略处理；越权、安全、认证、永久配置和未知编程错误停止当前运行。
 
-Controller侧Sandbox Client对连接异常或Worker返回408、429、5xx默认只额外重试一次，
-且必须复用相同`job_id`和`Idempotency-Key`。无效200响应、401、400和409不重试，避免把
-确定性错误变成重复请求。
-
-## 8. 最终验证结果
-
-`ValidationResult` 是 Publisher 唯一接受的发布凭据：
-
-```text
-passed: bool
-base_sha: string
-source_snapshot_sha256: string
-test_patch_sha256: string
-fix_patch_sha256: string
-target_test_selector: string
-baseline_reproduction:
-  executed: bool
-  expected_failure_observed: bool
-target_validation:
-  passed: bool
-full_validation:
-  passed: bool
-  tests: int
-  failures: int
-  skipped: int
-  baseline_skipped: int
-docx_validation:
-  passed: bool
-  checks: object
-changed_files: string[]
-validated_patch_ref: string
-validated_patch_sha256: string
-failure_code: string?
-failure_summary: string?
-```
-
-`passed=true` 必须由 Controller 根据所有子结果计算，不能由模型或 Worker 直接提供。
-执行完成后生成的 workspace diff 必须与 test/fix patch 的授权组合一致，否则结果为
-`security_rejected`。
-
-## 8.1 发布契约
-
-Publisher 输入由 Controller 从 `ValidationResult`、`validated.patch` 和固定源码快照
-重新构造，结构上不包含原始 Markdown、description 或 contact：
-
-```text
-PublicationRequest
-  feedback_id
-  validation
-  validated_patch
-  files(path, content|null)
-  evidence(category, risk, versions, usage, trace_url)
-```
-
-进入 GitHub 前必须同时满足：`validation.passed=true`、补丁内容 SHA-256 与
-`validated_patch_sha256` 一致、重新应用后文件集合与 `changed_files` 一致、所有路径仍
-通过 Patch Policy。输出仅有 `pr_opened` 或 `stale_base`；前者必须含 branch、commit SHA、
-PR number/URL，后者不得含任何 GitHub 写入结果。Publisher 不暴露 merge 方法。
-
-## 8.2 Issue 发布契约
-
-Issue 发布与 PR 发布是两个独立契约。它不接受 `ValidationResult`、源码、patch 或文件
-集合，也不能复用 `PublicationRequest` 的可选字段拼出“万能 Publisher”。Gate 的模型输出
-先经过本地 Policy 形成：
-
-```text
-IssueDraft
-  title: 单行，1..80 字符
-  summary: 1..600 字符
-  intent: bug_report | feature_request
-  area: backend | extension | cross_component
-  category
-```
-
-`IssueDraft` 只复述用户明确表达的需求、现象和归属，不生成实现方案或用户未提出的验收
-条件。它仍是不可信模型输出；Controller 构造受信请求时必须再次做长度、控制字符、邮箱、
-电话、Authorization、Cookie、Secret/Token 赋值和提示注入片段扫描。
-
-```text
-IssuePublicationRequest
-  feedback_id
-  content_fingerprint
-  run_ref
-  draft
-  evidence(graph_version, policy_version, prompt_versions,
-           provider, model, usage, trace_url)
-
-IssuePublicationResult
-  disposition: issue_opened
-  issue_number
-  issue_url
-  reused
-```
-
-请求结构中不得出现原始 `description`、`markdown_content` 或 `contact`。Publisher 根据
-`draft.intent` 确定标签：前端/扩展 Bug 使用仓库已有 `bug`，功能、展示、视觉、交互和
-布局需求使用仓库已有 `enhancement`；调用方和模型都不能提供任意标签名。
-
-Publisher 只允许固定仓库的 `/issues` API，不提供创建标签、关闭 Issue、编辑 Issue、
-分配人员或修改项目面板的方法。正文包含受信模板、脱敏摘要、area/category、run_ref、
-Trace URL 与固定隐藏 marker：
-
-```text
-<!-- mdtoword-agent-issue run-ref=<12-char-ref> fingerprint=<sha256> -->
-```
-
-创建前按 marker 查询开放和关闭的 Issue；命中即返回 `reused=true`。POST 成功但响应丢失时
-也按同一 marker 恢复，保证同一反馈和内容指纹最多对应一个 Issue。
-
-## 9. 复现判定
-
-Validator 解析 JUnit，不用正则猜测 pytest 文本：
-
-- 指定测试必须实际被收集和执行；
-- `<failure>` 且断言与 Oracle 方向一致才是目标失败；
-- ImportError、SyntaxError、fixture 缺失、pytest内部错误和超时是 `invalid_test`；
-- 测试直接通过是 `not_reproduced`；
-- 非目标测试先失败是 `baseline_regression`；
-- 模型生成的测试不得通过自定义插件、hook 或配置改变报告行为。
-
-`expected_failure_kind=unexpected_conversion_error` 且首轮结果为 `invalid_test` 时，第二轮
-不再请求模型重写测试。Controller 确定性生成固定测试与 Markdown fixture：测试只调用
-`convert_markdown_to_docx`，成功后调用计划中已登记的受信 DOCX 断言；在缺陷基线上必须由
-目标测试产生 `ConversionError`。该模板仍通过相同的路径、AST、selector、补丁规模和
-Sandbox Policy，不能扩大修复白名单。
-
-## 10. DOCX Validator
-
-复用 `convert_markdown_to_docx` 和受信断言库，至少支持：
-
-```text
-valid_zip
-required_parts_present
-xml_parseable
-minimum_table_count
-minimum_math_count
-minimum_drawing_count
-paragraph_style_present
-text_absent
-three_line_table_structure
-```
-
-分类决定允许使用的断言集合，模型只提供参数，不能提供 XPath 代码、Python回调或
-任意脚本。视觉偏好不能通过这些工具自动证明，必须转人工。
+工具结果不得包含 Secret、联系方式、完整用户文档、完整源码或未经截断的测试日志。
+失败的工具调用仍计入工具预算并写入脱敏观测。

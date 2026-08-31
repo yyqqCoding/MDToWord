@@ -1,453 +1,97 @@
 # MD To Word Agent
 
-当前已完成阶段 A～G 的开发与首条生产闭环验收：Gate 接受后可按固定 SHA 复现缺陷，最多生成两轮
-受限后端修复，并在全新 Docker 沙箱中重新证明基线失败、修复后目标/全量/DOCX 验证
-通过；只有验证凭据和最终补丁哈希一致时，GitHub App Publisher 才能创建固定分支、
-单个提交和 PR。真实 PR 已完成人工合并、Render 部署和 Mermaid 原样例回放。生产
-Scheduler 默认关闭，离线评估不领取数据库反馈。阶段 I 已在本地实现功能需求和前端/扩展
-缺陷的脱敏 Issue 分支；生产启用仍需维护者执行 `007` migration、增加 GitHub Issues 权限
-并完成真实验收。
+Agent 是独立部署的反馈处理运行时。它把用户反馈分成后端转换缺陷、功能/前端需求、
+无关内容和安全风险；只有可验证的后端缺陷才进入代码复现、修复、验证和 PR 流程。
 
-Controller CLI 默认仍只执行 Gate。`--reproduce` 只执行阶段 D，`--repair` 执行阶段
-D+E，`--publish` 执行完整 D+E+F；三者都必须显式使用真实 Provider。系统没有自动
-合并、部署或回滚入口。详细边界和验收记录见
-[implementation-plan.md](../docs/AgentRequirements/implementation-plan.md)。
+当前架构是：
 
-## 1. 安装与自动测试
+~~~text
+Supabase pending feedback
+  -> Scheduler / Controller
+  -> 外层 LangGraph：Gate、路由、快照、最终验证、发布
+  -> 内层 create_agent：受限 ReAct 工具循环
+  -> Sandbox Worker：固定 Job 的隔离容器
+  -> PR / Issue / 人工终态
+~~~
 
-在仓库根目录执行：
+详细契约从 [docs/AgentRequirements/README.md](../docs/AgentRequirements/README.md) 开始，
+维护者操作见 [docs/AgentGuide/README.md](../docs/AgentGuide/README.md)，面试问题见
+[docs/AgentProblem/InterviewGuide/agent-interview-questions.md](../docs/AgentProblem/InterviewGuide/agent-interview-questions.md)。
 
-```bash
+## 1. 本地自动测试
+
+~~~bash
 uv sync --extra dev
 .venv/bin/python -m pytest agent/tests -q
-```
+.venv/bin/python -m compileall -q agent
+~~~
 
-完整后端回归：
+自动测试默认使用 Fake Provider，不访问生产 Supabase、模型、GitHub、Langfuse 或
+Sandbox。按变更范围追加后端、Trace Site、扩展和 Docker 测试。
 
-```bash
-# Linux/macOS 后端独立 venv
-cd backend && .venv/bin/python -m pytest -v
+## 2. 数据库和 checkpoint
 
-# 当前 Windows venv + WSL 工作区（从仓库根目录）
-backend/.venv/Scripts/python.exe -m pytest backend/tests -v
-```
+Migration 文件位于 agent/migrations/。测试和应用启动不会自动执行 migration；数据库
+owner 审查、备份后手工执行。完成业务 migration 后，显式初始化私有 checkpoint Schema：
 
-## 2. 数据库初始化
-
-SQL migration 为 [001_agent_foundation.sql](migrations/001_agent_foundation.sql)、
-[002_gate_runtime.sql](migrations/002_gate_runtime.sql)、
-[003_reproduction_runtime.sql](migrations/003_reproduction_runtime.sql)、
-[004_repair_runtime.sql](migrations/004_repair_runtime.sql)、
-[005_publication_runtime.sql](migrations/005_publication_runtime.sql)、
-[006_trace_site_public_read.sql](migrations/006_trace_site_public_read.sql) 和
-[007_issue_routing_and_public_projection.sql](migrations/007_issue_routing_and_public_projection.sql)。测试和应用启动都不会
-自动执行 migration；数据库 owner 应在审查和备份后手工执行。升级到阶段 F/G 只需
-追加执行 `005_publication_runtime.sql`，把 `publishing` 纳入可恢复运行索引。阶段 I 只追加
-执行 `007_issue_routing_and_public_projection.sql`；不要修改或重复执行已应用的 `006`。
-
-`AGENT_DATABASE_URL` 必须是 PostgreSQL Direct Connection 或 Session Pooler DSN，
-不是 `SUPABASE_URL`。它只属于 Agent Controller，不得提供给扩展或后端转换服务。
-完成 migration 后显式初始化第三方 checkpoint 表：
-
-```bash
+~~~bash
 .venv/bin/python -m agent.cli checkpoint setup
-```
+~~~
 
-成功输出应为：
+AGENT_DATABASE_URL 使用 PostgreSQL Direct Connection 或 Session Pooler DSN，不是公开
+SUPABASE_URL。checkpoint 不应建立在 public Schema，也不能把数据库凭据交给 Worker。
 
-```json
-{"schema": "agent_runtime", "status": "checkpoint_ready"}
-```
+## 3. CLI 示例
 
-命令会显式切换并验证私有 `agent_runtime` Schema；如果发现 checkpoint 表误建在
-`public`，会拒绝继续，避免把运行状态暴露到公共 Schema。
+Gate-only dry run：
 
-## 3. Fake Provider Gate 测试
+~~~bash
+.venv/bin/python -m agent.cli run --feedback-id <uuid> --dry-run --provider configured
+~~~
 
-默认 Provider 是 Fake，默认路由为 `needs_human`。其他路由仅用于确定性测试。请使用
-可丢弃的 `pending` 反馈；没有 `--reproduce` 时，`accepted_backend_bug` 只会把反馈停在
-`reproducing`，不会读取源码或启动 Sandbox：
+真实后端修复与发布：
 
-```bash
-.venv/bin/python -m agent.cli run --feedback-id <uuid> --dry-run
-.venv/bin/python -m agent.cli run --feedback-id <uuid> --dry-run \
-  --fake-route accepted_backend_bug
-.venv/bin/python -m agent.cli run --feedback-id <uuid> --dry-run \
-  --fake-route issue_required
-```
-
-## 4. 真实 Provider 与 Langfuse Cloud
-
-配置名和注释见仓库根目录 [.env.example](../.env.example)。只把缺少的配置复制到本地、
-已被 Git 忽略的 `.env`，不要覆盖已有配置，也不要提交或把 Key 粘贴到日志/聊天中。
-
-- `MODEL_BASE_URL` 填以 `/v1` 结尾的 API 根路径，不填完整的
-  `/chat/completions`；
-- `GATE_MODEL_TIMEOUT_SECONDS` 默认 30 秒，可在 30～120 秒内调整；
-- `FALLBACK_MODEL_ENABLED=true` 时，`FALLBACK_MODEL_NAME/API_KEY/BASE_URL` 必须完整配置。
-  Provider 仍按统一 `openai_compatible` 处理：前两次临时传输失败继续请求主接口，第三次
-  请求备用接口，总 attempt 不超过三次；认证、权限、配置和其他永久错误不会切换；
-- Repair Agent 必须启用备用模型。LangChain 未登记自定义模型窗口时，还要配置
-  `MODEL_CONTEXT_WINDOW` 与 `FALLBACK_MODEL_CONTEXT_WINDOW`；系统取两者较小值，在
-  65% 总结、85% 停止并保留最近 20%；
-- `LANGFUSE_HOST` 必须与 Cloud 项目区域一致，例如美国区
-  `https://cloud.langfuse.com` 或日本区 `https://jp.cloud.langfuse.com`；
-- `SUPABASE_AGENT_KEY` 与 Feedback API 凭据必须不同，只能由自托管 Controller 使用；
-- 如果兼容接口不返回 `usage.cost`，只有配置模型的美元/百万 Token 单价后，数据库
-  `agent_runs.estimated_cost` 才会大于 `0`。Langfuse 自行推算的展示成本不会回写数据库。
-- 阶段 D 的长源码请求默认允许 180 秒，可用
-  `REPRODUCTION_MODEL_TIMEOUT_SECONDS` 在 30～300 秒内调整；Gate 使用上述独立短请求超时。
-- Repair Agent 默认限制 50 次模型轮次、30 次工具和 900 秒 Sandbox；不再使用绑定具体
-  模型的固定总 Token 上限。配置名见 `.env.example`。`BACKEND_BASELINE_SKIPPED` 必须填写
-  当前固定后端基线值，当前为 `0`。
-
-加载 `.env` 后，对可丢弃的 `pending` 反馈运行真实 Gate：
-
-```bash
-set -a
-source .env
-set +a
-.venv/bin/python -m agent.cli run --feedback-id <uuid> --dry-run \
-  --provider configured
-```
-
-Gate Provider 仍然没有任何工具权限并使用严格 JSON Schema；后端缺陷阶段使用
-`create_agent` 注册的受限工具循环。
-Provider usage 写入 `agent_runs`；Langfuse 只接收哈希和结构化摘要，不发送完整
-Markdown、联系方式、Prompt 或密钥。Langfuse 导出失败不改变 Gate 路由；模型/API
-重试耗尽会把运行和反馈终结为 `failed`，避免 Scheduler 无限恢复同一运行。
-
-## 5. 阶段 D 自动复现
-
-先由数据库 owner 审查并执行 `agent/migrations/003_reproduction_runtime.sql`，再使用
-阶段 D 镜像启动 Worker：
-
-```bash
-docker build -f agent/sandbox/Dockerfile -t mdtoword-sandbox:stage-d .
-export SANDBOX_IMAGE_DIGEST="$(
-  docker image inspect --format '{{.Id}}' mdtoword-sandbox:stage-d
-)"
-.venv/bin/python -m agent.sandbox.worker_http
-```
-
-Worker 需要单独的最小环境，只包含 `SANDBOX_IMAGE_DIGEST`、`SANDBOX_JOB_ROOT`、
-`SANDBOX_BIND_*` 和 `SANDBOX_WORKER_CREDENTIAL`。不要把加载了 Supabase、模型或
-Langfuse Secret 的 Controller `.env` 整体传给 Worker。
-
-Controller 还需配置 `GITHUB_READ_TOKEN`。建议使用只授权
-`yyqqCoding/MDToWord`、Repository permissions 中仅 `Contents: Read-only` 的
-fine-grained token；它只进入 Controller 的 GitHub 专用 Client，不能提供给 Worker、
-任务容器、模型或 Langfuse。GitHub 发布阶段将另用 GitHub App，不复用这个读取 Token。
-
-确认 Worker 已启动后，在另一个终端加载 Controller 的私有 `.env`，为一条可丢弃的
-`pending` 后端缺陷执行：
-
-```bash
-set -a
-source .env
-set +a
+~~~bash
 .venv/bin/python -m agent.cli run \
-  --feedback-id <uuid> \
-  --dry-run \
-  --provider configured \
-  --reproduce
-```
+  --feedback-id <uuid> --provider configured --publish
+~~~
 
-若进程或可重试的外部依赖在复现中断，不要重新领取同一 feedback。使用输出或数据库中
-已有的 run ID，从持久化 checkpoint 继续：
+恢复同一运行：
 
-```bash
+~~~bash
 .venv/bin/python -m agent.cli run \
-  --resume-run-id <run-uuid> \
-  --dry-run \
-  --provider configured \
-  --reproduce
-```
+  --resume-run-id <run-id> --provider configured
+~~~
 
-若目标失败确认，feedback 与 agent run 停在 `repairing`，保留复现报告供阶段 E 继续；
-两轮仍通过或无效则 feedback 为 `cannot_reproduce`、run 为 `completed`；Sandbox Policy
-拒绝则二者进入安全终态。`--reproduce` 禁止 Fake Provider，防止人为的固定断言被当作
-真实缺陷证据。Mermaid 第一轮模型编辑为 `invalid_test_edit` 时，第二轮使用 Controller
-固定的 drawing 测试模板，不再请求模型；`unexpected_conversion_error` 首轮测试无效时，
-第二轮同样改用固定转换测试与登记 Oracle。两类模板仍必须通过 Patch Policy 和真实
-Sandbox。
+除明确批准的真实 publish 外，开发和评估使用 dry-run；真实外部写入使用可丢弃数据。
+Repair Agent 会复用原 checkpoint、patch hash 和累计预算，不重新领取一个全新反馈。
 
-## 6. 阶段 E 修复与独立验证
+## 4. Provider 配置重点
 
-先由数据库 owner 审查并执行 `agent/migrations/004_repair_runtime.sql`，Worker 继续使用
-同一固定 digest 镜像。对新的 `pending` 后端缺陷执行完整 D+E：
+模型必须是支持 tool calling 和严格结构化输出的 OpenAI-compatible 接口。主/备模型都
+需要名称、API、Base URL 和上下文窗口；备用模型在主模型两次临时传输失败后接管第三次。
+错误重试最多三次，退避 1 秒和 2 秒，永久错误不盲目重试。
 
-```bash
-.venv/bin/python -m agent.cli run \
-  --feedback-id <uuid> \
-  --dry-run \
-  --provider configured \
-  --repair
-```
+REPRODUCTION_MODEL_TIMEOUT_SECONDS 是每次 Repair Agent 请求上限，默认 180 秒，允许
+30～300 秒。MODEL_CONTEXT_WINDOW 和 FALLBACK_MODEL_CONTEXT_WINDOW 用于 Summary 的
+65% soft trigger 和 85% hard limit。默认模型调用 50 次、工具 30 次、Sandbox 900 秒。
 
-阶段 D 已确认复现并停在 `repairing` 的旧 run，可直接从原 checkpoint 继续，不重新
-领取 feedback，也不重跑 Gate：
-
-```bash
-.venv/bin/python -m agent.cli run \
-  --resume-run-id <run-uuid> \
-  --dry-run \
-  --provider configured \
-  --repair
-```
-
-成功时 feedback 为 `validated`、run 为 `completed`，Artifact 包含 `fix.patch`、
-`validated.patch` 和 `validation.json`。目标修复两轮仍失败
-或最终全量/DOCX 验证失败时不会产生可发布凭据；预算耗尽进入 `budget_exhausted`，不会
-被 Scheduler 自动恢复。维护者提高预算后可显式使用同一 `--resume-run-id`，继续原
-checkpoint、累计计数与候选补丁。若生成的修复需要新增未预装的外部可执行程序、Pandoc filter 或
-部署变更，本地 Policy 会在 Sandbox 前把 feedback/run 路由为 `needs_human`，不会继续
-第二轮生成。Mermaid CLI、Chromium 与中文字体已由维护者固定版本并同时放入生产和
-Sandbox 镜像；已复现的 drawing 缺陷会读取只读受信渲染器 API、调用 `generate_fix` 并
-进行完整验证。模型仍不能修改渲染器、依赖清单或 Dockerfile。
-
-## 7. 阶段 F GitHub Pull Request
-
-先手工执行 `agent/migrations/005_publication_runtime.sql`。Publisher 使用独立 GitHub App，
-App 只安装到目标仓库。PR 分支需要 `Contents: Read and write` 与
-`Pull requests: Read and write`；阶段 I Issue 分支还需要维护者手工增加
-`Issues: Read and write`。不得授予 Actions、Administration、Secrets 或合并权限。
-在 Controller 私有 `.env` 中填写：
-
-```text
-GITHUB_APP_ID=
-GITHUB_APP_PRIVATE_KEY=
-GITHUB_API_URL=https://api.github.com
-GITHUB_MAIN_BRANCH=main
-LANGFUSE_TRACE_URL_TEMPLATE=https://<实际项目路径>/traces/{trace_id}
-```
-
-私钥支持 dotenv 多行 PEM 或使用字面量 `\n`。运行时分别签发只限当前仓库的 PR
-(`contents:write + pull_requests:write`) 与 Issue (`issues:write`) 短期安装令牌，不保存到
-Artifact、数据库、Trace 或日志。首次发布前可只校验两种权限，不创建 GitHub 资源：
-
-```bash
-.venv/bin/python -m agent.publishing.check
-```
-
-对新的、明确可自动修复的 `pending` 反馈执行完整 D+E+F：
-
-```bash
-.venv/bin/python -m agent.cli run \
-  --feedback-id <uuid> \
-  --provider configured \
-  --publish
-```
-
-`--publish` 是唯一允许真实 GitHub 写入的 CLI 开关，不能与 `--dry-run` 同用。发布前会
-重新应用 `validated.patch` 并核对哈希和文件集合，再检查 `current_main_sha == base_sha`。
-主分支已变化时不会创建分支或 PR，feedback 自动重排一次；第二次仍过期则转
-`needs_human`。GitHub 临时失败后可用原 run ID 重试，只恢复发布节点：
-
-```bash
-.venv/bin/python -m agent.cli run \
-  --resume-run-id <run-uuid> \
-  --provider configured \
-  --publish
-```
-
-成功后 feedback 为 `pr_opened`，run 为 `completed`，二者保存相同 `pr_url`，Artifact
-新增 `publication.json`。固定分支为 `agent/feedback-<short-id>-<category>`；PR 正文只含
-结构化验证证据和 Trace URL，不含联系方式、完整 Markdown 或用户描述。Publisher 没有
-自动合并接口。CLI 的 `completed` 只表示 Graph 已到终态；真实发布成功必须同时满足
-`published=true`、`error_code=null` 且 `pr_url` 非空，失败终态会在 `status` 和
-`error_code` 中明确返回。
-
-`--publish` 遇到 `issue_required` 时不读取源码、不启动 Sandbox，只把严格 `IssueDraft`
-发布为仓库已有 `bug` 或 `enhancement` 标签。正文不含原始 description、Markdown 或
-contact，并用 `run_ref + content_fingerprint` marker 在开放和关闭 Issue 中幂等复用。
-成功后 feedback 为 `issue_opened`，run 保存 `issue_url`，Artifact 新增
-`issue-publication.json`；CLI 的 `published/pr_url` 仍只表示 PR，Issue 结果单独看
-`issue_url`。
-
-## 8. 阶段 G 评估与生产 Scheduler
-
-Fake 离线评估不会访问模型、数据库、GitHub 或 Sandbox：
-
-```bash
-.venv/bin/python -m agent.evals.runner --provider fake
-```
-
-当前评估集包含 12 条表格、公式、标题、崩溃、后端规范化、前端、功能建议、无关、
-信息不足、Prompt Injection 和缺失输入用例。报告 Gate accuracy、automatable precision、
-Schema compliance、注入隔离召回/误报、Token、成本、延迟和 Oracle 覆盖率。真实模型
-Gate-only Dry Run 会产生模型费用并写 Langfuse，需显式执行：
-
-```bash
-.venv/bin/python -m agent.evals.runner --provider configured
-```
-
-生产 Scheduler 默认由 `PRODUCTION_SCHEDULER_ENABLED=false` 硬关闭。本地诊断可以直接
-运行 CLI；生产环境统一使用受版本控制的 systemd 单元和管理命令：
-
-```bash
-sudo mdtoword-agentctl audit
-sudo mdtoword-agentctl enable
-sudo mdtoword-agentctl status
-sudo mdtoword-agentctl logs
-```
-
-Scheduler 每次优先恢复 checkpoint，再领取一条反馈，进程内并发固定为 1。开关只控制
-是否领取生产反馈；领取后仍自动执行 D→E→F，不增加逐条人工批准，也不自动合并或部署。
-`enable` 必须在审计后输入 `ENABLE`，部署脚本每次更新都会重新关闭 Scheduler，防止未审计
-的新代码直接领取任务。
-
-## 9. 当前验收结果
-
-- 阶段 D Agent 178 passed（含真实 Docker 两项测试，无 skipped）；后端 44 passed；
-- 阶段 E 当前实现验收为 Agent 217 passed，其中真实 Docker 4 passed；后端固定镜像
-  44 passed；真实 Provider/Supabase/Langfuse/GitHub/Sandbox 运行已得到修正后的
-  `needs_human/external_dependency_required` 终态；
-- 阶段 F/G 实现覆盖验证失败/哈希不符/过期基线拒绝、合法 PR、幂等复用、最小 App
-  权限、发布失败保留 Artifact、同 run 发布重试、12 条 Fake 评估和默认关闭的生产
-  Scheduler；最终提交前 Agent 非 Docker 回归为 252 passed、4 个 Docker 条件测试 skipped，
-  已配置固定 digest 时 4 个 Docker 集成测试均通过；同步 `main` 后端回归为 54 passed；
-  `deepseek-ai/DeepSeek-V4-Flash` 使用 `gate-v6/publication-policy-v3` 的 12 条真实评估达到
-  Gate accuracy、automatable precision、Schema compliance、注入召回均 100%，注入误报
-  0%；GitHub App 真实 JWT、单仓库安装和最小权限令牌预检已通过；真实 PR #1 已人工合并，
-  Render 部署和插件 Mermaid 原样例回放成功；独立 Linux ECS 上的 Worker/Scheduler 已
-  通过一键安装、审计、开机自启和小流量生产验收；
-- `gate-v2` 真实复测将“仅测试、不需要修复”路由为 `rejected_irrelevant`；
-- Prompt Injection 真实复测路由为 `quarantined_security`，`tool_calls=0`；
-- 生产 Scheduler 已自动把无关测试反馈路由为 `rejected_irrelevant`；已修复 Mermaid
-  反馈在 `generate-test` 严格 Schema 失败后使用受信 drawing 模板继续执行，Docker 中
-  无法复现旧缺陷，最终为 `cannot_reproduce`，未生成补丁或 PR；
-- Langfuse 每次真实 Gate 包含 root Agent 和 `classify-intent` Generation，且抽查未发现
-  完整 Markdown、描述或 contact；
-- 阶段 D 真实 Docker 已验证隔离边界和已知表格缺陷的目标失败分类：2 passed；
-- Mermaid 真实反馈已验证 GitHub 鉴权、固定 SHA 快照、严格计划 Schema、实际可读路径
-  约束和有界测试修正；旧模型接口因 `provider_unavailable` 终结，替换接口的代表性严格
-  Schema 预检通过，但 `z-ai/glm-5.2` 在真实 `generate-test` 中两次输出仍不合规并以
-  `invalid_response` 终结；`grok-4.5` 的 Gate Schema 一次通过，但代表性 40 KB 测试
-  生成在有限重试内均被远端断开；同一 localhost 网关的 `gpt-5.6-luna` 也只通过 Gate，
-  35.8 KB 代表性生成最终返回 503。当前 `deepseek-ai/DeepSeek-V4-Flash` 已通过
-  35.8 KB 代表性 Schema/Policy 预检；真实反馈 `7990602f-...` 的 run
-  `27d1b938-...` 在固定 SHA 上于第二轮生成有效回归测试，新镜像 Sandbox 收集到唯一
-  目标测试的预期断言失败，数据库终态为 `repairing/reproduced`。本次真实运行共 5 次
-  模型调用、14 次工具调用和 68,094 tokens，阶段 D 端到端验收完成；
-- 后续真实 run `8d86f6cb-...` 的 JUnit `failure` 未提供 `type` 属性，但 `message` 以
-  `AssertionError` 开头；旧分类器因 traceback 中变量名 `FIXTURES` 含有 `fixture` 而误判
-  `invalid_test_infrastructure`。当前解析器会从结构化 JUnit message 推断异常类型，并且
-  只依据异常类型判断基础设施错误；该 run 保留历史 `cannot_reproduce` 终态，不重新打开；
-- 真实 run `aae54eec-...` 已被模型分类为高相关 `bug_report/docx_structure`，但模型把
-  完整 Mermaid 源码和明确 Word 导出描述误判为信息不足，因而在 Gate 进入
-  `needs_human`。`repair-policy-v2` 仅对该完整组合使用确定性 Mermaid 证据修正
-  `sufficient_information=false`；注入、低相关、前端和未知类别优先级保持不变；
-- `repair-policy-v2` 的真实 run `4aee5378-...` 已验证上述 Gate 校正生效，并生成正确的
-  Mermaid drawing 复现计划；第一轮测试编辑为 `invalid_test_edit`，一次有界修订最终因
-  模型严格 Schema 响应不合规而以 `invalid_response` 终结。该失败发生在模型测试生成，
-  尚未调用 Sandbox，历史 feedback/run 不重新领取或打开；
-- `agent-graph-v4/repair-policy-v3` 为上述 Mermaid `invalid_test_edit` 增加仅第二轮启用的
-  受信 drawing 模板；普通反馈仍由模型修订，模板输出仍通过原有 Patch Policy、JUnit 与
-  Docker Sandbox，且不会增加模型调用；
-- 真实 run `bab5a685-...` 已在第一轮 Sandbox 得到
-  `AssertionError/reproduced`，随后首次 `generate_fix` 在 300 秒后超时；失败终结正确
-  持久化 4 次模型、8 次工具和 53,862 tokens。`agent-graph-v5/repair-policy-v4` 将已复现
-  Mermaid drawing 固定为依赖/部署人工评估，在读取修复源码和调用修复模型之前直接转
-  `needs_human/external_dependency_required`；
-- 最终真实 run `3a41124d-...` 使用 `agent-graph-v5/repair-policy-v4`，第一轮复现为
-  `AssertionError/reproduced`，随后未调用修复模型即完成
-  `needs_human/external_dependency_required`。数据库记录 4 次模型、7 次工具、36,216
-  tokens，并同时保存 `result.json`、`test.patch` 与 `repair-result.json`；阶段 E 真实
-  服务终态验收完成；
-- 以上 Mermaid 转人工记录是依赖尚未获批时的历史证据。2026-08-12 维护者确认真实问题
-  可以引入审核后的依赖；当前 `publication-policy-v4/patch-policy-v3/fix-generation-v2`
-  已预装固定 Mermaid CLI + Chromium + 中文字体，删除 Mermaid 提前终止，并在无网络、
-  非 root、只读 Sandbox 中用中文流程图验证“旧基线 drawing 失败、接入后通过”。历史 run
-  不重开；后续新 feedback 已完成真实 PR、合并、Render 部署与插件回放；
-- 第一条平台合并后的真实发布 run `878a75c3-...` 正确复现 drawing 缺失，但修复模型只
-  读取 `pandoc_runner.py` 前 50 行，两轮结构化 Edit 均未通过本地应用，以
-  `invalid_fix_edit` 安全终止且未创建 GitHub 资源；旧 Artifact 没有保存 Edit，不能据此
-  推断更具体的失败类型。`agent-graph-v7/publication-policy-v5/fix-generation-v3` 因此在
-  修复阶段读取完整可编辑源文件、允许同一修复文件按序执行多个 `search_replace`，并把
-  受信本地编辑失败原因交给下一轮；CLI 同时显式输出终态、错误码和是否已发布；
-- 后续 run `f11032d7-...` 已生成并独立验证 Mermaid 修复，但 PR 正文隐私扫描把补丁
-  SHA `04024526609...` 的纯数字前缀误判为电话号码，导致固定分支创建后以
-  `publication_failed` 终止。Publisher 现仅对不含 contact/原始反馈的结构化元数据关闭
-  电话规则，邮箱、Bearer 和 Secret 赋值扫描继续生效；同 run 幂等恢复后已成功创建
-  [PR #1](https://github.com/yyqqCoding/MDToWord/pull/1)，数据库 feedback=`pr_opened`、
-  run=`completed`，二者保存相同 PR URL，Artifact 包含 `publication.json`；
-- 阶段 D 模型单次请求超时默认 180 秒（可在 30～300 秒内配置）；模型传输错误仍最多
-  重试两次，退避为 1 秒和 4 秒；`/models` 返回 200 只代表网关
-  在线，不能替代真实 Chat Completions 验收；
-- 维护者暂不填写模型单价，因此数据库成本验收仍为延后项。
-
-## 10. Docker 验收
-
-这里的 Sandbox Docker 当前运行在开发者电脑的 Docker Desktop/WSL 中，不是 Render
-转换后端的一部分。使用线上插件导出 Word 时，本地 Docker 可以关闭；只有运行
-`--reproduce`、`--repair`、`--publish` 或 Docker 集成测试时，才需要同时启动 Docker
-Engine 和 Worker。若要让 Scheduler 7×24 小时自动处理反馈，应在独立私有 Linux 主机
-部署 Controller、Worker 和 Docker Engine，且 Worker 只暴露在 Controller 可访问的内网。
-完整拓扑见
+生产配置只写入受保护环境文件，不提交 .env。生产主机更新和审计命令见
 [deployment-and-operations.md](../docs/AgentRequirements/deployment-and-operations.md)。
 
-复测时先在 Docker Desktop 的 Settings → Resources → WSL Integration 中启用
-当前发行版，然后在仓库根目录执行：
+## 5. Sandbox Worker
 
-```bash
-docker build -f agent/sandbox/Dockerfile \
-  -t mdtoword-sandbox:mermaid .
+本地可使用 agent/sandbox/Dockerfile 和 worker_http 启动 Worker；生产 Worker 由独立
+Linux systemd 服务管理，只监听 127.0.0.1:8090。Worker 使用固定镜像、无网络、非 root、
+只读根文件系统和临时 workspace，不持有业务 Secret。
 
-export SANDBOX_IMAGE_DIGEST="$(
-  docker image inspect --format '{{.Id}}' mdtoword-sandbox:mermaid
-)"
+Worker 只接收结构化 Job，不接收模型命令。run_sandbox 的临时连接错误复用同一 job_id
+最多三次；测试、修复和最终验证都在新容器中执行。
 
-.venv/bin/python -m pytest \
-  agent/tests/test_docker_integration.py -v -m docker
-```
+## 6. 修改边界
 
-构建前可先用 `docker pull python:3.11-slim` 验证 Docker Engine 的网络。若出现
-`proxyconnect tcp` 或 Docker Engine 连接主机 `127.0.0.1` 被拒绝，说明问题位于 Docker
-Desktop/WSL 到主机代理的边界，不是项目代码或 `SANDBOX_*` 配置。此时应使用仅对
-Docker 生效且能从 Docker VM 访问的代理配置，或使用临时本地转发；不要为了构建修改
-其他 CMD 依赖的用户级代理，也不要把本机 IP、代理凭据写入 Dockerfile、`.env.example`
-或提交记录。构建完成后可检查镜像未固化代理变量：
+Agent 自动 PR 的代码白名单由权威安全文档定义，当前只面向后端转换实现、反馈回归测试
+和固件。模型不能修改扩展、依赖、配置、Agent、Dockerfile、部署或安全策略；越权补丁
+在执行前拒绝。
 
-```bash
-docker image inspect mdtoword-sandbox:mermaid \
-  --format '{{json .Config.Env}}'
-```
-
-结果必须是 `4 passed`，不能是 skipped。测试同时验证已知表格缺陷产生可信目标失败、
-Mermaid 受信回退模板先产生 drawing 断言失败，再用预装渲染器验证最小接入后通过，
-以及阶段 E 在三个独立容器中重新证明基线失败、修复后目标/全量/DOCX 通过和最终补丁
-哈希一致；同时验证容器无外网、无业务 Secret、
-非 root、只读根文件系统、能力清空、`no-new-privileges`、内存/CPU/PID/超时限制、同一
-Job 只执行一次，并确认临时 workspace 已销毁。
-
-Worker 的独立启动入口为：
-
-```bash
-.venv/bin/python -m agent.sandbox.worker_http
-```
-
-启动前只向 Worker 注入 `.env.example` 中的 Worker-only `SANDBOX_*` 配置，不要加载
-Supabase、模型、Langfuse 或 GitHub Secret。开发环境默认绑定 `127.0.0.1:8090`；部署时
-只能暴露到 Controller 可访问的内部网络。
-
-## 11. Linux 常驻服务
-
-独立 Linux 主机完成用户、目录、Docker 镜像、虚拟环境和 `/etc/mdtoword/*.env` 配置后，
-不再手工复制 systemd 或多层引号命令。仓库位于 `/opt/mdtoword` 时执行：
-
-```bash
-cd /opt/mdtoword
-sudo git pull --ff-only origin main
-sudo bash deploy/agent/install.sh
-```
-
-脚本安装受版本控制的 Worker/Scheduler 单元和 `mdtoword-agentctl`，但默认只启动 Worker，
-Scheduler 保持 `inactive/disabled`。确认审计输出后才运行：
-
-```bash
-sudo mdtoword-agentctl enable
-```
-
-完整安全行为、状态审计和停止命令见
-[deployment-and-operations.md](../docs/AgentRequirements/deployment-and-operations.md)。
+代码、Prompt、Policy、工具 Schema 或镜像变化时，先更新权威需求和验收记录，再更新实现。

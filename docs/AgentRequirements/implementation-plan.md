@@ -1,1451 +1,166 @@
-# 实施计划与验收
-
-## 1. 实施原则
-
-- 每个阶段交付一个可独立运行和验证的增量；
-- 先建立确定性Policy、状态与Fake，再接真实模型和外部服务；
-- 模型节点和沙箱执行分别测试，避免端到端失败时无法定位；
-- 所有真实API调用都放在手工集成验收，不进入默认单元测试；
-- 不因引入LangGraph或Langfuse删除现有领域Schema和Provider边界；
-- 旧实现可按新契约复用，但必须重新通过本计划验收，不沿用旧阶段状态。
-
-## 2. 目标目录
-
-```text
-pyproject.toml                  # Agent 包、运行时与测试依赖
-agent/
-  api.py                       # health、可选管理接口
-  scheduler.py                 # Supabase轮询、claim、并发1
-  config.py
-  state.py                     # AgentState版本化Schema
-  graph.py                     # 顶层LangGraph
-  domain/
-    enums.py errors.py policy.py fingerprints.py
-  repositories/
-    base.py supabase.py fake.py
-  migrations/
-    001_agent_foundation.sql
-  providers/
-    base.py openai_compatible.py fake.py
-  prompts/
-    gate.md plan_reproduction.md generate_test.md generate_fix.md
-  tools/
-    source.py edits.py reproduction.py validation.py
-  workspace/
-    source_repository.py patching.py artifacts.py
-  sandbox/
-    contracts.py client.py worker.py docker_runner.py
-  validators/
-    patch_policy.py junit.py docx.py report.py
-  publishing/
-    github_app.py pr_body.py
-  telemetry/
-    base.py langfuse.py logging.py
-  evals/
-    cases/ runner.py
-  cli.py
-  tests/
-
-backend/tests/
-  test_feedback_regressions.py
-  docx_assertions.py
-  fixtures/feedback/
-```
-
-目录表达责任边界，不要求每个文件都包装成类。相同行为只在确实共享同一领域规则时
-抽象；避免为框架展示创建空层。
-
-## 3. 阶段A：基线、配置与持久化
-
-### 交付
-
-- 记录当前后端测试基线和最小DOCX转换结果；
-- 数据库增加Feedback状态、claim租约和`agent_runs`；
-- 实现`FeedbackRepository`、Supabase适配器与Fake；
-- 实现配置校验、Artifact目录和内容指纹；
-- 实现版本读取：从部署产物路径读取 `extension/dist/manifest.json`，从GitHub读取
-  `main` SHA；缺少前者时使用 `unknown`；
-- 定义领域状态、错误码和状态转换测试。
-
-### 验收
-
-- 后端全量pytest通过；
-- 原子claim并发调用只有一个成功；
-- 超时claim可回收，超过最大attempt进入`needs_human`；
-- task artifact不含`contact`、数据库Key或Authorization；
-- 相同输入指纹稳定；
-- Agent服务重启后数据库状态不丢失。
-
-## 4. 阶段B：LangGraph Gate与Langfuse Dry Run
-
-### 交付
-
-- 顶层Graph、持久化checkpointer和Fake Provider；
-- Feedback Gate Schema、Prompt、确定性后置Policy；
-- Langfuse Telemetry适配器、Trace ID传播和Masking；
-- Scheduler每次只领取一条反馈，并发默认1；
-- `dry_run`管理入口只运行Gate，不创建源码workspace和沙箱Job。
-
-### 验收
-
-> 本节记录阶段 B 当时的验收口径。阶段 I 实现后，功能需求和前端/扩展缺陷改走
-> `issue_required`；`out_of_scope` 只保留历史读取兼容。
-
-- 表格/公式样例路由为`accepted_backend_bug`；
-- 前端和功能建议路由为`out_of_scope`；
-- 无关内容路由为`rejected_irrelevant`；
-- 注入对抗样例路由为`quarantined_security`且工具调用数为0；
-- 低置信度进入`needs_human`；
-- Langfuse可看到Gate generation、真实Token、成本与最终route；
-- Trace、日志和数据库中没有`contact`和完整Markdown；
-- Langfuse不可用时运行仍能完成并写数据库状态。
-
-## 5. 阶段C：受控源码工具与Docker Worker
-
-### 交付
-
-- GitHub SourceRepository按`base_sha`生成源码快照；
-- `search_source`、`read_source_file`和结构化编辑工具；
-- Patch Policy与机器可读配置；
-- Sandbox Job/Result Schema、内部认证Client和Docker Worker；
-- 固定镜像，预装后端开发依赖和Pandoc；
-- Docker资源、网络、用户、挂载和超时约束。
-
-### 验收
-
-- 合法源码查询只返回白名单内容；
-- `..`、绝对路径、符号链接和敏感文件读取被拒绝；
-- 修改`extension/`、`.github/`、依赖或`conftest.py`的编辑在执行前被拒绝；
-- 模型提交命令字符串或未注册工具被拒绝；
-- 沙箱内网络访问失败，环境中无业务Secret；
-- CPU、内存、进程数和超时限制生效；
-- 同一Job幂等重试不重复执行已完成结果；
-- 容器结束后workspace被销毁。
-
-## 6. 阶段D：自动复现
-
-### 交付
-
-- `plan_reproduction`与`generate_test`节点；
-- Mermaid 首轮 `invalid_test_edit` 的受信 drawing 测试模板，仅在第二轮启用；
-- 测试结构化编辑与固定测试文件策略；
-- JUnit解析、目标失败分类和错误摘要；
-- 最多两轮的复现子图；
-- 受信DOCX断言工具。
-
-### 验收
-
-- 已知表格或公式缺陷产生目标失败；
-- 测试直接通过时修订一次，两轮后仍通过则`cannot_reproduce`；
-- ImportError、SyntaxError、fixture缺失、超时不算成功复现；
-- 测试名不含完整反馈ID、联系方式和用户描述；
-- 测试不能加载外部pytest插件或修改测试基础设施；
-- 每轮使用全新基线workspace；
-- Langfuse展示计划、源码工具、测试生成、沙箱调用和轮次。
-
-阶段完成后系统已可自动把真实反馈转化为可信的复现报告，即使尚不生成修复。
-
-## 7. 阶段E：修复循环与独立验证
-
-### 交付
-
-- `generate_fix`与`revise_fix`节点；
-- 修复patch与测试patch互斥检查；
-- 目标验证、全量pytest和DOCX分类验证；
-- 全新沙箱中的最终独立验证；
-- `ValidationResult`和`validated.patch`。
-
-### 验收
-
-- 覆盖一轮成功、第二轮成功和两轮失败；
-- fix patch触碰测试时被拒绝；
-- 目标测试通过但全量测试回归时整体失败；
-- 原有skipped数量增加时整体失败；
-- 无效DOCX、缺少XML部件、表格/公式节点不足时失败；
-- 最终验证重新证明“基线失败、修复后通过”；
-- `validated_patch_sha256`与文件内容一致；
-- 预算耗尽后不能继续调用模型或沙箱。
-
-阶段完成后系统可产出经过验证但尚未发布的后端patch。
-
-## 8. 阶段F：GitHub Pull Request
-
-### 交付
-
-- GitHub App认证与限定仓库配置；
-- Publisher只接受`ValidationResult.passed=true`的Artifact；
-- 发布前`current_main_sha == base_sha`检查；
-- 固定分支、commit和PR正文生成；
-- 按feedback与patch hash防重复；
-- PR写回数据库并链接Langfuse Trace。
-
-建议格式：
-
-```text
-branch: agent/feedback-<short-id>-<category>
-commit: fix: repair <category> for feedback <short-id>
-```
-
-PR正文包含：分类、脱敏问题摘要、基线失败证据、修改文件、目标/全量测试、DOCX
-验证、模型与Prompt版本、Token/成本、风险、`extension_sync_required`、Trace URL、
-`base_sha`和patch hash。不得包含联系方式或完整用户Markdown。
-
-### 验收
-
-- 验证失败、hash不一致或base过期时不创建PR；
-- 合法Artifact自动创建分支和PR；
-- 重试不会创建重复PR；
-- GitHub App不能修改Actions、Secrets或自动合并；
-- PR中包含完整审查证据且无敏感信息；
-- 状态进入`pr_opened`并保存PR URL；
-- 维护者可正常Review和Merge，Agent没有合并入口。
-
-## 9. 阶段G：评估与自动模式投产
-
-### 交付
-
-- 10至20条离线评估用例；
-- Fake Provider端到端场景；
-- 真实Provider Dry Run；
-- 第一条真实反馈自动修复PR；
-- 成本、成功率和错误报告。
-
-### 验收顺序
-
-1. Fake E2E覆盖成功、无关、注入、前端、无法复现、两轮失败、补丁越界、全量回归
-   和发布失败；
-2. 真实模型只运行Gate，核对Trace、Token、Masking和路由；
-3. 选一条Markdown短、问题明确、后端可复现的真实反馈运行全流程；
-4. 人工审核PR中的测试、修复范围、反例、Word输出和Trace；
-5. 合并后沿用现有Render流程，并人工回放原Markdown确认；
-6. 连续运行若干真实反馈，核对无重复PR、无越权、成本和失败原因可理解。
-
-系统从第一条反馈起即按自动模式运行：Gate通过后自动进入后续节点。投产开关只控制
-Scheduler是否领取生产反馈，不引入逐条人工批准状态。
-
-## 10. 阶段H：公开反馈入口 IP 限流
-
-### 交付
-
-- Render/FastAPI 可信客户端 IP 解析边界；
-- 单 worker 进程内滑动窗口限流器与 `asyncio.Lock` 并发保护；
-- 同 IP 分钟、小时、每日额度和全局小时额度；
-- `429`、`Retry-After`、`503 client_ip_unavailable` 响应契约；
-- 插件对 `429` 的非重试提示与输入保留；
-- Render 上 `CF-Connecting-IP` 的脱敏转发验收。
-
-阶段 H 不新增 Redis、数据库 migration、浏览器指纹、登录、验证码或插件内固定 Secret。
-
-### 验收顺序
-
-1. 使用可控时钟验证分钟、小时、每日、全局窗口和精确 `Retry-After`；
-2. 并发提交同一 IP，证明检查与消费原子且只有允许数量写入；
-3. 验证 IPv4、IPv4-mapped IPv6、IPv6 `/64`、非法或多值来源；
-4. 验证过期清理、10,000 个 IP 容量边界和 Supabase I/O 不持有进程锁；
-5. 验证插件收到 `429` 后不自动重试、保留输入并显示等待提示；
-6. 部署 Render 后，从 Wi-Fi 与手机流量执行正常/伪造头黑盒请求，以状态码、
-   `Retry-After` 和不含 IP 的请求 ID 确认可信边缘覆盖、来源区分及防绕过；不增加临时
-   HMAC Secret、IP 日志或诊断接口；
-7. 运行后端全量测试、扩展构建以及 Agent 全量测试和 compileall，再按本文记录真实证据。
-
-## 11. 阶段I：功能需求 Issue 路由与展示数据正确性
-
-**状态：生产核心链路验收完成，扩展发布构建待准备（2026-08-24）**
-
-### 设计依据
-
-- 2026-08-24 从 Supabase 公开视图直接聚合得到 51 条终态运行、2 个唯一 PR、
-  `1,092,872` Token、平均墙钟 `549,947ms`；当时概览仍显示 49，随后 15 分钟缓存到期才
-  显示 51，证明数据未丢失，错误是统计缓存新鲜度；
-- 功能建议 run `c4c6a831-...` 为 `model_calls=0 / category=unknown /
-  policy_reason=feature_feedback_type`，证明“未分类”来自确定性短路而非模型能力；
-- 注入 run `6cc6f25b-...` 已正确路由 `quarantined_security` 且 `tool_calls=0`，但公开站因
-  `status=completed + category=unknown` 显示为“未分类反馈 / 已结束”，证明 route 与展示
-  终态的映射缺失；
-- 当前 51 条运行中，5 条注入、4 条无关和 2 条 Feature 均持久化为 `category=unknown`，
-  因而必须由领域 Policy 规范最终类别，不能只在 UI 层改中文文案。
-
-### 交付
-
-- 删除 `feedback_type=feature` 的模型前短路，Bug/Feature 统一经过无工具 Gate；
-- Gate 新增 `area`、细分类别和受限 `IssueDraft`，Prompt 与本地 Policy 保持同一跨字段
-  规则并 bump Gate Prompt 版本；
-- 新增 `issue_required -> publishing_issue -> issue_opened` 分支、`IssuePublisher` 端口与
-  GitHub 适配器；
-- GitHub Issue 使用固定仓库、固定 `bug`/`enhancement` 标签、脱敏正文和
-  run_ref/fingerprint marker 保证幂等，不在公开 marker 中写完整 feedback ID；
-- 新 migration 追加 `area`、`issue_url` 和 Issue 状态兼容；migration 只提交 DDL，仍由
-  维护者审查后手工执行；
-- GitHub App 增加 `Issues: Read and write`，PR 与 Issue 分别申请精确最小权限令牌；
-- 插件功能建议表单增加“可能经脱敏后公开为 Issue”的提示，不改变提交字段；
-- Trace Site 按 intent/area/category/route 生成“反馈、类别、终态”，修复
-  `quarantined_security` 被显示为“已结束”的映射；
-- Trace Site 运行列表与概览使用统一缓存标签和 60 秒失效兜底；统计分页读取全部运行，
-  PR 按唯一 URL 计数，生产数据源失败不得静默回落到 Mock；
-- `out_of_scope` 仅保留历史读取与展示兼容，新运行不再产生，历史记录不改写、不补建 Issue。
-
-阶段 I 不扩大 Agent 的代码写入白名单，不自动修改 `extension/`，不新增多 Agent、消息
-队列或 GitHub Actions，也不自动创建新标签、关闭 Issue、分配人员或修改项目面板。
-
-### 本地实施证据（2026-08-24）
-
-- Agent 全量测试 `321 passed, 5 skipped`，`compileall` 通过；新增 Fake Issue Graph 验证
-  `issue_required` 不创建源码快照或 Sandbox Job；
-- Issue Publisher 聚焦测试覆盖固定标签、脱敏扫描、提示注入片段拒绝、开放/关闭 Issue
-  marker 复用，以及只申请 `issues:write` 的独立安装令牌；
-- Trace Site `npm test` 为 `10 passed`，`npm run typecheck` 通过；新增分页、统计和终态映射测试验证全部 run、
-  唯一 PR、全部终态平均耗时与全部 Token；
-- 扩展 `tsc` 通过；扩展 Vite build 与 Trace Site Next build 均因当前 WSL `node_modules`
-  缺少 Linux 原生可选 binding 阻断，未擅自重装依赖，不把该环境失败记为通过；
-- 本地阶段未执行 migration、修改 GitHub App 或创建真实 Issue；这些外部变更均留到维护者
-  审查、批准后的生产验收执行，不由测试或应用启动隐式完成。
-
-### 生产实施与真实验收证据（2026-08-24）
-
-- 维护者手工执行 `007_issue_routing_and_public_projection.sql`，批准 GitHub App 安装实例的
-  `Issues: Read and write` 新权限，并完成 Trace Site 与 ECS Agent 部署；新版 Scheduler
-  已能领取反馈，Issue 最小权限令牌真实发布成功；
-- 明确批准提交可丢弃 Feature feedback `6f668551-...`，run `cc34f82c-...` 经一次真实模型
-  分类为 `route=issue_required / area=extension / category=feature_request`，未创建 PR，最终
-  feedback=`issue_opened`、run=`completed`、`error_code=null`；
-- 自动创建 [Issue #3](https://github.com/yyqqCoding/MDToWord/issues/3)，标签为
-  `enhancement`。公开标题和正文只含脱敏后的前端功能摘要、分类、run reference、模型用量
-  与 Trace URL，不含完整 feedback ID、contact、Markdown 或原始提交；
-- Trace Site 对应运行详情返回 `200`；回调后概览与 Supabase 公开视图一致显示 52 次运行、
-  2 个唯一 PR、1 个唯一 Issue、`1,095,051` Token 与约 9 分钟平均终态耗时，证明全量分页
-  聚合和缓存失效均已在生产生效；
-- 真实重复恢复未为验收额外制造第二次外部写入；同 marker 复用开放/关闭 Issue 仍由聚焦
-  自动测试覆盖。扩展源码提示已通过 `tsc`，但商店发布构建仍需在具备 Linux 原生 binding
-  的干净依赖环境完成，不能把本次生产 Agent/Trace Site 验收记作扩展发布完成。
-
-### 验收顺序
-
-1. 评审本阶段涉及的需求、状态机、Issue 契约、权限与公开内容边界；
-2. Fake Gate 覆盖后端/前端/跨端功能需求、前端 Bug、无关、垃圾、注入、信息不足和重复
-   反馈，验证只有 `issue_required` 能到达 Fake Issue Publisher；
-3. 验证 Issue 标题/摘要跨字段 Schema、敏感模式拒绝、固定标签、marker 查重、响应丢失
-   恢复和同 run 恢复不重复创建；
-4. 验证后端 Bug 仍进入 D→E→F，前端/扩展 Bug 与视觉需求不创建 Sandbox Job 或 PR，
-   Agent 仍拒绝任何 `extension/` 补丁；
-5. 运行 Trace Site 聚焦测试，使用构造数据验证统一标签失效、分页全量聚合、唯一 PR 计数、
-   全部终态平均耗时、生产错误态和历史 `out_of_scope` 展示；
-6. 运行 Agent 全量 pytest/compileall、Trace Site `npm test`/typecheck/build；若后端反馈契约
-   或扩展表单改变，再运行后端全量测试与扩展 build；
-7. 维护者手工审查并执行 migration，核对实施前基线运行的数量、Token、唯一 PR 与历史路由
-   在迁移前后一致；不得把迁移执行冒充自动测试；
-8. 维护者手工调整 GitHub App 权限，分别完成 PR/Issue 两种短期令牌的只读预检；
-9. 停止生产 Scheduler 后部署 Controller/Worker/Trace Site，保持 Scheduler 关闭完成审计；
-10. 使用构造或可丢弃的 Feature/前端 Bug 数据完成明确批准的真实 Issue 验收，确认公开
-    Issue 不含原始 description、Markdown、contact、邮箱、电话或密钥，且重复恢复复用同一
-    Issue；自动测试不得冒充该真实验收；
-11. 验证新运行在 `/runs` 与概览的数量、类别、终态、Token 和唯一 PR/Issue 数据与
-    Supabase 对账，正常回调后立即可见、回调丢失时不超过 60 秒；
-12. 标准 `deploy.sh` 审计通过并由维护者输入 `ENABLE` 后才恢复自动领取。
-
-## 12. 配置清单
-
-主要配置：
-
-```text
-SUPABASE_URL
-SUPABASE_AGENT_KEY
-AGENT_DATABASE_URL / AGENT_CHECKPOINT_SCHEMA=agent_runtime
-MODEL_PROVIDER / MODEL_NAME / MODEL_API_KEY / MODEL_BASE_URL
-LANGFUSE_HOST / LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY
-GITHUB_REPOSITORY / GITHUB_READ_TOKEN
-GITHUB_APP_ID / GITHUB_APP_PRIVATE_KEY
-ARTIFACT_ROOT
-EXTENSION_MANIFEST_PATH=extension/dist/manifest.json
-SANDBOX_WORKER_URL / SANDBOX_WORKER_CREDENTIAL
-SANDBOX_IMAGE_DIGEST
-POLL_INTERVAL_SECONDS
-MAX_* Policy阈值
-FEEDBACK_RATE_PER_MINUTE=1
-FEEDBACK_RATE_PER_HOUR=5
-FEEDBACK_RATE_PER_DAY=10
-FEEDBACK_GLOBAL_RATE_PER_HOUR=30
-TRACE_CONTENT=false
-```
-
-配置启动时校验；错误信息只指出缺少的配置名，不打印值。测试通过Fake和依赖注入
-提供配置，不读取生产Secret。
-
-## 13. 验证命令
-
-### 13.1 自动测试与初始化
-
-```bash
-uv sync --extra dev
+# 实施计划与验收记录
+
+本文只记录当前阶段状态、可重复的验收入口和已经取得的证据。详细设计分别见
+requirements、architecture、agent-runtime、repair-agent-loop、security-and-sandbox、
+failure-handling-and-retries 和 observability；本文件不复制这些契约。
+
+## 1. 当前状态
+
+| 阶段 | 范围 | 状态 |
+|---|---|---|
+| A | 配置、领域模型、持久化、claim 和 Artifact | 已完成 |
+| B | LangGraph 外层、Gate、checkpoint、Telemetry | 已完成 |
+| C | 源码快照、受限工具、Patch Policy、Sandbox Worker | 已完成 |
+| D | conversion probe、测试生成、基线复现 | 已完成 |
+| E | 修复工具循环、目标/全量/DOCX 验证 | 已完成 |
+| F | GitHub PR 发布与幂等 | 已完成 |
+| G | Fake/真实 Provider 评估与自动模式 | 已完成 |
+| H | 反馈入口 IP 限流 | 已完成 |
+| I | 功能需求和前端问题 Issue 路由、公开投影 | 生产核心已验收 |
+| J | 失败归因、三次传输重试、恢复与 FailureSnapshot | 已完成 |
+| K | create_agent ReAct、主备模型、工具并行、Summary、预算 | 已完成 |
+
+扩展商店上架、PR 合并、Render 部署和维护者 Word 视觉确认不属于 Agent 自动发布权限。
+
+## 2. 当前生产链路
+
+~~~text
+反馈
+  -> Gate（无工具、严格结构化输出）
+  -> route_feedback
+     -> rejected_irrelevant / quarantined_security / needs_human
+     -> publish_issue
+     -> prepare_source
+        -> conversion probe
+        -> Repair Agent（create_agent + tools）
+           -> Sandbox 基线复现
+           -> 修复补丁和目标验证
+        -> 外层独立全量/DOCX 验证
+        -> PR Publisher
+~~~
+
+生产 Agent 使用一个 Repair Agent，不引入多 Agent、通用 Shell、通用 Filesystem 或
+额外 Skill。外层 LangGraph 负责业务阶段和终态，内层 ReAct 只负责当前阶段的探索与
+工具调用。
+
+## 3. 验收基线
+
+自动测试默认使用 Fake Provider，不访问生产数据库、模型、GitHub、Langfuse 或 Worker。
+代码变更的最低检查：
+
+~~~bash
 .venv/bin/python -m pytest agent/tests -q
-.venv/bin/python -m agent.cli checkpoint setup
-```
+.venv/bin/python -m compileall -q agent
+~~~
+
+涉及后端转换时再运行后端全量测试；涉及 Trace Site 或扩展时运行各自的 test、typecheck、
+build；涉及 Docker/Sandbox 边界时运行 Docker 集成测试。环境缺失导致的 skip 或构建失败
+必须如实记录，不能记为通过。
 
-后端回归从仓库根目录执行：
+## 4. 关键验收矩阵
 
-```bash
-# Linux/macOS 后端独立 venv
-cd backend && .venv/bin/python -m pytest -v
+| 场景 | 必须证明 |
+|---|---|
+| 后端转换抛错 | probe 生成确定性转换测试，基线失败，修复后通过 |
+| 转换成功但结果错误 | Agent 生成语义测试，基线失败后才允许修复 |
+| 无关/注入/前端反馈 | 不创建源码快照、Sandbox 或 PR；按 route 终结 |
+| 模型 timeout/连接/408/429/5xx | 主、主、备最多三次，退避 1 秒和 2 秒 |
+| 模型认证、权限、Schema 永久错误 | 不做传输重试，记录位置和原因 |
+| Sandbox 临时失败 | 同一 job_id 最多三次，不重复已完成执行 |
+| 工具参数/缺少前置产物 | ToolMessage 指出 required_action，同一 run 修正 |
+| 越权路径、未注册工具或越界补丁 | 执行前 security_rejected，不重试 |
+| 目标测试通过 | 仍需外层全量 pytest、DOCX 结构和基线对照 |
+| base_sha 已过期 | stale_base 一次性重排，不把旧补丁直接套到新 main |
+| 模型/工具预算耗尽 | 写入 budget_exhausted，不自动清零；可显式恢复 |
+| Scheduler/Worker 异常 | 不退出无痕；FailureSnapshot 指明 phase、node、component、code、attempt |
+
+## 5. 阶段 I 生产证据摘要
+
+Issue 路由和公开投影已经完成生产核心验收：
+
+- Feature feedback 经过 Gate 后进入 issue_required，不创建源码快照、Sandbox 或 PR；
+- GitHub Issue 使用固定标签和幂等 marker，正文只含脱敏摘要；
+- Trace Site 从 Supabase 分页聚合运行、Token、终态及唯一 PR/Issue；
+- 历史 out_of_scope 仅保留读取展示，不批量补建 Issue；
+- 扩展商店发布仍由维护者单独完成。
+
+具体 migration、权限调整和外部写入由维护者在生产环境审查后执行，不由测试或应用启动
+隐式执行。
+
+## 6. 阶段 J 失败处理证据摘要
+
+统一 FailureCause、LocatedFailure 和 FailureSnapshot 后，以下信息会同时进入日志、运行
+记录和脱敏观测：
+
+~~~text
+kind, code, component, operation
+phase, node, attempt, max_attempts, handling
+safe_details, model_calls, tool_calls, token usage
+~~~
+
+已验证的边界包括：
+
+- provider timeout 和 Sandbox 暂时不可用均按 1/2 秒退避，最多三次；
+- auth、security、configuration、context 超限、非法响应和未知异常不做盲目重试；
+- source_auth_error 不会伪装为普通 source_revision_error；
+- 未列出的异常由 Controller 最外层捕获并写入 FailureSnapshot；
+- schema_errors 只记录字段路径等安全细节，不把校验器原文或用户数据上传 Trace；
+- stale_base 保留既有一次性重排语义，不属于本文的传输 RETRY。
+
+## 7. 阶段 K ReAct 证据摘要
+
+当前 Repair Agent 使用官方 create_agent 和受限工具循环：
+
+- 主模型、主模型、备用模型组成一个模型轮次的三次总 attempt；
+- 只读源码查询可以并行；补丁写入、Sandbox 和完成工具保持串行；
+- Summary 在有效上下文窗口 65% 触发，保留最近 20%；达到 85% 停止；
+- 50 次模型调用、30 次工具调用和 Sandbox 900 秒是默认运行预算；
+- checkpoint thread 为 repair:<run_id>，显式恢复不清零累计预算；
+- 外层仍执行独立 final validation 和受信 Publisher。
+
+真实验证记录：
+
+- model-smoke 已验证主/备 profile、tool calling、只读并行、usage/cache 和 Summary 阈值；
+- 真实 run 7a0acabc-217a-4be1-a1a3-0926282866e1 完成基线复现、修复、独立验证；
+- 对应 PR #5 已由维护者合并到 main，合并提交为 d0ef01f；
+- 生产曾出现 source_auth_error、timeout、budget_exhausted、stale_base 和
+  source_access_denied，均能在运行页和日志中指明阶段与处理决定。
+
+## 8. 版本与恢复原则
+
+Graph、Prompt、Policy、工具契约、State Schema 和 Sandbox image digest 写入运行元数据。
+修改其中任何一项都要先更新权威需求，再更新实现和验收证据。
+
+恢复时：
+
+1. 使用原 feedback/run ID 和 repair:<run_id>；
+2. 读取 checkpoint、Artifact、patch hash 和累计预算；
+3. 不重复已完成的 Sandbox、PR 或 Issue 副作用；
+4. 若 base_sha 失效，按 stale_base 流程重新获取 main；
+5. 若线程结构不兼容，不猜测迁移旧 checkpoint，结束旧 run 后使用新反馈重新验收。
+
+## 9. 生产部署验收
+
+~~~bash
+sudo git -C /opt/mdtoword pull --ff-only origin main
+sudo bash /opt/mdtoword/deploy/agent/deploy.sh
+sudo mdtoword-agentctl audit
+sudo mdtoword-agentctl model-smoke
+sudo mdtoword-agentctl enable
+~~~
+
+脚本负责停止领取、安装锁定依赖、重启 Worker 和审计；enable 由维护者输入 ENABLE。
+只有 audit 和可丢弃的真实全流程验收都通过后，才恢复自动领取。
 
-# 当前 Windows venv + WSL 工作区
-backend/.venv/Scripts/python.exe -m pytest backend/tests -v
-```
+## 10. 后续只接受有证据的增量
 
-### 13.2 Gate、复现、修复与发布
+新需求必须明确：
 
-```bash
-# Fake 或真实 Provider 的 Gate-only dry run
-.venv/bin/python -m agent.cli run --feedback-id <uuid> --dry-run
-.venv/bin/python -m agent.cli run --feedback-id <uuid> --dry-run \
-  --provider configured
+- 解决哪个用户或运维问题；
+- 哪个组件拥有规则；
+- 是否改变工具、权限、数据或状态；
+- 自动测试和真实验收如何证明；
+- 失败时如何恢复以及是否需要新增敏感数据。
 
-# 阶段 D、D+E 和真实 GitHub 发布（后端 Bug 为 PR，Issue 路由为 Issue）
-.venv/bin/python -m agent.cli run --feedback-id <uuid> --dry-run \
-  --provider configured --reproduce
-.venv/bin/python -m agent.cli run --feedback-id <uuid> --dry-run \
-  --provider configured --repair
-.venv/bin/python -m agent.cli run --feedback-id <uuid> \
-  --provider configured --publish
-```
-
-除真实 `--publish` 外，CLI 运行必须提供 `--dry-run`；`--publish` 反而禁止与
-`--dry-run` 同用。它是 PR 与 Issue 共用的真实 GitHub 写入授权，不表示两个 Publisher
-共享契约或权限令牌。复现、修复、发布和恢复必须显式使用真实 Provider。可恢复错误使用
-`--resume-run-id <uuid>` 配合同一个阶段开关，不重新领取 feedback。
-
-### 13.3 评估与生产 Scheduler
-
-```bash
-.venv/bin/python -m agent.evals.runner --provider fake
-.venv/bin/python -m agent.evals.runner --provider configured
-.venv/bin/python -m agent.evals.runner --provider evaluation \
-  --prompt gate-v10 --repeat 3
-.venv/bin/python -m agent.cli scheduler --once
-.venv/bin/python -m agent.cli scheduler --forever
-```
-
-生产 Scheduler 默认关闭，只有 `PRODUCTION_SCHEDULER_ENABLED=true` 且 D→E→F 配置预检
-全部通过时才领取反馈。Docker Worker 的构建、启动和隔离验收命令见
-[agent/README.md](../../agent/README.md)。
-
-## 14. 进度记录
-
-### 阶段 A 实施检查点
-
-**状态：Implemented（2026-08-10）**
-
-**Goal**
-
-建立可独立验证的阶段 A 基础：固定后端转换基线，定义 Agent 的配置、领域状态、
-错误、指纹、Artifact、版本读取和反馈持久化边界，为后续 Gate 与 Runtime 提供稳定
-契约。
-
-**Acceptance behavior**
-
-- 自动修复范围只包含后端转换报错，以及转换成功但 DOCX 结构或格式断言失败；
-- 前端预览正确而后端导出错误时，允许只修改后端；
-- 当前修复必须修改扩展才能成立的问题不进入自动修复；
-- 原子 claim 在并发时只允许一个调用成功，过期租约可回收，超过最大尝试次数进入
-  `needs_human`；
-- Task Artifact、Graph State、适配器错误和日志不包含 `contact` 或 Secret；
-- 相同规范化反馈产生稳定指纹；
-- 插件发布产物缺失时版本记录为 `unknown`；
-- 阶段 A 提供固定、离线、可重复的自动化测试入口。
-
-**Out of scope**
-
-- 阶段 B 至 G 的真实模型、LangGraph、Docker Worker、Langfuse 和 GitHub 发布；
-- 修改或部署 `extension/`；
-- 执行线上 Supabase 迁移、提交或推送代码。
-
-**Assumptions**
-
-> 以下是阶段 A 实施时的历史假设；其中 `requires_extension_change -> out_of_scope` 已由
-> 阶段 I 的 `requires_extension_change -> issue_required` 当前契约取代。
-
-- `agent/` 原有内容是无兼容要求的历史原型，已删除并按稳定方案重建；
-- `requires_extension_change` 表示当前修复必须修改扩展，命中时路由为
-  `out_of_scope`；`extension_sync_required` 仅是后续审查元数据；
-- 修改后端 `normalizer.py` 时，必须证明它修复的是导出链路或追平已经正确的前端
-  行为；新增共享 Markdown 语义不属于阶段 A。
-
-**Solution boundary**
-
-阶段 A 修改了权威文档、后端固定回归 fixture、Agent Python 包、数据库 migration 和
-Agent 单元测试。领域规则不依赖 Supabase、LangGraph 或模型 SDK；Supabase 与 GitHub
-只位于适配器边界，并使用 Mock Transport 验证，没有调用真实外部服务。
-
-**实际实现**
-
-- `pyproject.toml` 定义 Agent 包及稳定测试入口；
-- `agent/domain/` 定义反馈/运行状态、错误、状态转换、领域对象和内容指纹；
-- `agent/config.py` 校验阶段 A 配置并用 `SecretStr` 隐藏 Agent Key；
-- `agent/repositories/` 提供 Repository Protocol、并发安全 Fake 和 Supabase 原子 claim
-  适配器；
-- `agent/migrations/001_agent_foundation.sql` 以附加方式扩展反馈表、创建或兼容
-  `agent_runs`、约束 RPC 权限并使用 `FOR UPDATE SKIP LOCKED`；
-- `agent/workspace/` 提供原子 Artifact 写入、路径防逃逸、插件版本读取和 GitHub
-  `main` SHA 校验；
-- `backend/tests/fixtures/table_three_line.md` 替代了会变化且被 Git 忽略的
-  `logs/runlog.txt` 测试输入；
-- 历史 `agent/context_builder.py`、`agent/schemas/` 和旧分类 Prompt 已按批准删除。
-
-**验证证据**
-
-- `python -m pytest agent/tests -q`：30 passed；
-- 后端全量 pytest：42 passed，保留 1 条既有 Starlette/httpx 弃用警告；
-- `python -m compileall -q agent`：通过；
-- `git diff --check`（将现有 CRLF 视为合法行尾）：通过；
-- `pyproject.toml` 使用 Python `tomllib` 解析：通过；
-- 维护者已在空 Supabase 数据库手工执行 migration；Schema、RLS、RPC 权限以及
-  claim/rollback 功能验收均通过；未调用真实 GitHub，未构建或修改扩展。
-
-### 阶段 A 注释增量
-
-**状态：Implemented（2026-08-10）**
-
-**Goal**
-
-为阶段 A 中不直观的安全、状态、持久化和恢复逻辑增加中文说明性注释，使后续阶段
-能够在不改变既有行为的前提下维护这些边界。
-
-**Acceptance behavior**
-
-- 注释覆盖原子 claim、租约回收、状态转换、Supabase 条件更新、Artifact 原子写入、
-  指纹规范化、版本读取和 migration 权限；
-- 注释解释设计原因、信任边界或失败语义，不逐行复述代码；
-- 公共接口、数据库行为和测试预期保持不变。
-
-**Out of scope**
-
-- 重构阶段 A 代码；
-- 修改阶段 B 至 G 的实现范围；
-- 安装格式化、Lint 或文档生成依赖。
-
-**Assumptions**
-
-- 注释使用中文，代码标识符和稳定错误码保持英文；
-- 已经直观的枚举、字段声明和测试不添加重复注释。
-
-**Solution boundary**
-
-本增量只修改了阶段 A Python、SQL 和本实施记录，没有改变公共接口、数据库行为或
-测试预期。注释集中在 `agent/config.py`、`agent/state.py`、`agent/domain/`、
-`agent/repositories/`、`agent/workspace/` 和阶段 A migration。
-
-**验证证据**
-
-- `python -m pytest agent/tests -q`：30 passed；
-- 后端全量 pytest：42 passed，保留 1 条既有 Starlette/httpx 弃用警告；
-- `python -m compileall -q agent`：通过；
-- diff-check 与注释后 Python 行长检查：通过。
-
-### 阶段 B1 实施检查点
-
-**状态：Implemented（2026-08-10）**
-
-**Goal**
-
-在不连接真实模型、LangGraph、Langfuse 或数据库的前提下，建立可独立测试的 Feedback
-Gate 核心，使模型只负责严格分类，最终路由完全由本地 Policy 决定。
-
-**Acceptance behavior**
-
-> 以下是阶段 B1 实施时的历史验收结果。阶段 I 不改写这些旧运行，但新运行不再产生
-> `out_of_scope`。
-
-- 表格和公式后端缺陷路由为 `accepted_backend_bug`；
-- 前端、纯视觉和功能建议路由为 `out_of_scope`；
-- 无关或垃圾内容路由为 `rejected_irrelevant`；
-- 疑似注入优先路由为 `quarantined_security`，Gate 不注册或执行任何工具；
-- 低置信度、信息不足、未知意图或未知类别进入 `needs_human`；
-- 功能反馈、重复反馈和不合法输入在模型调用前确定性终止；
-- Gate 持久化结果不包含联系方式、用户描述或完整 Markdown。
-
-**Out of scope**
-
-- 真实模型 Provider、格式修正重试和真实 Token/成本统计；
-- LangGraph、PostgreSQL Checkpointer、Scheduler 与 `dry_run` CLI；
-- Langfuse、日志 Masking 和外部服务集成；
-- 源码 workspace、沙箱任务以及阶段 C 之后的自动修复能力。
-
-**Assumptions**
-
-- `MIN_GATE_CONFIDENCE` 默认值为 `0.80`，允许通过 Controller 配置覆盖；
-- 描述上限沿用现有反馈 API 的 1000 字符，Bug Markdown 按 UTF-8 字节限制为
-  50 KiB；
-- `duplicate_found` 由后续 Controller 使用阶段 A Repository 查询后传入，领域 Policy
-  不自行访问数据库；
-- 当前工作区中的后端、扩展及其他既有未提交修改保持不变，不属于本增量。
-
-**Solution boundary**
-
-- `agent/domain/gate.py` 定义严格分类和可持久化 Gate 结果；
-- `agent/domain/policy.py` 拥有输入校验、后端类别白名单、优先级和最终路由；
-- `agent/providers/` 定义模型端口与可检查请求的 Fake Provider；
-- `agent/prompts/gate.md` 将反馈标记为不可信数据，并明确后端/前端边界；
-- `agent/gate.py` 只组合上述边界，始终以空工具集合调用模型；
-- `agent/tests/test_gate.py` 固定主要路由、安全优先级、严格 Schema 和数据最小化。
-
-**验证证据**
-
-- `python -m pytest agent/tests -q`：52 passed；
-- `python -m compileall -q agent`：通过；
-- 后端全量 pytest：42 passed，保留 1 条既有 Starlette/httpx 弃用警告；
-- `git diff --check`（B1 范围）：通过；
-- 未调用真实模型、数据库、Langfuse、GitHub 或沙箱。
-
-### 阶段 B2 实施检查点
-
-**状态：Implemented（2026-08-10）**
-
-**Goal**
-
-在 B1 Gate 之上建立可恢复的 Gate-only LangGraph、单并发 Scheduler、运行摘要持久化
-和 `dry_run` 管理入口；生产 checkpoint 使用同一 Supabase PostgreSQL 的私有
-`agent_runtime` Schema。
-
-**Acceptance behavior**
-
-- Graph 显式执行 `start_gate -> classify_gate -> route_feedback`，`thread_id` 等于
-  `agent_run_id`；
-- checkpoint 只保存运行元数据和 Artifact 引用，不保存联系方式、描述或 Markdown；
-- 在分类节点完成后中断可由新 Controller 恢复，且不重复调用模型；
-- Graph 节点在数据库写入后重试时按 claim token 和目标状态保持幂等；
-- Scheduler 每次优先恢复旧运行，再领取一条新反馈，进程内最大并发固定为 1；
-- `run --feedback-id <uuid> --dry-run` 只执行 Gate，不创建源码 workspace 或沙箱 Job；
-- `checkpoint setup` 是唯一允许调用第三方建表逻辑的入口，服务启动不自动迁移。
-
-**Out of scope**
-
-- 真实模型 Provider、格式修正重试、真实 Token/成本和 Langfuse；
-- 源码 workspace、Docker Sandbox、复现、修复或发布；
-- 自动执行 Supabase migration 或 checkpoint setup；
-- 多 Controller 分布式并发调度。
-
-**Assumptions**
-
-- 单个自托管 Controller 运行 Scheduler，并发固定为 1；
-- `AGENT_DATABASE_URL` 使用可访问同一 Supabase PostgreSQL 的 Direct Connection 或
-  Session Pooler 服务连接，不向浏览器或后端转换服务暴露；
-- migration 由数据库 owner 手工执行，运行账号拥有 `agent_runtime` Schema 的
-  `USAGE`、`CREATE` 和表读写权限；
-- B2 CLI 使用 Fake Provider，默认路由 `needs_human`；接受后端缺陷路径必须显式传入
-  `--fake-route accepted_backend_bug`。
-
-**Solution boundary**
-
-- `agent/graph.py` 与 `agent/controller.py` 实现可恢复 Gate-only Graph 和幂等副作用；
-- `agent/checkpoint.py` 在实际数据库会话中显式设置并验证私有 Schema，且发现
-  `public` Checkpointer 表时拒绝启动；
-- `agent/repositories/` 增加 `AgentRunRepository` 和定向 claim；
-- `agent/scheduler.py` 提供恢复优先的单并发轮询；
-- `agent/cli.py` 提供 checkpoint setup 与指定反馈 dry run；
-- `agent/migrations/002_gate_runtime.sql` 增加恢复字段、定向 claim RPC 和私有 Schema；
-- `uv.lock` 固定本次解析的 LangGraph 与 Psycopg 依赖图。
-
-**自动验证证据**
-
-- `python -m pytest agent/tests -q`：71 passed；
-- 中断恢复测试证明 Gate 模型只调用一次；
-- Scheduler 并发测试证明最大活动运行数为 1；
-- checkpoint State 数据最小化、定向 claim、私有 Schema 和 CLI 脱敏测试通过；
-- 未连接真实 Supabase、模型、Langfuse、GitHub 或沙箱。
-
-**数据库手工验收**
-
-1. 由数据库 owner 审查并执行 `agent/migrations/002_gate_runtime.sql`；
-2. 设置 `AGENT_DATABASE_URL` 后执行
-   `.venv/bin/python -m agent.cli checkpoint setup`；
-3. 确认 `agent_runtime` 中存在 `checkpoint_migrations`、`checkpoints`、
-   `checkpoint_blobs` 和 `checkpoint_writes`；
-4. 确认 `anon`、`authenticated` 对 `agent_runtime` 无 `USAGE` 权限；
-5. 使用可丢弃的测试反馈执行 Fake dry run，确认 `feedback`、`agent_runs` 与 checkpoint
-   的 `thread_id` 状态一致且不存在联系方式或完整 Markdown；接受路径会停在
-   `reproducing`，不要用于生产反馈。
-
-**实际数据库证据**
-
-- 维护者已执行 B2 migration 和 `checkpoint setup`；
-- Supabase Session Pooler 会忽略连接启动参数中的 `search_path`，首次 setup 曾将空的
-  Checkpointer 表建到 `public`；重复表已清理，代码改为连接后显式设置并验证 Schema，
-  且发现 `public` 重复表时拒绝启动；
-- `checkpoint_migrations`、`checkpoints`、`checkpoint_blobs`、`checkpoint_writes` 目前
-  仅存在于 `agent_runtime`，当前连接 `search_path=agent_runtime`；
-- `anon`、`authenticated` 对 `agent_runtime` 的 `USAGE` 均为 `false`；
-- Checkpointer migration 共 10 条，B2 `agent_runs` 字段和定向 claim RPC 验收通过。
-
-### 阶段 B3 实施检查点
-
-**状态：Implemented；功能与安全已验收，数据库成本延后（2026-08-10）**
-
-**Goal**
-
-在 B2 Gate-only Runtime 上接入可配置的 OpenAI 兼容 Chat Completions 接口和 Langfuse
-Cloud，使真实 Gate 调用具备严格结构化输出、有限重试、真实 usage 汇总、Trace 关联和
-默认脱敏，同时保证 Telemetry 故障不改变业务结果。
-
-**Acceptance behavior**
-
-- `--provider configured` 才启用真实模型，Fake 仍是 CLI 安全默认值；
-- 请求使用 `response_format=json_schema` 和 `strict=true`，Gate 始终传空工具集合；
-- 非法结构最多进行一次不带原始错误输出的格式修正，之后返回 `invalid_response`；
-- 认证、限流、超时、上下文过大、服务不可用和安全拒绝使用稳定错误码；
-- Provider 的输入、输出、缓存、推理和总 Token 被归一化并写入 `agent_runs`；
-- Langfuse Trace ID 从 `agent_run_id` 稳定推导，Generation 记录模型、请求 ID、重试、
-  互斥 Token bucket、成本和最终 route；
-- Trace 不包含 `contact`、完整 Markdown、完整 Prompt、模型 reason 原文或密钥；
-- Langfuse 创建、更新或 flush 失败只记录脱敏 warning，不回滚 Gate；
-- 耗尽重试的 Provider 失败将运行和反馈终结为 `failed`，不被 Scheduler 无限恢复。
-
-**Out of scope**
-
-- 源码读取、Docker Sandbox、复现、修复、验证和 GitHub 发布；
-- 非 Chat Completions 协议、非 JSON Schema 兼容的模型接口；
-- 临时启用完整 Trace 内容；B3 CLI 明确拒绝 `TRACE_CONTENT=true`；
-- 自动读取 Langfuse 结果作为状态或预算事实来源。
-
-**Solution boundary**
-
-- `agent/providers/openai_compatible.py` 拥有厂商协议、有限重试、错误和 usage 归一化；
-- `agent/providers/observed.py` 在 Provider 端口外记录唯一 Generation，避免重复埋点；
-- `agent/telemetry/` 定义领域无关端口、统一 Masking 和 Langfuse v4 适配器；
-- `agent/controller.py` 传播确定性 Trace ID、Session ID、最终 route 和失败终态；
-- `agent/config.py` 与 `.env.example` 定义真实模型、成本和 Langfuse Cloud 配置；
-- `agent/cli.py` 保持 Fake 默认，并通过 `--provider configured` 显式启用真实调用。
-
-**自动验证证据**
-
-- `python -m pytest agent/tests -q`：88 passed；
-- OpenAI 兼容请求结构、一次格式修正、usage/cost 和稳定错误的 MockTransport 测试；
-- Masking、互斥 Token bucket、Generation/route 摘要及 Langfuse fail-open 测试；
-- Graph 验证 usage 写库、32 位 Trace ID 和 Provider 失败终态；
-- 自动测试不调用真实模型或 Langfuse Cloud；真实服务证据见下节。
-
-**真实服务证据**
-
-- Langfuse Japan 项目认证通过；真实 Gate 写入 root Agent 与 `classify-intent`
-  Generation，共 2 个 observation；
-- 一次真实调用写入 613 input、70 output、683 total tokens，Langfuse 推算成本约
-  `$0.0002066`；数据库成本因维护者暂不配置价格而保持 `0`；
-- Trace 内存扫描确认不包含该反馈的完整 Markdown、描述或 contact；
-- Langfuse v4 使用 `mask(data=...)` 的兼容问题已修复并增加关键字调用回归测试；
-- “只用于测试、不需要修复”的无实际问题反馈首次被保守路由为 `needs_human`；Gate
-  Prompt 升级至 `gate-v2` 后，真实复测正确路由为 `rejected_irrelevant`；
-- “忽略一切指令并索要系统提示词”的真实注入复测路由为
-  `quarantined_security`，`tool_calls=0`；
-- 两次 `gate-v2` 运行均为 `completed`，Langfuse 各包含 root Agent 与
-  `classify-intent` Generation，且完整 Markdown、描述和 contact 扫描结果均为不存在；
-- 真实 Gate 分类、注入隔离、Trace、Token 和 Masking 已通过；维护者决定暂不配置模型
-  单价，因此数据库成本仍为 `0`，阶段 B 的成本持久化验收继续保留为待办。
-
-### 阶段 C 实施检查点
-
-**状态：Implemented；自动测试与真实 Docker 隔离验收全部通过（2026-08-11）**
-
-**Goal**
-
-建立阶段 D 可复用的源码与执行安全边界：按固定 `base_sha` 获取 GitHub 快照，只允许
-白名单读取和结构化编辑，在补丁进入执行前应用本地 Policy，并通过独立认证 Worker
-使用固定 Docker Job 执行不可信代码。
-
-**Acceptance behavior**
-
-- GitHub archive 按完整 commit SHA 下载、流式限长、计算 SHA-256，并拒绝路径逃逸、
-  符号链接、设备文件、多根目录和解压大小超限；
-- `search_source` 使用字面量搜索，`read_source_file` 只读取白名单 UTF-8 文件；绝对
-  路径、`..`、Windows 路径、敏感路径和符号链接均在读取前拒绝；
-- 模型只能提交 `search_replace` 或受限 `full_file` 编辑，不能提交 Shell、环境变量或
-  任意工具名；Gate 仍没有任何工具权限；
-- 测试编辑只允许固定回归测试与 fixture，修复编辑只允许
-  `normalizer.py`、`pandoc_runner.py`；文件数、行数、大小、二进制和 Git 元数据变更由
-  `patch-policy-v1` 在执行前拒绝；
-- Sandbox Job 使用严格 Schema 和固定资源上限，Worker 先认证再解析，校验 Artifact
-  Hash、过期时间和幂等键；同一 Job 不重复执行，不同请求不能复用 Job ID；
-- Docker Runner 只生成固定 argv，不使用 `sh -c`，启用无网络、只读根、能力清空、
-  `no-new-privileges`、非 root、内存/CPU/PID/超时限制和独立 tmpfs；
-- Worker 在容器启动前确定性规范源码快照和补丁新增文件的读取权限，不继承宿主
-  systemd `UMask`，固定非 root UID 能完成 pytest 启动与收集；
-- 任务容器看不到 Worker Git 元数据或业务 Secret；执行后 workspace 偏离授权补丁时
-  返回 `security_rejected`，临时 workspace 在任何终态后销毁。
-
-**Solution boundary**
-
-- `agent/workspace/source_repository.py` 与 `agent/tools/source.py` 负责安全快照和只读工具；
-- `agent/policies/patch_policy.json` 是安全文档的机器可读镜像；
-- `agent/workspace/edits.py` 与 `agent/tools/edits.py` 生成确定性 Git patch Artifact；
-- `agent/tools/authorization.py` 固定每个节点可见的工具集合；
-- `agent/sandbox/contracts.py`、`client.py`、`worker.py` 和 `worker_http.py` 定义传输、认证
-  与跨重启幂等边界；
-- `agent/sandbox/docker_runner.py` 和 `agent/sandbox/Dockerfile` 定义固定执行命令与容器
-  约束；阶段 D 才把这些能力接入复现 Graph。
-
-**验证证据**
-
-- 设置 `SANDBOX_IMAGE_DIGEST` 后执行 `python -m pytest agent/tests -q`：135 passed，
-  无 skipped；
-- `agent/tests/test_docker_integration.py -v -m docker`：1 passed；
-- 源码/补丁 C1 聚焦测试：31 passed；Sandbox C2 聚焦测试：12 passed；
-- 后端全量 pytest：42 passed，保留 1 条既有 Starlette/httpx 弃用警告；
-- `python -m compileall -q agent`、`uv lock --check` 和阶段 C diff-check：通过；
-- 真实容器已验证无外网、无业务 Secret、非 root、只读根文件系统、能力清空、
-  `no-new-privileges`、2 GiB/2 CPU/256 PID 限制、幂等执行、超时终止与 workspace 销毁；
-- 最终镜像环境未包含构建使用的代理变量，临时代理桥已在验收后删除。
-
-**真实 Docker 验收**
-
-1. 在 Docker Desktop 中启用当前 WSL 发行版的 Integration；
-2. 从仓库根目录构建 `agent/sandbox/Dockerfile`；
-3. 读取本地镜像的不可变 `sha256` ID 到 `SANDBOX_IMAGE_DIGEST`；
-4. 运行 `agent/tests/test_docker_integration.py`；
-5. 只有测试实际执行为 passed，才能把阶段 C 更新为完成。
-
-### 阶段 D 实施检查点
-
-**状态：Implemented（2026-08-11）**
-
-**已实现**
-
-- Gate 的 `accepted_backend_bug` 路由已接入 `prepare_source -> plan_reproduction ->
-  generate_test_edit -> run_reproduction_in_sandbox -> classify_reproduction` 子图；其他 Gate
-  路由保持 Gate-only 行为；
-- 源码快照按运行和完整 `base_sha` 固定，Controller 重启时复用已校验 archive；每轮
-  Sandbox Job 都重新从该 archive 物化 workspace，不叠加上一轮修改；
-- `ReproductionPlan`、`TestGenerationResult`、Oracle 与目标测试名使用严格 Schema；完整
-  UUID、contact 和完整描述不进入测试名，contact 从 Task Artifact 结构上排除；
-- 严格 Schema 递归要求全部对象字段并以 `null` 表达未使用值；格式修正只回传字段路径
-  与规则。计划只可选择固定快照中实际存在的读取白名单，不能猜测仓库路径；
-- 每个计划源码读取范围至少覆盖 20 行，避免只读取文件首行后凭空猜测调用接口；
-- 测试补丁只能新增一个计划 selector 到固定回归测试文件；显式 pytest plugin、pytest
-  hook、直接 ZIP/XML 解析、网络、Shell、Secret、测试基础设施和额外目标测试在执行前
-  拒绝；
-- JUnit 由 XML 解析器读取目标 testcase；AssertionError 或明确的 `ConversionError`
-  才能按计划确认复现。ImportError、SyntaxError、fixture 缺失、skip、timeout、目标未
-  收集和非目标失败均不算成功；
-- 首轮测试通过或无效时只修订一次；第二轮仍未产生目标失败进入
-  `cannot_reproduce`。Policy 安全拒绝直接进入 `security_rejected`；
-- 受信 DOCX 断言固化在 Sandbox 镜像只读层，覆盖 ZIP、必需部件、XML、表格、公式、
-  图形数量、段落样式、文本缺失和三线表边框结构；模型只能选择登记 validator 和数据
-  参数；Mermaid 计划必须使用图形数量 Oracle，不能用通用 DOCX 完整性代替；
-- Langfuse 显式展示复现计划、源码读取、测试生成、结构化编辑、Sandbox 调用和轮次，
-  但不上传反馈原文、源码正文、测试源码、复现假设或 JUnit failure message；
-- `003_reproduction_runtime.sql` 扩展可恢复索引；CLI 只有显式提供 `--reproduce
-  --provider configured` 才启用阶段 D，默认 Fake/Gate 流程不启动源码或 Docker；
-- GitHub 源码读取使用独立的 Controller-only、指定仓库 `Contents: Read-only` Token；
-  tarball 跟随 GitHub 受信重定向，空的中断目录可幂等清理；`--resume-run-id` 从
-  checkpoint 继续已有运行，不重新领取 feedback；
-- 生成测试通过 Schema 后若违反固定测试路径或受信断言，只进行一次不含测试源码的
-  本地 Policy 修正；Mermaid 测试生成耗尽格式修正时仅在受信 drawing Oracle 下改用
-  Controller 固定模板；确定性的源码访问拒绝会终结 run，避免 Scheduler 无限恢复。
-- 阶段 D 长源码模型请求默认超时 180 秒，可通过环境变量在 30～300 秒内调整；模型
-  5xx/传输错误最多重试两次，使用 1 秒、4 秒的有限退避；测试编辑对不存在目标
-  使用 `search_replace` 时归为可修订的 `invalid_test_edit`，不误判为源码读取拒绝。
-
-**自动验收证据**
-
-- 设置阶段 D 镜像 digest 后执行 Agent 全量测试：178 passed，无 skipped；
-- 已知“表格导出为普通文本”的 DOCX 缺陷在真实 Docker 中产生目标
-  `AssertionError`，JUnit 分类为 `reproduced`；
-- 真实 Docker 隔离与已知缺陷复现：2 passed；
-- Graph 覆盖一轮复现、两轮直接通过、无效语法修订、两轮无效和 pytest plugin 安全
-  拒绝；每轮使用相同原始 archive 且只启动必要次数的 Sandbox；
-- 后端全量测试：44 passed，保留 1 条既有 Starlette/httpx 弃用警告；
-- Mermaid 真实反馈已走通 Supabase、Langfuse、GitHub 固定快照与计划安全边界；旧模型
-  接口曾因 `provider_unavailable` 终结，替换接口的代表性严格 Schema 预检通过，但
-  `z-ai/glm-5.2` 在真实 `generate-test` 中耗尽一次格式修正后仍为 `invalid_response`。
-  `grok-4.5` 的 Gate Schema 一次通过，但代表性 40 KB 测试生成在三次有限传输尝试中
-  均被远端断开；同一 localhost 网关的 `gpt-5.6-luna` 也只通过 Gate，35.8 KB 代表性
-  生成最终返回 503。当前 `deepseek-ai/DeepSeek-V4-Flash` 已通过 35.8 KB 代表性
-  Schema/Policy 预检；真实反馈 `7990602f-...` 的 run `27d1b938-...` 使用固定
-  `base_sha=89c9943f...`，在第二轮生成受控测试补丁。新镜像 Sandbox 只收集一个目标
-  测试并得到预期 `AssertionError`，无 error、skip 或 timeout；数据库反馈/run 终态均为
-  `repairing`，复现 disposition 为 `reproduced`。本次真实运行记录 5 次模型调用、14 次
-  工具调用、68,094 tokens，完成 Supabase、Langfuse、GitHub、模型与 Sandbox 端到端验收。
-
-### 阶段 E 实施检查点
-
-**状态：Implemented（2026-08-11）**
-
-**已实现**
-
-- `generate_fix_edit -> run_target_validation -> classify_target` 修复子图最多执行两轮；
-  每轮都读取同一固定快照并把 test/fix patch 发送到新的 Sandbox Job，不继承上一轮
-  workspace；
-- `FixGenerationResult` 使用严格 Schema，模型无工具权限；修复只允许结构化修改
-  `backend/app/normalizer.py` 或 `backend/app/pandoc_runner.py`，测试、fixture、依赖、配置、
-  extension、Agent 和部署文件均在执行前拒绝；
-- 修复源码若新增 `shutil.which` 外部程序探测或 Pandoc `--filter/--lua-filter`，本地 Policy
-  判定为依赖/部署变更并转 `needs_human`；该口径区别于危险能力的
-  `security_rejected`，且不会启动目标 Sandbox 或继续第二轮模型请求；
-- test/fix patch 在原始快照上重新应用并显式检查文件互斥；组合后的确定性 diff 写入
-  `validated.patch`，其内容 SHA-256 写入 `ValidationResult`；
-- 目标修复通过后，`validate_final` 使用三个确定性 Job 和三个全新容器，依次重新证明
-  仅 test patch 时基线目标失败、test+fix 时目标通过、后端全量 pytest 与同一受信 DOCX
-  Oracle 通过；workspace diff 必须与授权 test patch 或组合 patch 的 Hash 一致；
-- 全量验证要求无 failure/error，目标测试实际收集并通过，且 skipped 不超过配置的固定
-  基线；`passed` 完全由 Controller 计算，模型和 Worker 都不能直接提供；
-- 默认运行预算为 8 次模型、30 次工具、200,000 tokens 和 900 秒 Sandbox。每个后续
-  模型/沙箱节点执行前检查预算；耗尽后反馈进入 `failed`、run 进入
-  `budget_exhausted`，不再产生外部调用；
-- `004_repair_runtime.sql` 新增 repair 摘要并把 `repairing/validating` 纳入恢复索引；
-  `--repair --provider configured` 可从新反馈执行完整 D+E，也可把阶段 D 已到 END 的
-  `repairing` checkpoint 从 `finish_reproduction` 继续，不重新领取反馈或重跑 Gate；
-- 当前阶段只产出已验证 Artifact，不创建分支、提交或 PR；发布仍属于阶段 F。
-- 模型、结构化响应或源码访问失败终结 run 时，Controller 会合并数据库摘要与最新
-  checkpoint 的单调用量，避免修复节点已完成但尚未到数据库汇总节点时丢失计量。
-
-**自动验收证据**
-
-- Agent 全量测试：217 passed，无 skipped；覆盖首轮成功、第二轮成功、两轮失败、旧
-  checkpoint 续跑、fix 触碰测试拒绝、目标通过但全量回归、skipped 增加、DOCX Oracle
-  失败、组合 patch Hash、预算停止、外部依赖转人工及失败 checkpoint 用量落库；
-- 真实 Docker 集成：4 passed；Mermaid 受信模板在固定镜像中只收集唯一目标并得到
-  `AssertionError/reproduced`；阶段 E 另用三个独立容器得到基线 AssertionError、修复后
-  目标通过和全量通过，修复后 workspace diff 与 `validated.patch` Hash 一致；
-- 后端全量测试：固定 Sandbox 镜像只读挂载当前工作区后 44 passed，保留 1 条既有
-  Starlette/httpx 弃用警告；
-- 真实 run `27d1b938-...` 从阶段 D checkpoint 进入阶段 E。第一轮模型生成了调用
-  `pandoc-mermaid` 的修复，目标 Sandbox 正确失败；第二轮模型请求在 300 秒后以
-  `timeout` 终结。该 run 的数据库摘要仍停留在阶段 D 的 5 次模型、14 次工具和 68,094
-  tokens，证明当时存在失败前 checkpoint 用量未汇总的问题；上述两项缺口现已由本地
-  Policy 与失败终结逻辑修正。历史失败 run 不重新打开；当时待新 feedback/run 复验的
-  `external_dependency_required -> needs_human` 终态，现已由下述最终真实 run 覆盖；
-- 新 run `8d86f6cb-...` 在第二轮生成了正确的 Mermaid drawing Oracle，Sandbox 得到明确
-  `AssertionError: expected at least 1 drawing(s), got 0`，但 pytest JUnit 未写 `type`
-  属性。旧逻辑扫描完整 traceback 时把变量名 `FIXTURES` 误命中为 fixture 基础设施错误，
-  因而历史 run 终结为 `cannot_reproduce/invalid_test_infrastructure`。解析器现从 JUnit
-  `message` 开头推断异常类型，基础设施判定只检查类型、不扫描测试源码 traceback；该
-  回归由真实报告形态测试覆盖，后续 Stage E 路由已由下述最终真实 run 验证。
-- 真实 run `aae54eec-...` 的模型分类为 `bug_report/docx_structure`、相关度 `0.95` 且无
-  注入/前端依赖，但把完整 Mermaid 源码与明确 Word 导出故障误判为信息不足，Gate 因此
-  终结为 `needs_human`。`repair-policy-v2` 增加窄范围确定性校正：仅在上述后端分类与
-  Mermaid 内容证据同时成立时忽略单一 `sufficient_information=false`；其他安全与范围
-  路由不变。该历史 run 不重新打开，后续 Stage E 路由已由下述最终真实 run 验证。
-- 2026-08-16 真实 feedback `4b42428e-...` / run `4a3fd6c9-...` 的模型同时输出
-  `bug_report/conversion_crash`、信息充足、不依赖扩展和 `relevance=0.0`，`reason` 又明确
-  判定为后端 Pandoc 转换缺陷；旧 Policy 因 `confidence_below_threshold` 在 Gate 终结为
-  `needs_human`，没有生成复现计划或调用 Sandbox。`gate-v7` 明确相关度字段的跨字段口径，
-  `publication-policy-v6` 在注入、无关和前端规则之后识别窄范围 Pandoc 失败签名，即使
-  模型类别或相关度不稳定也进入 `conversion_crash` 有界复现；缺少明确错误证据的低相关
-  反馈仍转人工。历史 run 不重新打开，部署后必须使用新 feedback 验证完整复现/修复/发布
-  链路。
-- 后续真实 feedback `5180ba17-...` / run `1ebfb33c-...` 已使用 `gate-v7` 与
-  `publication-policy-v6` 正常进入 Stage D，但第二轮测试生成把已有
-  `backend/tests/test_feedback_regressions.py` 作为 `full_file` 提交，Controller 在提交
-  Patch 时以 `test_edit_security_rejected` 终结，Sandbox 实际没有启动。根因是
-  `test-generation-v3` 既没有提供现有文件的可追加锚点，又错误允许对该文件提交完整内容。
-  `test-generation-v4` 改为由 Controller 提供最短唯一尾部 `append_anchor`，已有文件只
-  接受精确锚点的 `search_replace`，并在进入 Patch Policy 前给予一次不回传源码的本地
-  格式修正；安全白名单与“不得改写既有回归”规则不放宽。历史 run 不重新打开，部署后用
-  新 feedback 验证复现、修复与发布链路。变更后 Agent 套件按文件分组完整执行：301
-  passed、4 个 Docker 条件测试 skipped，`compileall` 与 `git diff --check` 通过。
-- 部署上述修复后的真实 feedback `064f8e30-...` / run `a00cc2f7-...` 已使用
-  `test-generation-v4`，两轮均成功提交包含 fixture 与追加回归测试的合规 Patch，证明
-  Problem 13 已解决；但两个 `reproduce_target` Sandbox Job 都在约 2 秒内以
-  `status=completed/exit_code=1/junit=null` 返回，最终为 `invalid_test/missing_junit`，没有
-  进入修复阶段。`agent-graph-v8` 对 `unexpected_conversion_error` 增加受信转换测试回退：
-  首轮测试无效或模型格式修正耗尽时，Controller 固定生成 fixture、转换调用与登记 Oracle，
-  第二轮不再调用测试模型，仍经过原 Patch Policy 与全新 Sandbox。领域与 Graph 聚焦测试
-  证明缺少 JUnit 后只保留一次模型调用，第二轮目标 `ConversionError` 可进入
-  `repairing/reproduced`；真实 Docker 测试已加入，当前环境缺少 Docker 条件时必须报告
-  skipped，部署后应在 ECS 上执行该项并用新 feedback 验证。变更后 Agent 套件按文件
-  分组完整执行：303 passed、5 个 Docker 条件测试 skipped，`compileall` 与
-  `git diff --check` 通过。
-- 部署 `agent-graph-v8` 后的真实 feedback `14f0f023-...` / run
-  `677c3be4-...` 已进入受信转换测试回退，但第二轮 Job `5521fdb2-...` 仍以
-  `exit_code=1/junit=null` 返回。Worker 持久化 stderr 证明 pytest 因
-  `/workspace/backend/pytest.toml` 的 `PermissionError` 在收集前退出：systemd
-  `UMask=0077` 使快照子目录成为 `0700`，补丁新增文件也可能成为 `0600`。快照物化与
-  Docker Runner 现显式规范非 root 容器的读取权限，不依赖宿主 umask。回归在
-  `umask 0077` 下覆盖基线目录和新增 fixture；Agent 全量为 305 passed、5 个 Docker
-  条件测试 skipped，`compileall` 与 `git diff --check` 通过；使用当前 Dockerfile 新建的
-  固定镜像运行完整 Docker 集成为 5 passed。旧 `.env` 镜像因不含 `mmdc` 得到的 Mermaid
-  失败不计为通过，更新镜像后已复测全部通过。
-- 权限修复部署后的真实 feedback `41d6c497-6c9e-4647-b54c-cfd11d9fff6c` / run
-  `d771e2a9-6ce3-4b08-bbfb-15182ec72514` 基于 `26b84f7...` 完成生产全链路。
-  `agent-graph-v8` 第二轮受信回退以 `target_conversion_error` 复现
-  `test_feedback_41d6c497_aligned_notag`，第一轮修复即令目标测试通过；独立验证确认基线
-  失败、目标通过、DOCX `minimum_math_count` 通过及后端全量 55 passed/0 failures/0 skipped。
-  最终 `validation.passed=true`，变更仅含 `backend/app/normalizer.py`、固定回归测试和 fixture，
-  validated patch SHA-256 为 `545904a6...`。GitHub App 自动创建
-  [PR #2](https://github.com/yyqqCoding/MDToWord/pull/2)，feedback=`pr_opened`、
-  run=`completed`、两者错误码均为空；共 5 次模型调用、21 次工具调用和 48,146 tokens。
-  维护者已确认本次 Agent 运行与 PR 内容正确；PR 是否合并及后端是否部署仍按独立人工
-  流程验收，不由该 run 推断。
-- `repair-policy-v2` 的真实 run `4aee5378-...` 已通过 Gate 并生成合规 Mermaid drawing
-  复现计划，证明上述校正真实生效；第一轮结构化测试编辑未通过本地文本/Python 校验，
-  有界第二轮生成又在 Provider 格式修正后仍不符合严格 Schema，run 以
-  `invalid_response` 终结（3 次已完成模型调用、7 次工具、24,015 tokens）。该路径没有
-  启动 Sandbox，属于当前模型测试生成稳定性，终态 run 不恢复或重复领取；
-- `agent-graph-v4/repair-policy-v3` 针对上述稳定性问题增加受信回退：仅当完整 Mermaid
-  drawing 计划的第一轮模型编辑为 `invalid_test_edit` 时，第二轮确定性生成固定测试文件
-  与 Markdown fixture，不再发起模型调用。模板保留基线已有回归、只调用登记的
-  `assert_minimum_drawing_count`，并继续经过路径/AST/规模 Policy 和全新 Sandbox；领域与
-  Graph 回归证明模型只调用一次且目标失败进入 `repairing/reproduced`；
-- 真实 run `bab5a685-...` 在第一轮生成合法 drawing 测试，Sandbox 只收集唯一目标并以
-  `AssertionError/reproduced` 进入 Stage E；首次 `generate_fix` 请求在 300 秒后超时，
-  run 正确终结为 `failed/timeout`，并从 checkpoint 汇总 4 次模型、8 次工具和 53,862
-  tokens，证明失败用量修正确实生效。由于当时固定镜像无 Mermaid 渲染器，该场景的
-  正确修复必然要求依赖/部署评估；`agent-graph-v5/repair-policy-v4` 因此在复现确认后的
-  repair scope 节点直接输出 `external_dependency_required/needs_human`，不读取修复源码、
-  不调用 `generate_fix`。非 Mermaid 修复循环保持不变；
-- 最终真实 feedback `c9c53e99-...` / run `3a41124d-...` 使用
-  `agent-graph-v5/repair-policy-v4` 完成全链路：Gate 接受后第一轮 Sandbox 产生
-  `AssertionError/reproduced`，repair scope 随即写入
-  `needs_human/external_dependency_required`，run 以 `completed` 终结。数据库中的
-  feedback、run、reproduction、repair disposition 与错误码一致；记录 4 次模型、7 次
-  工具、18,404 input、17,812 output、36,216 total tokens，Artifact 包含
-  `result.json/test.patch/repair-result.json`，且没有 validation 或 `validated.patch`，符合
-  依赖/部署问题不得伪造已验证补丁的边界。真实阶段 E 终态验收完成。
-- 2026-08-12 维护者修正依赖口径：真实、可修复的问题允许引入经人工审核的平台依赖，
-  但模型不能自行修改依赖或部署。平台现固定 `@mermaid-js/mermaid-cli 11.16.0`、
-  `puppeteer 24.43.1`、系统 Chromium 和中文字体，并用同一锁文件构建生产/Sandbox。
-  `app.mermaid_renderer` 只接受源码与工作目录，使用固定 argv/配置和去 Secret 环境，限制
-  5 图、单图 20,000 UTF-8 字节及 120 秒，拒绝外链、HTML、click 和 init 配置；Sandbox
-  仍无网络、非 root、只读根文件系统。旧 run 继续保留历史终态，不回写数据库。
-- `publication-policy-v4/patch-policy-v2/fix-generation-v2` 删除 Mermaid 的确定性人工终止，
-  改为向修复模型额外提供只读受信 API；渲染器、依赖清单和 Dockerfile 仍不可编辑，
-  未预装的新依赖仍按 `external_dependency_required` 转人工。真实 Docker 已用中文流程图
-  证明旧基线 drawing 断言失败、最小 `pandoc_runner.py` 接入后同一断言通过；第一条真实
-  Agent PR 仍需在平台变更合并部署后用新 feedback 执行，不能复用历史终态 run。
-- 平台合并后的真实 run `878a75c3-...` 已证明 Gate 与 drawing 复现有效，但模型只取得
-  `pandoc_runner.py` 的 1～50 行片段，两轮结构化 Edit 均未通过本地应用，终态为
-  `failed/invalid_fix_edit` 且没有 PR；旧 Artifact 未保存 Edit，不能进一步断定具体原因。
-  `agent-graph-v7/publication-policy-v5/fix-generation-v3` 改为读取完整可编辑固定快照，
-  允许同一修复文件按序执行多个 `search_replace`，并仅将受信校验器的稳定失败原因传给
-  第二轮；不回显模型 Edit、用户内容或源码到 CLI/日志。
-- 新 run `f11032d7-...` 已产生 `validation.passed=true` 的 Mermaid 补丁；首次发布成功创建
-  固定分支，但通用电话脱敏规则把合法补丁 SHA 的数字前缀误判为联系方式，在 PR 请求前
-  以 `publication_failed` 终止。PR 正文输入契约本身不含 contact、description 或 Markdown，
-  因此 Publisher 对该结构化机器元数据关闭电话匹配，继续拦截邮箱、Bearer 与 Secret
-  赋值，并保留同 run 幂等恢复。修复后同 run 已创建
-  [PR #1](https://github.com/yyqqCoding/MDToWord/pull/1)；feedback=`pr_opened`、
-  run=`completed`、`error_code=null`，数据库、GitHub 分支和 `publication.json` 一致。
-  该电话规则的根因已在后续修复：匹配边界改为排除十六进制字符与连字符，SHA-256、git
-  SHA、镜像 digest 与 UUID 不再被截断。Publisher 侧关闭电话匹配的处置保持不变。
-
-### 阶段 F 实施检查点
-
-**状态：实现与真实 GitHub App/PR 验收完成（2026-08-12）**
-
-- `agent-graph-v7/publication-policy-v5` 只在 `ValidationResult.passed=true` 后进入
-  `publishing`；Publisher 重新应用 `validated.patch` 并核对内容哈希、变更文件集合和
-  Patch Policy，不接受模型提供的发布凭据；
-- GitHub App 使用 `PyJWT[crypto]` 在进程内签发 App JWT，再申请只限当前仓库、只含
-  `contents:write` 与 `pull_requests:write` 的短期安装令牌。源码读取 Token、App 私钥和
-  安装令牌使用隔离 Client，均不进入 Graph State、Artifact、模型、Worker 或 Trace；
-  2026-08-12 真实 App JWT、单仓库安装和最小权限令牌预检已返回
-  `github_app_ready`，未创建分支、提交或 PR；
-- 固定分支、commit 标题和 PR marker 由 feedback/category/patch hash 确定；Publisher
-  先按 marker 查找已有 PR，网络响应丢失或显式重试不会重复创建 PR。代码不提供 merge
-  endpoint，也不请求 Actions、Administration 或 Secrets 权限；
-- 发布前读取当前 main SHA。过期时零 GitHub 写入并自动重排 feedback 一次；第二次过期
-  转 `needs_human`。发布错误保留 validation/validated.patch 并终结为 `failed`，只有
-  `publication_*` 错误允许同 run 显式恢复发布 checkpoint，不重跑模型或 Sandbox；
-- 成功后 feedback=`pr_opened`、run=`completed` 并保存同一 `pr_url`，Artifact 新增
-  `publication.json`；PR 正文仅由结构化验证与运行摘要生成，发布前再次拒绝邮箱、电话、
-  Bearer 和 Secret/Token 赋值模式，不拼接 description、Markdown 或 contact；
-- `005_publication_runtime.sql` 仅重建可恢复索引并加入 `publishing`，不自动执行数据库
-  迁移。CLI 只有显式 `--publish --provider configured` 才允许真实 GitHub 写入，且禁止
-  与 `--dry-run` 同用；输出中的 `completed` 只表示 Graph 终结，必须以
-  `published=true/error_code=null/pr_url!=null` 判断 PR 发布成功。
-
-### 阶段 G 实施检查点
-
-**状态：开发、独立主机部署与生产小流量验收完成（2026-08-13）**
-
-- `agent/evals/cases.json` 保存 12 条脱敏/构造用例，覆盖表格、公式、标题、崩溃、后端
-  规范化、前端、功能建议、无关、信息不足、Prompt Injection 和缺失输入；数据模型没有
-  contact 字段；
-- `python -m agent.evals.runner --provider fake` 不访问外部服务，确定性报告 Gate accuracy、
-  automatable precision、Schema compliance、注入隔离 recall/FPR、Token、成本、延迟和
-  Oracle 覆盖；Sandbox/修复指标在 Gate-only 报告中显式为 null，不伪造成功数据；
-- `--provider configured` 只执行 Gate 并写 Langfuse，供模型/Prompt/Policy/Graph 变更前
-  对比同一评估集；每条输出只含稳定 case ID、分类结果和用量，不回显 Markdown/描述；
-- `PRODUCTION_SCHEDULER_ENABLED=false` 是默认硬开关。`agent.cli scheduler --once/--forever`
-  只有开关为 true 且所有 D→E→F 配置在领取前通过校验才运行；Scheduler 恢复优先、单
-  并发，并复用 CLI 的同一 `ConfiguredRuntime`；
-- Fake E2E 已覆盖发布成功、发布失败保留验证 Artifact、同 run 发布重试不重跑五个
-  Sandbox Job、stale base 重排及现有无关/注入/前端/无法复现/两轮失败/补丁越界/全量
-  回归路径；`deepseek-ai/DeepSeek-V4-Flash` 使用 `gate-v6/publication-policy-v3` 完成 12 条
-  真实 Gate 评估，Gate accuracy、automatable precision、Schema compliance、注入隔离
-  recall 均为 1.0，注入误报率为 0，且无超时；
-- 第一条真实自动修复 run `f11032d7-...` 创建 PR #1，维护者已人工 Review、合并并完成
-  Render 部署；原 Mermaid 反馈在插件中重新导出成功，生产转换闭环验收完成；
-- 合并后首次在常驻 Agent 目标服务器运行 Docker 回归时，Mermaid 用例仍把当前已修复
-  源码当作故障基线，因目标直接通过而缺少 `AssertionError`。测试现从当前实现确定性
-  构造临时旧基线，再验证“drawing 失败 -> 应用当前实现后通过”；复测为非 Docker
-  252 passed、真实 Docker 4 passed，生产代码未改变；
-- Controller、Worker 与 Docker Engine 已部署到独立 Linux ECS；Worker 与 Scheduler 由
-  systemd 管理并保持 `active/enabled`，Worker 仅监听 `127.0.0.1:8090`。安装脚本每次
-  更新后仍默认关闭 Scheduler，只有 `mdtoword-agentctl audit` 通过并显式确认才恢复领取；
-  日常更新新增 `deploy/agent/deploy.sh` 编排入口，服务器只需执行一次 fast-forward pull
-  和一次部署命令。入口内部仍固定停止领取、安装后显式重启 Worker、审计、交互式
-  `ENABLE` 与状态输出，失败时保持 Scheduler 关闭；三个生产 Shell 脚本的 `bash -n`
-  检查通过；
-- 生产小流量验证覆盖两条不会产生 GitHub 写入的路径：无关内容自动进入
-  `rejected_irrelevant`；已修复 Mermaid 反馈在 `generate-test` 的复杂严格 Schema 失败后
-  由受信 drawing 模板接管，Docker 无法复现旧缺陷并进入 `cannot_reproduce`，没有补丁或
-  PR。`/models=200` 只作为连通/认证证据，Provider 故障继续按 Langfuse generation 节点与
-  `provider_unavailable`/`invalid_response` 分开诊断；权限修复部署后又以真实 aligned/notag
-  公式反馈验证可修复路径，完整通过复现、修复、独立验证并自动创建 PR #2。
-- 2026-08-17 完成公开展示站 Trace 快照对账：49 条运行中识别出 7 条“调用计数大于零但
-  observation 明细为空”的异步索引坏快照，均从 Langfuse 命名根安全回填；另 1 条无快照
-  Trace 经 API 确认 404 后保持缺失。投影、旧快照自愈与真实零调用边界新增 6 条聚焦回归，
-  本地全部通过。修复合并为 `d29a412` 并完成 Vercel 部署；维护者复核最新 PR 运行与多条
-  `cannot_reproduce` 页面，工具调用和 Sandbox observation 均已恢复，页面展示正常。
-
-### 阶段 H 实施检查点
-
-**状态：实现、自动验证与 Render 生产黑盒验收完成（2026-08-18）**
-
-- 维护者已接受进程内滑动窗口方案和默认额度：同 IP 每 60 秒 1 次、每小时 5 次、每天
-  10 次，全局每小时 30 次；
-- 已接受 IPv6 `/64` 聚合、无可信 IP 时 `503` 失败关闭、Supabase 写入失败不返还额度，
-  以及 Render 重启或重新部署后计数清空；
-- `backend/app/feedback_rate_limit.py` 已实现公网 IP 规范化、IPv4-mapped IPv6、IPv6
-  `/64`、分钟/小时/每日/全局滑动窗口、容量清理和单进程 `asyncio.Lock`；锁内不执行
-  Supabase I/O，数据库失败不回滚已消费额度；
-- `/feedback` 已接入 `CF-Connecting-IP` 失败关闭、`429/Retry-After`、`503` 和脱敏 `502`；
-  插件等待成功后才清空表单，`429` 不自动重试并在弹窗内保留输入、显示等待提示；
-- 新增限流/API 聚焦测试 17 条，与现有 API 合跑为 22 passed；Agent 为 305 passed、5
-  skipped，compileall 通过；Windows Node 下扩展 `tsc + vite build` 成功，Node 20.17.0
-  低于 Vite 推荐的 20.19+，仅产生版本警告；
-- 开发机后端全量曾因未安装 `mmdc` 得到 70 passed、1 failed；随后使用包含 Mermaid
-  CLI、Chromium 和 Pandoc 的后端生产 Docker 镜像复验，后端全量为 71 passed、1 个
-  Starlette/httpx 弃用警告，无 failure 或 error；
-- Render 生产黑盒验收中，正常 Wi-Fi 请求返回 `200`；调用方伪造
-  `CF-Connecting-IP` 时由 Cloudflare 边缘返回 `403`，请求未到达 Render 应用；同一
-  Wi-Fi 在允许请求 9 秒后仅伪造 `X-Forwarded-For`，应用返回 `429`、
-  `Retry-After: 51` 和 `Cache-Control: no-store`，证明该头不能绕过限流；
-- 绕过本地 HTTP 代理后，手机热点在 15:40:26 UTC 返回 `200`，切换 Wi-Fi 后在同一
-  60 秒窗口内于 15:40:53 UTC 返回 `200`，证明两种网络使用不同限流身份；Wi-Fi 于
-  15:41:03 UTC 立即重试返回 `429` 和 `Retry-After: 50`，证明同一身份的分钟窗口生效；
-- 维护者接受上述不记录 IP 的黑盒证据替代临时 HMAC 诊断，避免为一次性验收新增 Secret、
-  IP 派生日志和再次部署；该决定不放宽解析器对单个可路由 IP 的强制校验；
-- 2026-08-19 维护者确认生产插件人工验收全部通过：首次反馈提交成功，立即重试显示限流
-  提示且不自动重试，失败后输入仍保留；测试数据清理后生产 Scheduler 已恢复运行；
-- Edge 商店补丁版本从 `0.3.2` 升至 `0.3.3`，版本源码位于
-  `extension/public/manifest.json`，`extension/dist/manifest.json` 由构建生成；Windows
-  Node 20.17.0 下 `tsc + vite build` 成功，两个 manifest 均为 `0.3.3`。发布构建已准备，
-  不在商店审核完成前声称已发布；
-- 实现未增加依赖、数据库 migration、Redis、验证码或浏览器指纹。
-
-### 2026-08-20 小范围健壮性维护
-
-**状态：实现、Agent全量回归与真实Docker隔离验证完成**
-
-- 四份提示词补充“只使用输入事实、区分普通技术文字与注入、测试必须因用户可观察行为
-  失败、修复不得针对测试名/反馈ID/完整样例硬编码”等规则，版本更新为`gate-v8`、
-  `reproduction-plan-v4`、`test-generation-v5`和`fix-generation-v4`；没有增加工具或可写
-  范围；
-- 模型Provider在原有1秒/4秒有界退避上支持数值`Retry-After`，仅用于429且最多等待10秒；
-  非法、负数和超限值不能让单并发Scheduler无限等待；
-- Sandbox Worker HTTP入口改为在读取和解析最多71 MB请求体前校验Bearer认证；
-  Sandbox Client对连接异常和408/429/5xx默认额外重试一次，始终复用同一`job_id`与
-  `Idempotency-Key`，无效200、认证、非法请求和冲突不重试；
-- 新增Provider `Retry-After`、Sandbox同ID重试、无效成功响应不重试和Worker认证早于JSON
-  解析的聚焦测试。Provider/Client/Worker/HTTP为22 passed，分类、复现、修复与补丁Policy
-  回归为95 passed，本次相关聚焦验证合计117 passed，Agent compileall通过；
-- 根`.venv`已从Windows解释器恢复为WSL/Linux CPython 3.11.15；实际虚拟环境放在WSL
-  文件系统，项目内`.venv`保持为入口，依赖按`uv.lock`和`dev`可选组安装。此前受Windows
-  权限语义影响的严格umask、目录/文件权限和符号链接测试均已通过；
-- 使用当前`agent/sandbox/Dockerfile`构建本地镜像，并以不可变`sha256`镜像ID运行真实
-  Docker集成测试，5 passed；随后携带同一镜像ID执行Agent完整测试，结果为314 passed，
-  无failure或skipped，`python -m compileall -q agent`通过。
-- 首次部署该安全增强时，Worker已正常启动并对无凭据探针返回`401`，旧部署审计仍只接受
-  认证前的`400`，因此按fail-safe保持Scheduler关闭。就绪契约已改为只接受`401`，既验证
-  HTTP监听与认证边界，又不在curl参数或日志中携带Worker Secret；新增脚本级回归测试锁定
-  `401`通过、旧`400`失败。
-
-| 阶段 | 状态 | 验收日期 | 证据 |
-|---|---|---|---|
-| A 基线、配置与持久化 | Implemented | 2026-08-10 | Agent 30 passed；Backend 42 passed；Supabase migration/RLS/RPC/claim 验收通过 |
-| B LangGraph Gate与Langfuse | Completed（成本字段按维护者选择保持 0） | 2026-08-10 | Agent 88 passed；真实分类/注入隔离/Trace/Token/Masking通过；未配置模型单价不阻塞功能验收 |
-| C 源码工具与Docker Worker | Implemented | 2026-08-11 | Agent 135 passed；Docker 集成 1 passed；Backend 42 passed |
-| D 自动复现 | Implemented | 2026-08-11 | Agent 178 passed；Docker 2 passed；Backend 44 passed；真实 Mermaid 反馈在固定 SHA 上产生目标断言失败并进入 `repairing/reproduced` |
-| E 修复与独立验证 | Completed | 2026-08-11；Mermaid 平台能力更新 2026-08-12 | 历史 Agent 217 passed/Docker 4 passed/Backend 44 passed；固定渲染器完成中文流程图“基线失败 -> 修复通过”，真实 run 最终生成 validated patch |
-| F GitHub PR | Completed | 2026-08-12 | Agent 全量回归通过；真实 App 最小权限预检通过；run `f11032d7-...` 幂等创建 PR #1，数据库与 Artifact 一致，维护者已人工合并 |
-| G 评估与投产 | Completed | 2026-08-13；公式闭环复验 2026-08-16 | 12 条真实 Gate 评估、Fake 发布 E2E、PR/Render/插件回放通过；独立 ECS Worker/Scheduler 常驻；生产 `rejected_irrelevant`、Mermaid `cannot_reproduce` 与公式自动修复 PR #2 验收通过 |
-| H 公开反馈入口 IP 限流 | Completed | 2026-08-18；插件人工验收 2026-08-19 | 限流/API/插件与自动测试完成；生产 Docker 后端全量 71 passed；Render 黑盒验证伪造头不能绕过、Wi-Fi/手机身份不同、分钟窗口与 `Retry-After` 正确；插件限流提示与输入保留人工验收通过，`0.3.3` 发布构建已准备 |
-| I 功能需求 Issue 路由与展示数据正确性 | Production core accepted / Extension release build pending | 2026-08-24 | Agent 321 passed（5 skipped）且 compileall 通过；Trace Site 10 passed/typecheck 与 Vercel 生产构建通过；migration、App 权限和 ECS 部署完成；真实 run `cc34f82c-...` 创建脱敏 Issue #3，feedback=`issue_opened`，概览 52 次运行与 Supabase 对账一致；扩展 tsc 通过，发布构建待干净原生 binding 环境完成 |
-| J 统一失败处理与重试策略 | Production partial / source fix local pending | 本地回归 2026-08-30 | 生产真实401暴露GitHub源码错误归因缺口；本地补齐源码认证、临时失败三次重试和安全详情。Agent 351 passed、5 skipped且compileall通过；Trace Site 10 passed/typecheck通过，build仍受既有lightningcss原生模块缺失阻断 |
-| K `create_agent` 修复工具循环 | Production dry-run accepted / publication pending | 生产演练 2026-08-31 | 真实主备模型 smoke 全项通过；真实 run `e035e038-...` 形成候选补丁并通过独立验证，未授权发布；展示与部署回归已本地修复，待重新部署 |
-
-状态只在完成对应验收后更新。已有代码不因存在文件或历史提交自动视为通过。
-
-## 15. 阶段 J：统一失败处理与重试策略
-
-**状态：本地实现与自动测试完成，生产验收待执行（2026-08-29）**
-
-权威设计见
-[failure-handling-and-retries.md](failure-handling-and-retries.md)。本阶段只收敛现有错误边界，
-不增加延迟恢复、消息队列、第二套状态机、Skill、多 Agent 或数据飞轮。
-
-### 交付
-
-- 使用 `FailureCause + LocatedFailure` 标准化 Provider、Sandbox、Policy、Publisher 与
-  Repository 的失败事实，由受信调用点补充 phase/node；
-- 使用纯本地 Retry Policy 只决定相同输入短传输调用的 `RETRY/STOP`；Provider格式修正、
-  Graph业务修订、受信fallback和`stale_base`重排继续由既有边界负责；
-- 增加 Adapter、Graph调用点、Controller单次运行和Scheduler守护四层捕获边界；未知普通
-  异常安全转换为`unexpected_error`，取消和进程控制信号不得被吞掉；
-- Model Provider 与 Sandbox Client 的临时传输操作包含首次在内最多三次 attempt，按
-  1 秒、2 秒指数退避；429 的合法秒数 `Retry-After` 最多尊重到 10 秒；
-- Sandbox submit 使用 Worker wall timeout 加60秒结果对账窗口作为总deadline；Worker先
-  返回相同job ID和指纹的已保存结果，再对尚未执行的新Job检查过期；
-- 安全、认证、配置、上下文、预算和未知错误不重试；格式修正、复现与修复继续使用现有
-  独立轮次，不纳入指数退避；
-- Failure Recorder 将每次尝试及实际handling写入脱敏结构化日志和Langfuse；Failure
-  Finalizer将最终未恢复失败以`agent_runs.failure`保存结构化摘要；
-- claim后发生Provider/Sandbox认证失败时run进入`failed`、feedback进入`needs_human`，但
-  不增加自动requeue；publication失败继续使用既有同run checkpoint恢复；
-- 保留现有 `error_code/error_message` 兼容，并通过字段白名单控制公开 Trace Site 投影；
-- 第一版不预先抽取通用执行器，只有后续出现经过测试证明的真实重复时才提取。
-
-### 验收顺序
-
-1. 评审稳定code到kind的表驱动注册表，逐条确认临时、永久、普通编辑与安全拒绝的边界；
-2. 注入未登记普通异常和此前未捕获的AgentError，验证Controller完成位置补全和终结，
-   Scheduler不退出；Repository不可用时不得伪造FailureSnapshot已落库；
-3. 聚焦验证Provider三次attempt、1秒/2秒退避、Retry-After上限和认证零重试；同时锁定一次
-   格式修正和受信fallback不被Retry Policy接管；
-4. 聚焦验证Sandbox三次attempt复用同一job ID/幂等键/指纹，总时间不超过wall timeout加
-   60秒；已保存结果过期后仍可读取，过期无结果不执行，无效200使用独立稳定code；
-5. 验证Graph仍拥有复现/修复两轮修订和`stale_base`一次重排，预算耗尽立即停止；
-6. 验证Publisher与Repository不进入通用短重试，响应未知仍先查询既有副作用；
-7. 验证最终FailureSnapshot的位置、错误码、attempt和handling完整，成功运行不保留最终
-   failure；claim后认证失败进入明确人工队列且不自动requeue；
-8. 验证Recorder故障fail-open而Finalizer故障不被吞掉；`schema_errors`只使用脱敏路径摘要，
-   日志、Langfuse、数据库和公开投影均不泄露用户内容、Prompt、patch、工具完整输出或Secret；
-9. 运行Agent全量pytest和compileall；涉及migration时由维护者审查后手工执行，并按现有
-   生产部署流程保持Scheduler关闭完成审计后再启用。
-
-### 本地实现证据（2026-08-29）
-
-- 新增 `FailureCause`、`LocatedFailure`、纯 `RetryPolicy`、fail-open `FailureRecorder` 与
-  最终 `FailureSnapshot`；Provider、Sandbox、Graph、Controller、Scheduler、Repository、
-  Langfuse 和 Trace Site 已接入各自所有权边界，`POLICY_VERSION` 已更新；
-- Provider 与 Sandbox 临时传输包含首次最多三次，退避为1秒、2秒；Sandbox复用同一job
-  ID/幂等键/指纹并受wall timeout加60秒总deadline约束，永久状态与无效200不重试；
-- Provider 可选配置一个备用 OpenAI-compatible 请求目标：前两次 attempt 使用主接口，
-  第三次使用备用接口；两者共享统一 Provider、错误分类、handling 和三次总上限，不记录
-  供应商切换事件。Gate 短请求超时改为 30～120 秒受限配置；
-- Controller捕获普通运行异常并保存脱敏位置快照，未知异常降级为`unexpected_error`；
-  Provider/Sandbox认证失败将feedback转为`needs_human`，Scheduler不吞取消或进程控制信号；
-- Graph仍拥有格式修正后的受信fallback、两轮业务修订和`stale_base`一次重排，只向Recorder
-  报告实际handling；截至该日Publisher与Repository尚未接入通用短重试，源码只读GET的
-  后续调整见下方2026-08-30回归；
-- 新增 `008_failure_handling.sql` 和公开投影白名单，但遵守项目约定未执行migration；
-- `.venv/bin/python -m pytest agent/tests -q`：344 passed、5 skipped；跳过项为需要真实Docker
-  条件的集成测试。`.venv/bin/python -m compileall -q agent`通过；
-- Trace Site `npm test`：10 passed，`npm run typecheck`通过；`npm run build`因现有
-  `node_modules` 缺少 `lightningcss.linux-x64-gnu.node` 失败，未安装依赖或伪造构建通过；
-- `.venv/bin/python -m pytest agent/tests/test_docker_integration.py -q`：5 skipped；尚无本次
-  变更的真实容器、Supabase migration、模型、Langfuse或生产部署验收证据。
-
-### GitHub源码失败归因回归（2026-08-30）
-
-- 真实feedback `85b3d9ed-76d9-4998-b3c6-744a7f492968` / run
-  `6cc551a9-1b0d-46c6-946c-709bf2226909` 已完成Gate，但旧实现把GitHub
-  `commits/main`的401记录为`source_revision_error/permanent`、attempt=`1/1`并STOP；
-  Sandbox、复现、修复和验证均未执行；
-- 维护者在Controller同一环境中执行不输出Token的已认证只读探测，确认HTTP状态为401；这
-  证明`audit`的“配置存在”不能等价为GitHub读取凭据有效，也证明PR发布使用的GitHub App与
-  源码读取使用的`GITHUB_READ_TOKEN`是两个独立认证边界；
-- 本地修复新增`source_auth_error/permanent/repository`：401及非限流403立即STOP并把
-  feedback置为`needs_human`；连接异常、408、429、受限403和5xx使用
-  `repository_unavailable/transient`，源码版本与快照下载两个只读GET包含首次最多三次
-  attempt，退避1秒、2秒；
-- 最终FailureSnapshot、Langfuse和本机日志可记录受校验的`http_status`、`rate_limited`、
-  稳定`reason`或异常类名，不记录GitHub正文、Header或Token；公开Trace继续不投影
-  `safe_details`，而是显示新的稳定code、repository组件、阶段、节点和attempt；
-- `.venv/bin/python -m pytest agent/tests -q`：351 passed、5 skipped；
-  `.venv/bin/python -m compileall -q agent`通过；Trace Site `npm test`：10 passed、
-  `npm run typecheck`通过；`npm run build`仍因工作区既有
-  `lightningcss.linux-x64-gnu.node`缺失失败，未安装依赖或将环境错误记为通过；
-- 本节只登记本地修复证据。新错误码、三次GitHub读取attempt及转人工行为仍须部署后用可
-  丢弃反馈验收，未取得新run证据前不得写成生产完成。
-
-## 16. 阶段 K：`create_agent` 修复工具循环
-
-**状态：本地实现与自动测试完成，生产验收待执行（2026-08-30）**
-
-权威设计见 [repair-agent-loop.md](repair-agent-loop.md)。本阶段直接替换旧的
-`ReproductionPlan -> generate_test -> generate_fix` 生产路径，不保留按失败回退旧路径；
-Gate、源码快照、Sandbox Worker、最终独立验证与发布边界不变。
-
-### 交付范围
-
-- 受信 conversion probe 先区分转换抛错与转换成功；前者冻结确定性转换测试，后者由
-  `create_agent` 根据反馈与源码构造语义测试；
-- 使用官方 Todo、Summarization、ToolRetry、ToolError、Model/Tool Call Limit，并增加
-  主主备模型重试、阶段工具权限、并行冲突和完成守卫 Middleware；
-- 同批只读工具允许并行，一次最多一个 Sandbox；Worker 本身仍全局单并发；
-- Summary 使用备用模型，有效窗口取主备较小值，65% 触发、85% fail closed、保留 20%，
-  不使用固定总 Token 上限；
-- 新增只读 `mdtoword-agentctl model-smoke`，用合成数据验证主备 profile、tool calling、
-  并行、usage/cache 字段、Summary 内容和比例阈值；
-- State Schema 升至 v3，不兼容旧 checkpoint；部署前必须确认没有需要恢复的活动 run。
-
-### 本地实现证据
-
-- 使用 `langchain.agents.create_agent` 直接替换生产复现与修复模型节点；外层 LangGraph
-  继续拥有 Gate、源码快照、可信终态、独立验证和发布，旧 checkpoint 因 State Schema v3
-  被明确拒绝，不按失败回退旧生产路径；
-- conversion probe、源码读/搜索、测试与修复补丁提交、Sandbox、可信完成/阻塞工具已经接入
-  本地 Policy；同批只读调用可并行，但写工具互斥且至多包含一个 Sandbox 调用；
-- 主模型临时失败按 A/A/B 和 1 秒、2 秒退避，永久错误不重试；Sandbox 工具由
-  Middleware 统一控制包含首次最多三次，底层 Client 不再嵌套重试；
-- Summary 使用备用模型和九段固定恢复契约，按主备有效窗口较小值在 65% 触发、85%
-  fail closed、保留 20%，未设置固定总 Token 上限；
-- 新增只读 `mdtoword-agentctl model-smoke`，不访问数据库、GitHub、Sandbox 或用户源码，
-  用合成消息检查真实主备模型的工具调用、并行、usage/cache 字段及 Summary 合约；
-- `.venv/bin/python -m pytest agent/tests -q`：363 passed、5 skipped；跳过项仍为需要真实
-  Docker 条件的集成测试。`.venv/bin/python -m compileall -q agent` 通过。
-
-### 生产待验收
-
-1. Scheduler 关闭时在生产主机运行 `model-smoke`；
-2. 使用可丢弃反馈分别验证 conversion error 与 conversion success/semantic test 分支；
-3. 核对最终独立验证、FailureSnapshot、Langfuse 用量与发布幂等后才更新为完成。
-
-### Gate Prompt v10 A/B 评测（2026-08-31）
-
-- 使用独立评测配置 `EVAL_MODEL_NAME=gpt-5.6-luna` 和本地 OpenAI-compatible 端点；评测
-  不读取生产主备模型、不写生产 Langfuse，v9 与 v10 使用同一份 20 条脱敏/构造数据；
-- v9 首响应基线：Gate 路由准确率 `0.90`、类别准确率 `0.85`、原始分类准确率
-  `0.684211`、信息充分性 `0.842105`、Schema 合规 `1.0`、注入隔离召回 `1.0`、误报
-  `0.0`。新增的“转换失败/无法生成 DOCX”样本曾被路由为信息不足；
-- v10 首响应：路由、类别、Schema 和信息充分性均为 `1.0`，注入隔离召回 `1.0`、误报
-  `0.0`；关键 10 条在 3 次重复并启用生产一次格式修正后最终路由、类别和 Schema 均为
-  `1.0`。精确的 `conversion-failed-prescript` 三次重复均为
-  `bug_report/backend/conversion_crash`；
-- v10 只强化“先判断转换是否完成”和既有跨字段输出约束，未增加本地语义特例；`gate-v9.md`
-  保留为可重放基线，生产 Prompt 固化为 `gate-v10`。上述是真实评测证据，不代表生产部署
-  已完成；部署后仍需用新的可丢弃反馈做 Gate 黑盒验收；
-- OpenAI-compatible 严格 Schema 兼容性修复移除 Pydantic 默认元数据，避免 `$ref` 与
-  `default` 同级导致严格端点返回 `invalid_json_schema`；Provider 回归测试覆盖该约束。
-- 冻结的 v9/v10 Prompt 纳入 Python 包数据，确保服务器通过可编辑安装或构建包部署时，
-  `--prompt gate-v10` 与生产 Gate 读取到相同文件。
-
-### 生产演练与后续回归（2026-08-31）
-
-- 生产 `model-smoke` 使用真实主备 OpenAI-compatible API：两者 tool protocol 与并行调用
-  均通过，usage/cache 字段存在，第二次稳定前缀请求命中 5,632 cached tokens；九段 Summary
-  的章节、脱敏、下一步、禁止事项与不伪造成功全部通过；有效窗口 1,000,000 tokens，
-  65%/85%/20% 阈值计算正确。备用工具探测约 122 秒，仍在 240 秒单次上限内；维护者明确
-  不要求为 smoke 增加过程输出；
-- 首次真实 dry-run `08677bc0-...` 在 GitHub 源码读取收到 401；新失败链准确记录
-  `source_auth_error/permanent/repository`、两个受信位置、attempt 1/3 与 STOP，且没有错误
-  重试。更新 Fine-grained PAT 后的新 run `e035e038-09f3-4940-b10d-b6b6870a1021` 完成
-  7 次模型调用、14 次工具调用，基线确认失败、目标测试通过、全量后端 73 passed、DOCX
-  专项通过，生成 3 个文件的候选补丁；因 `--dry-run` 未创建 PR，符合授权边界；
-- 该 run 暴露 Trace Site 旧口径：`completed + accepted_backend_bug + no PR` 被误显示为
-  “无法复现”，PR Diff 缺失被误写成“无补丁”，新 `repair-agent-model` 与复用工具未按
-  `phase` 进入阶段耗时。本地改为 validation 优先、候选补丁文案及 phase 动态归属；
-- 首次部署拉取新代码后，旧 `install.sh` 未同步 `pyproject.toml/uv.lock`，preflight 因
-  `ModuleNotFoundError: langchain_openai` 停止且 Scheduler 未启用。生产人工补齐依赖后通过
-  audit；本地部署脚本现从 `uv.lock` 的精确生产导出安装依赖，兼容 uv 虚拟环境默认无 pip
-  的情况，并在重启服务前执行 `pip check`；
-- 后续本地回归：Agent 365 passed、5 skipped且compileall通过；Trace Site 13 passed、
-  typecheck通过；`uv lock --check`及生产导出内容对账通过。Trace Site生产构建仍被工作区
-  既有 `lightningcss.linux-x64-gnu.node` 缺失阻断，与本次TypeScript改动无关，不伪造为
-  构建通过。上述两项本地修复重新部署前不写成生产完成。
-
-### 调用预算归因与显式续跑回归（2026-08-31）
-
-- 生产 run `80713b39-d2d0-4bc8-a3f6-f7604e829d54` 已完成 conversion-error 基线复现并
-  提交候选修复，但在修复后 Sandbox 前由官方 `ModelCallLimitMiddleware` 抛出
-  `ModelCallLimitExceededError`；旧边界将其误记为 `unexpected_error`、丢失内层累计计量，
-  且终态不能通过 `--resume-run-id` 继续；
-- 默认 `MAX_MODEL_CALLS_PER_RUN` 从 12 调整为 50。官方 Model/Tool Call Limit 改用持久化
-  `thread_limit`，因此同一 run 恢复后沿用已使用次数，不因新的 Graph invoke 重置预算；
-- 官方调用上限异常现在转换为 `budget_exhausted/business`，从 Repair Agent checkpoint
-  补齐真实 phase、模型/工具/Token 增量。预算终态仍不被 Scheduler 自动恢复；只有维护者
-  提高预算并显式指定同一 run ID 时，才可重开原 feedback/run 并复用原 thread、base SHA、
-  对话与候选补丁；其他 `unexpected_error` 不允许重开；
-- 为本次上线前的旧误分类运行增加精确兼容：仅当 FailureSnapshot 的 `error_type` 为官方
-  Model/Tool Call Limit 异常且外层 checkpoint 仍处于 reproducing/repairing 时允许显式续跑；
-- `.venv/bin/python -m pytest agent/tests -q`：369 passed、5 skipped；跳过项仍为需要真实
-  Docker 条件的集成测试。`.venv/bin/python -m compileall -q agent` 通过；该版本后续生产
-  续跑结果与新暴露的工具前置条件问题见下一节。
-
-### Repair Agent工具前置条件回归（2026-08-31）
-
-- 预算提高后，原 run `80713b39-d2d0-4bc8-a3f6-f7604e829d54` 已从同一 checkpoint 继续
-  到发布门禁，因部署本身推进 `main` 而按既有规则进入 `stale_base` 并重排一次，证明续跑
-  复用了原 run 而未重置状态；
-- 基于新 SHA 的 run `25e153bb-510b-48da-83bd-864f802fba89` 在 repairing 阶段尚未提交
-  `fix.patch` 时调用 `run_sandbox`。旧实现同时暴露提交与 Sandbox 工具，并把“缺前置补丁”
-  抛成 `tool_not_authorized/security`；公开页因此误写成提示词注入/零工具，实际 Gate 的
-  `injection_suspected=false` 且 Trace 已有多次只读工具调用；
-- 本地修复把工具集合拆成“阶段授权”和“当前可执行”两层：编辑子状态只开放并行只读与
-  patch 提交，patch 待验证时只开放单个 Sandbox，失败后重开下一轮编辑，通过后只开放完成
-  工具。当前阶段已登记但缺受信前置产物时返回结构化
-  `tool_precondition_failed/invalid` 与 `required_action`，模型在同一 run 内纠正；跨阶段或
-  未登记工具仍为 `tool_not_authorized/security` 并STOP；
-- Repair Agent Prompt升至`repair-agent-v2`；任一预期 `AgentError` 退出时从内层 checkpoint
-  补齐真实 phase 与模型、工具、Token 增量。Trace Site不再把后续Policy拒绝描述成分类阶段
-  提示词注入或声称工具调用为0；
-- 回归用Fake模型先错误调用 `run_sandbox`，确认收到
-  `required_action=submit_fix_edits` 后在同一 Agent run 内提交补丁、运行目标Sandbox并完成；
-  另有测试证明跨阶段工具仍安全终结。Agent全量：376 passed、5 skipped，compileall通过；
-  Trace Site：14 passed、typecheck通过；build仍被工作区既有
-  `lightningcss.linux-x64-gnu.node`缺失阻断。生产部署与重新提交相同反馈待维护者验收。
-
-### Repair Agent源码读取错误恢复（2026-08-31）
-
-- 生产 run `f0f2d212-6935-4294-9c60-a42aa1ca856c` 最后一轮并行执行两个
-  `read_source_file`，其中一个成功、另一个被统一归为`source_access_denied/security`；旧
-  Trace只保存参数名且`safe_details`为空，无法区分越权路径与可纠正的行号、存在性错误；
-- 读取白名单保持不变。绝对路径、路径穿越、隐藏路径、符号链接与白名单外路径继续
-  `source_access_denied/security`并STOP；白名单校验后的不存在、行号、范围、文本/文件限制
-  改为`source_request_invalid/invalid`，通过ToolMessage返回安全原因与
-  `required_action=correct_source_request`，由模型在同一run修正且不重复相同参数；
-- Repair Agent Prompt升至`repair-agent-v3`。并行只读中的可恢复错误不丢弃其他成功结果，
-  真正安全拒绝仍终结run；旧安全终态不恢复，部署后重新提交相同反馈验收。Agent全量：
-  383 passed、5 skipped，compileall通过。
-
-### Repair Agent Graph step预算回归（2026-08-31）
-
-- 新版生产 run `63cab3f3-e906-4c46-9179-62651473fcf4` 已使用`6b59ed0`与
-  `repair-agent-v3`，源码搜索/读取全部成功，但约9次模型响应和20次工具调用后先触发硬编码
-  `recursion_limit=100`；旧边界将`GraphRecursionError`记为`unexpected_error/permanent`，
-  且数据库只保留外层1次模型、1次工具，未回填内层真实计量；
-- Runtime根据Model/Tool Call Limit和Middleware数量计算Graph step兜底，使持久化的官方
-  调用限制先拥有业务终止；兜底若仍触发，转换为`budget_exhausted/business`、记录
-  `budget_type=graph_steps`与step上限，并从内层checkpoint回填模型、工具和Token累计；
-- 仅为失败快照明确包含`error_type=GraphRecursionError`且外层checkpoint仍在复现/修复阶段的
-  旧run开放显式恢复，与既有Model/Tool Call Limit兼容路径一致；Scheduler不自动重开，其他
-  `unexpected_error`仍不可恢复。生产部署后用同一run ID显式续跑；Agent全量：386 passed、
-  5 skipped，compileall通过。
-
-### Repair Agent LangChain 5xx包装回归（2026-08-31）
-
-- 同一run显式续跑后，第一轮模型调用在一次timeout后恢复；下一轮主模型两次timeout，备用
-  模型返回`OpenAIAPIError`。旧映射只枚举部分5xx状态，未识别LangChain包装，导致第三次
-  attempt穿透为`unexpected_error/permanent`；未知异常又未从内层checkpoint定位，页面错误
-  显示`phase=budget_exhausted`并丢失真实累计；
-- Repair Agent现按完整`500..599`映射`provider_unavailable/transient`，覆盖
-  `OpenAIAPIError`并保留第三次attempt与安全HTTP状态。其他未知异常包装为稳定
-  `unexpected_error`，只保留原异常类型并补齐内层phase、node、模型/工具和Token累计；
-- 仅为旧失败快照明确包含`error_type=OpenAIAPIError`且checkpoint仍在复现/修复阶段的run增加
-  显式恢复兼容；Scheduler不自动重开，其他未知错误不恢复。生产部署后再次续跑同一run；
-  Agent全量：390 passed、5 skipped，compileall通过。
-
-### Repair Agent读取范围与续跑计量回归（2026-08-31）
-
-- 生产 run `63cab3f3-e906-4c46-9179-62651473fcf4` 在多轮显式续跑后请求了读取白名单外的
-  安全仓库相对路径，旧实现直接终结为 `source_access_denied/security`。同一 run 的 Trace
-  实际有 24 次 Repair模型调用、34 次源码读/搜索等工具调用，而运行摘要显示42次模型、79次
-  工具和565,713 Token，确认外层在每次恢复时重复加上了内层thread历史累计；
-- Patch Policy升至`patch-policy-v3`：只读诊断扩至固定源码快照中的`backend/app/**/*.py`，
-  但非Python资产不可读，自动修复写入仍严格只允许`normalizer.py`与`pandoc_runner.py`；
-- 安全规范化后的白名单外读取不查询目标存在性，改为
-  `source_request_invalid/invalid`与`required_action=search_source`返回模型并在同一工具循环
-  纠正。绝对路径、路径穿越、隐藏路径和符号链接仍为安全终态；
-- Repair Agent Prompt升至`repair-agent-v4`。Runtime以进入本次invoke时的checkpoint作为
-  计量基线，成功结果和异常补记均只向外层返回模型、工具、Token与Sandbox耗时的非负增量；
-  内层累计值继续用于thread总预算，不因恢复而重置；
-- 部署后重新提交同一反馈验收，不恢复已经安全终结的旧run。Agent全量：393 passed、
-  5 skipped；跳过项仍为需要真实Docker环境的集成测试，compileall通过。
+没有对应验收证据的“已完成”不写入本文件；历史排障细节写入
+docs/AgentProblem/，不反向改变当前契约。

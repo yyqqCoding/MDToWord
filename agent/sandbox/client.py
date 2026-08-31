@@ -94,6 +94,8 @@ class HttpSandboxClient:
                 self._record_failure(error, handling=FailureHandling.STOP)
                 raise error
             try:
+                # Client 只负责 HTTP 层的幂等传输重试；模型工具层的 run_sandbox 重试
+                # 由 RecordingToolRetryMiddleware 统一负责，避免两层叠加成九次请求。
                 response = await self._client.post(
                     f"{self._base_url}/v1/jobs",
                     headers={

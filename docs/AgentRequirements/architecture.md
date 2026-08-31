@@ -1,280 +1,188 @@
 # 总体架构
 
-## 1. 系统上下文
+## 1. 组件关系
 
-```text
-Edge 插件
-  -> FastAPI /feedback
-       -> Client IP Resolver + 进程内 Rate Limiter
-       `-> Supabase feedback
-  -> Agent Controller 定时领取
-       |- LangGraph Runtime
-       |- Model Gateway
-       |- Policy Engine
-       |- Source Workspace
-       |- Langfuse/结构化日志
-       |- Sandbox Client --------> Docker Sandbox Worker
-       |- Pull Request Publisher -> GitHub branch + Pull Request
-       `- Issue Publisher --------> GitHub Issue
-                                      `-> 维护者人工处理
-```
+~~~text
+浏览器扩展
+  -> Render Feedback API
+       -> Supabase feedback
+            -> 私有 ECS Scheduler
+                 -> Controller / 外层 LangGraph
+                    |- Gate（无工具）
+                    |- 固定源码快照
+                    |- Repair Agent（create_agent + ReAct）
+                    |- 独立验证
+                    |- PR / Issue Publisher
+                    |- PostgreSQL checkpoint
+                    +-- Langfuse / 结构化日志
+                         |
+                         +-- Sandbox Client -> 私有 ECS Worker -> Docker 容器
+~~~
 
-GitHub 负责源码、分支、PR 和人工协作，不负责调度、执行、沙箱或 Agent 密钥。
-Agent Controller 是常驻自托管服务；Sandbox Worker 是执行不可信代码的隔离边界。
+Render 只承载公开转换和反馈接口。Controller、Worker、Docker Socket 和 Agent Secret 位于
+独立私有主机；Worker 只监听 127.0.0.1:8090，任务容器看不到 Controller 的凭据。
 
-截至阶段 G 完成，已实现 Supabase 领取、Gate、最多两轮自动复现与修复、独立验证、模型
-Provider、运行持久化、Langfuse Trace、Source Workspace、受控结构化编辑和独立 Docker
-Sandbox Worker。CLI 默认仍只执行 Gate；维护者显式使用 `--reproduce` 执行到复现，使用
-`--repair` 执行完整 D+E，使用 `--publish` 才允许 GitHub App 执行完整 D+E+F。
-生产 Scheduler 另受默认关闭的投产开关保护；系统始终不自动合并或部署。
+GitHub 负责源码、分支和人工协作，不负责调度或执行。Supabase 是业务状态事实来源；
+LangGraph checkpoint 负责工具循环的断点恢复；Artifact 保存大对象；Langfuse 是脱敏分析
+副本，不能单独恢复业务运行。
 
-当前 Render 只部署公开转换后端；Agent Controller 与 Sandbox Worker 不作为 Render
-服务部署。生产环境已将 Scheduler 与 Worker 部署到独立私有 Linux ECS，Worker 只监听
-本机端口并使用该主机的 Docker Engine；开发环境仍使用本地 Docker Desktop/WSL。详见
-[deployment-and-operations.md](deployment-and-operations.md)。
-
-## 2. 部署单元
+## 2. 组件职责
 
 ### 2.1 Feedback API
 
-公开 Feedback API 与转换接口部署在同一个 Render FastAPI 服务中，但限流规则只作用于
-`POST /feedback`。它负责：
+- 接收现有反馈字段并做大小、格式和 IP 限流校验；
+- 将通过校验的反馈写入 Supabase；
+- 不调用模型、不执行源码、不访问 Sandbox；
+- 限流为当前单进程滑动窗口，无法取得可信客户端 IP 时失败关闭。
 
-- 从经过生产验证的 Render/Cloudflare 请求元数据解析客户端 IP；
-- 规范化 IPv4、IPv4-mapped IPv6，并将 IPv6 聚合到 `/64` 限流键；
-- 在单进程内按 IP 和全局滑动窗口原子检查并消费额度；
-- 超限时返回 `429`，无法建立可信 IP 时返回 `503`；
-- 只有通过入口校验与限流后才调用 Supabase 写入反馈。
+### 2.2 Scheduler
 
-限流器属于 Feedback API 进程，不进入 Agent Controller、Graph State、Supabase 或
-Langfuse。当前 Render 容器只有一个 Uvicorn worker，因此使用一个应用生命周期内共享的
-限流器；启用多 worker 或多实例前必须先替换为跨进程原子存储，不能继续依赖进程内锁。
+- 优先寻找可恢复的活动运行，再领取新的 pending 反馈；
+- 通过数据库事务、租约、claim token 和单并发锁避免重复处理；
+- 进程重启后使用原 run_id 和 checkpoint 恢复；
+- 不吞掉取消、终止或进程控制信号；普通异常交给 Controller 记录和终结。
 
-### 2.2 Agent Controller
+### 2.3 Controller 与外层 LangGraph
 
-一个 Python 服务，负责：
+Controller 负责装配依赖、读取配置、持久化运行摘要和调用 Graph。外层 Graph 的职责是：
 
-- 轮询并原子领取反馈；
-- 建立 `agent_run` 与完整 Trace 上下文；
-- 执行 LangGraph；
-- 构造脱敏模型上下文并调用 Model Provider；
-- 在每个模型工具请求前执行 Policy；
-- 从 GitHub `main` 取得固定 `base_sha` 源码快照；
-- 从本地发布产物读取可选的插件版本元数据；
-- 向 Sandbox Worker 提交固定 Job；
-- 保存 Artifact、状态、Token 和错误；
-- 验证通过后通过 GitHub App 创建分支和 PR；
-- 为相关且信息充分的功能需求和前端/扩展缺陷创建脱敏 Issue。
+- 执行 Gate 和确定性路由；
+- 固定 base_sha、取得源码快照并建立受信 Artifact；
+- 调用一个 Repair Agent 工具循环完成复现和修复；
+- 执行不受模型控制的最终验证；
+- 根据路由调用 Issue 或 PR Publisher；
+- 把状态、用量、失败和发布结果写回 Supabase。
 
-Controller 不直接执行模型生成的测试或修改后的源码。GitHub 发布是 Controller 中的
-受信模块，不作为模型工具暴露；PR 只有确定性状态达到 `validated` 才能调用，Issue 只有
-确定性路由达到 `issue_required` 且脱敏发布契约通过后才能调用。
-源码读取使用 Controller-only、指定仓库 `Contents: Read-only` 的凭据；该凭据与
-发布用 GitHub App 分离，也不得进入 Graph State、模型上下文、Worker 或任务容器。
+Graph 只编排，不是安全边界。工具、路径、补丁、状态和发布条件由领域 Policy 与受信
+服务再次校验。
 
-### 2.3 Docker Sandbox Worker
+### 2.4 Repair Agent
 
-一个独立 Linux Worker，负责接收经过认证的结构化 Job、创建临时 Docker 容器、
-执行固定命令、收集受限输出并销毁工作区。Worker 和任务容器都不持有模型、
-Supabase、GitHub 或 Langfuse 凭证。
+Repair Agent 是内层 LangGraph 驱动的 create_agent。模型可以在复现和修复阶段循环调用
+已注册工具，但不能直接访问文件系统、Shell、网络、GitHub、数据库或凭据。工具返回结果
+作为 Observation 回到同一线程，直到调用完成/阻塞工具或触发受信停止条件。
 
-具体隔离规则见 [security-and-sandbox.md](security-and-sandbox.md)。
+### 2.5 Sandbox Worker
 
-### 2.4 外部依赖
+Worker 接收认证的固定 Job，并在一次性 Docker 容器中执行固定命令。容器无网络、非 root、
+只读根文件系统、清空 Linux capability、有限 CPU/内存/进程数和明确超时；执行后销毁临时
+工作区。Worker 不解析模型自然语言，也不接受命令字符串。
 
-| 依赖 | 用途 | 适配边界 |
+### 2.6 外部适配器
+
+| 依赖 | 作用 | 受信边界 |
 |---|---|---|
-| Supabase/PostgreSQL | 反馈、运行状态、领取与幂等 | `FeedbackRepository` |
-| 模型 API | 门禁、复现规划、测试与修复生成 | `ModelProvider` |
-| Langfuse | Agent/LLM Trace、用量与评估 | `Telemetry` |
-| GitHub | 读取源码、创建 PR 或脱敏 Issue | `SourceRepository` / `PullRequestPublisher` / `IssuePublisher` |
-| Docker Worker | 不可信代码执行 | `SandboxClient` |
-| Mermaid CLI + Chromium | 在本地把受限 Mermaid 源码渲染为 PNG | `app.mermaid_renderer` |
+| Supabase/PostgreSQL | 反馈、运行、claim、终态和幂等 | Repository |
+| OpenAI-compatible API | Gate、ReAct 模型和 Summary | Provider / ChatModel |
+| Langfuse | 脱敏模型、工具和阶段观测 | Telemetry |
+| GitHub | 源码读取、PR 和 Issue | SourceRepository / Publisher |
+| Docker Worker | 测试、修复和验证执行 | SandboxClient |
+| Mermaid CLI + Chromium | 已审核的后端渲染能力 | 受信平台模块 |
 
-领域状态、Policy 和验证器不依赖这些供应商的 SDK 类型。
-Mermaid 运行时由维护者固定版本，并同时构建进生产与 Sandbox 镜像；它不是模型工具，
-也不允许模型传入命令、浏览器参数、配置文件或环境变量。
+## 3. 两层控制流
 
-## 3. 依赖方向
+外层 Graph 决定“任务处于哪个业务阶段”；内层 ReAct 决定“当前阶段下一步调用哪个已授权
+工具”。两者不能互相越权：
 
-```text
-LangGraph nodes
-  -> application services
-       -> domain policy / schemas / validators
-       -> ports (repository, model, sandbox, telemetry, publisher)
-            -> external adapters
-```
+~~~text
+外层：Gate -> snapshot -> repair_agent -> validate -> publish
+内层：read/search -> submit patch -> run_sandbox -> read/search -> ...
+~~~
 
-LangGraph 只承担编排。分类规则、路径白名单、验证判定和状态转换必须能在不启动
-LangGraph 的单元测试中独立验证。
+外层固定的验证、发布和状态节点不会因为模型文本而跳过。内层模型的完成声明只有在
+完成工具检查到受信结果后才生效。
 
-## 4. 主流程
+## 4. 业务流程
 
-```text
-poll
- -> claim
- -> gate
-    |- reject / quarantine / needs_human / duplicate
-    |- issue_required
-    |    `-> publish_issue -> issue_opened
-    `- accepted_backend_bug
-         -> prepare_source(base_sha)
-         -> reproduce(max 2 rounds)
-         -> repair(max 2 rounds)
-         -> validate(fresh sandbox)
-         -> check_current_main_sha
-         -> publish_pr
-         -> pr_opened
-```
+~~~text
+pending
+  -> claim
+  -> Gate
+      |- rejected_irrelevant / quarantined_security / needs_human
+      |- issue_required -> 脱敏 Issue -> issue_opened
+      +-- accepted_backend_bug
+           -> prepare_source
+           -> conversion_probe
+           -> repair_agent
+                |- cannot_reproduce / needs_human
+                +-- candidate_fix
+           -> validate_final
+                |- failed / budget_exhausted
+                +-- passed
+           -> publish_pull_request
+           -> pr_opened
+~~~
 
-运行模式是自动模式：门禁通过后不等待人工批准。任何安全拒绝、无法复现、预算耗尽
-或验证失败都会在创建 PR 前终止。
+conversion probe 把后端问题分成两类：
 
-## 5. 状态机
+- 当前转换抛错：Controller 生成固定转换测试，Agent 直接定位和修复；
+- 当前转换成功：Agent 必须根据反馈设计语义测试，并先证明基线失败。
+
+语义不稳定、无法复现或超出受信能力时，系统终止自动修复，不猜测用户意图。
+
+## 5. 状态与数据所有权
 
 ### 5.1 Feedback 状态
 
-```text
+~~~text
 pending -> claimed -> gating
   |- rejected_irrelevant
   |- quarantined_security
   |- needs_human
-  |- duplicate
-  |- publishing_issue -> issue_opened
-  |                   `- failed
-  `- reproducing -> repairing -> validating
+  |- issue_opened
+  +-- reproducing -> repairing -> validating
        |- cannot_reproduce
-       |- security_rejected
        |- failed
-       `- validated -> publishing -> pr_opened
+       |- budget_exhausted
+       +-- pr_opened
+~~~
 
-validated | publishing -> stale_base -> pending（只允许一次）
-                                      `- needs_human（重排次数耗尽）
-```
+发布前发现 main 已变化时进入 stale_base，最多重新排队一次；第二次转人工，不自动
+rebase 旧补丁。
 
-`out_of_scope` 是历史兼容终态，新运行不再进入；migration 不改写已有记录。
+### 5.2 事实来源
 
-### 5.2 Agent Run 状态
+| 数据 | 权威来源 | 作用 |
+|---|---|---|
+| Feedback 路由和终态 | Supabase | 用户任务的业务状态 |
+| 外层状态和运行汇总 | Supabase agent_runs | 页面、调度和最终结果 |
+| 内层消息与工具状态 | 私有 PostgreSQL checkpoint | 同一 ReAct 线程恢复 |
+| 补丁、JUnit、验证结果 | Controller Artifact | 大对象和发布凭据 |
+| 模型/工具耗时和用量 | Langfuse + agent_runs | 观测和成本分析 |
 
-```text
-created -> gating
-  |- completed（非修复终态）
-  |- publishing_issue -> completed
-  |                   `- failed
-  `- preparing_source -> reproducing -> repairing -> validating
-       -> publishing -> completed
+模型消息、Summary 和 Langfuse 都不能覆盖 Supabase 中的路由、状态、验证和发布结论。
 
-publishing -> stale_base
+### 5.3 运行状态核心字段
 
-任意活动状态可转为:
-failed | cancelled | budget_exhausted | security_rejected
-```
+~~~text
+run_id, feedback_id, claim_token, trace_id
+status, route, area, category, risk
+base_sha, source_snapshot_ref
+test_patch_ref, fix_patch_ref, validation_result_ref
+reproduction_round, repair_round
+model_calls, tool_calls, token usage, sandbox_duration_ms
+validated_patch_sha256, pr_url, issue_url
+last_error_code, failure snapshot
+~~~
 
-状态转换的唯一所有者是 Controller。模型只返回建议或结构化编辑，不能直接写状态。
+大文本只通过 Artifact 引用传递；公开页面只读取脱敏投影。
 
-## 6. 数据所有权
+## 6. 一致性与幂等
 
-### 6.1 `feedback`
+- 数据库 claim 使用事务、锁、租约和 token；
+- 内层线程固定为 repair:<run_id>，显式续跑不创建新线程；
+- Sandbox 使用稳定 job_id、请求指纹和幂等键，重复请求返回已保存结果；
+- Artifact 使用临时文件加原子 rename；
+- PR 按 feedback、分支和补丁哈希查重；
+- Issue 按 run reference 和内容指纹 marker 查重；
+- 发布前查询外部副作用状态，不能因为响应丢失而盲目重复写入；
+- validated_patch_sha256 绑定最终发布内容，发布器不接受模型原始编辑。
 
-保留现有用户字段，增加或使用以下 Agent 字段：
+## 7. 关键取舍
 
-```text
-status, category, area, risk, content_fingerprint,
-attempt_count, stale_requeue_count, claimed_at, claim_token,
-last_error_code, last_error_message,
-pr_url, issue_url, resolved_at, updated_at
-```
-
-不增加 `expected_behavior` 和逐条 `source_version`。精确重复使用原始
-`feedback_type + markdown_content + description` 归一化后的 SHA-256 指纹判断。
-
-### 6.2 `agent_runs`
-
-每次尝试独立记录：
-
-```text
-id, feedback_id, claim_token, trace_id, status, route, category, area, dry_run,
-task_artifact_ref, base_sha, extension_version,
-provider, model, graph_version, prompt_versions, policy_version,
-langfuse_trace_id, classification, reproduction, repair, validation,
-model_calls, tool_calls, input_tokens, output_tokens, estimated_cost,
-validated_patch_sha256, artifact_path, pr_url, issue_url,
-error_code, error_message, started_at, finished_at
-```
-
-`extension_version` 从 Controller 可见的 `extension/dist/manifest.json` 读取；该构建
-产物不属于 GitHub `base_sha`，不存在时写 `unknown`。Langfuse 是分析副本；上述
-数据库字段是任务状态与最终汇总的事实来源。
-
-### 6.3 Artifact
-
-MVP 使用 Controller 管理的本地运行目录：
-
-```text
-<artifact_root>/<agent_run_id>/
-  task.redacted.json
-  gate.json
-  reproduction-plan.json
-  test.patch
-  fix.patch
-  validated.patch
-  repair-result.json
-  reproduction-junit.xml
-  validation-junit.xml
-  validation.json
-  publication.json
-  issue-publication.json
-  result.json
-```
-
-目录不包含联系方式，默认保留 14 天。模型只通过受控上下文读取必要摘要，不直接
-访问 Artifact 文件系统。
-
-## 7. GitHub 发布一致性
-
-任务开始时从 GitHub `main` 读取并固定 `base_sha`。所有编辑、沙箱执行和最终补丁
-均基于该 SHA。发布前只做一次简单检查：
-
-```text
-current_main_sha == base_sha -> 创建分支和 PR
-current_main_sha != base_sha -> 本次 run 结束为 stale_base，feedback 重新排队一次
-```
-
-不自动 rebase，不维护复杂分支同步协议。最终发布内容以
-`validated_patch_sha256` 对应的 `validated.patch` 为准。
-同一 feedback 第二次遇到 `stale_base` 时进入 `needs_human`，不得无限重排。
-
-Issue 发布不读取或修改源码，因此不做 `base_sha` 过期检查。它使用
-`run_ref + content_fingerprint` 生成固定 marker；创建前按 marker 查询已有开放或关闭
-Issue，网络响应丢失和同 run 恢复时复用已有结果，不得重复创建。历史 `out_of_scope`
-运行不会因新版本部署而自动补建 Issue。
-
-## 8. 故障与恢复
-
-- Feedback API 限流状态随 Render 进程重启清空，不作为持久业务状态恢复；
-- Feedback API 在无法取得可信客户端 IP 时失败关闭，不绕过限流写入 Supabase；
-- Supabase 写入失败时已消费的反馈额度不回滚，避免失败路径成为无限重试入口；
-- 数据库领取使用原子 claim、租约超时和最大尝试次数；
-- `operation_id = run_id + node + attempt`，所有外部副作用幂等；
-- Controller 重启后从持久化 LangGraph checkpoint 与数据库状态恢复；
-- 维护者可使用已有 `run_id` 显式恢复运行，不重新领取同一 feedback；
-- Sandbox 超时或崩溃只丢弃该临时容器，不复用工作区；
-- Langfuse 不可用不阻断主流程，最终用量仍写入 `agent_runs`；
-- GitHub PR 发布失败保留已验证 Artifact，状态为 `failed`，可由同一运行幂等重试；
-- GitHub Issue 发布失败保留脱敏 Issue draft，使用稳定错误码
-  `issue_publication_failed` 终结，可由同一运行幂等恢复；
-- 同一 `validated_patch_sha256` 和 feedback 不得创建多个打开的 PR。
-- 同一 feedback 与内容指纹不得创建多个 Issue。
-
-## 9. 关键取舍
-
-- 当前小流量公开反馈入口使用进程内滑动窗口，不引入 Redis、数据库限流表、浏览器指纹或
-  每次提交验证码；多进程或多实例是切换共享限流存储的明确触发条件；
-- 使用 LangGraph 而非自研通用 Runtime，因为本系统需要持久化、循环和恢复；
-- 使用显式状态图包住有限 ReAct，不采用拥有任意 Shell 的开放式 Agent；
-- 使用 Docker Worker 而非自研沙箱；
-- 只修后端，避免插件商店审核周期进入自动闭环；
-- 前端/扩展 Bug 与所有功能需求进入同一 Issue 发布边界，避免为“人工处理”保留模糊的
-  `out_of_scope` 新路由；
-- 使用一个模型完成 MVP，先通过 Langfuse 和离线评估获得拆分模型的证据；
-- 保持人工合并，因为 DOCX 结构检查不能完全替代 Word 视觉检查。
+- 小规模个人项目使用单 Scheduler、单 Worker 并发和进程内入口限流；
+- 使用一个主模型加一个备用 OpenAI-compatible API，不按供应商名称分支；
+- 使用有限 ReAct，而不是开放式 Shell Agent；
+- 让模型负责探索和提出候选编辑，让受信代码负责权限、执行、验证和发布；
+- PR 自动创建但不自动合并，保留代码审核和实际 Word 视觉确认；
+- 不预先引入多 Agent、消息队列、Redis、自有沙箱或自动进化训练系统。

@@ -1,151 +1,70 @@
-# Scheduler发现和领取反馈
+# Scheduler、领取与恢复
 
-## 1. Scheduler是什么
+## 1. Scheduler 做什么
 
-Scheduler是私有ECS上持续运行的Python进程，由systemd启动和守护：
+Scheduler 是生产 Agent 的节流器。它每次最多处理一条反馈，先恢复已经领取但未终结的
+run，再领取新的 pending 反馈。它不执行模型以外的额外业务判断，也不绕过 Graph。
 
-```text
-systemd服务：mdtoword-scheduler
-启动命令：python -m agent.cli scheduler --forever
-运行用户：mdtoword-controller
-```
+单并发是有意的：2H2G 主机上的模型、PostgreSQL 和 Sandbox 已经足够繁忙；更重要的是
+避免多个修复同时基于不同 main 生成冲突补丁。
 
-它不是Linux cron。进程启动后一直运行，在循环中执行一次查询，然后等待约5秒再执行
-下一轮。
+## 2. 一次领取
 
-## 2. 每轮先做什么
+领取过程由数据库原子操作完成：
 
-每轮只允许处理一个任务，执行顺序为：
+1. 找到 pending 或租约已过期的反馈；
+2. 写入 claim token、租约和尝试次数；
+3. 创建或恢复 agent_runs；
+4. Scheduler 带着 claim token 启动外层 Graph。
 
-```text
-取得进程内执行锁
-    ↓
-查询是否存在未完成且可以恢复的agent_run
-    ├─ 有：使用原run_id恢复旧运行
-    └─ 没有：尝试领取一条新feedback
-    ↓
-执行这次LangGraph运行
-    ↓
-释放执行锁
-    ↓
-如果运行已结束，通知追踪网站
-    ↓
-等待约5秒
-```
+旧进程即使稍后恢复，也因 token 不匹配不能覆盖新结果。领取失败不应导致进程退出，下一
+轮继续轮询。
 
-优先恢复旧运行可以避免服务器重启后旧任务被新反馈长期挤压。
+## 3. 恢复顺序
 
-## 3. 怎样领取一条反馈
+重启或临时失败后，Scheduler 按下列顺序处理：
 
-Scheduler调用Supabase RPC：
+~~~text
+有可恢复 run？
+  -> 使用原 run_id、claim lease 和 checkpoint
+  -> 没有则领取新的 pending feedback
+~~~
 
-```text
-claim_next_agent_feedback
-```
+Repair Agent 的内层 thread 为 repair:<run_id>。恢复会保留 phase、patch 引用、Sandbox
+结果和累计模型/工具预算，不把恢复误当作新任务。
 
-数据库在一个事务中：
+## 4. 租约和终态
 
-1. 找到最早的一条`pending`反馈，或者领取租约已经过期的`claimed`反馈；
-2. 使用`FOR UPDATE SKIP LOCKED`锁定这一行；
-3. 把状态更新为`claimed`；
-4. 增加`attempt_count`；
-5. 写入`claimed_at`；
-6. 生成新的`claim_token`；
-7. 把领取后的记录返回给Scheduler。
+租约只保护“谁当前可以写入”，不代表任务必然成功。运行进入 completed、failed、
+needs_human、security_rejected、cannot_reproduce、stale_base 或 budget_exhausted 等
+终态后，反馈不再被普通领取 RPC 选中。
 
-`SKIP LOCKED`表示：如果另一个进程已经锁住某条反馈，当前领取操作跳过它，不等待，也
-不会重复领取。
+stale_base 是发布时 main 变化的既有一次性重排：系统重新基于最新 main 验证，超过重排
+次数后转人工。它不属于模型或 Sandbox 的短传输重试。
 
-## 4. claim_token有什么用
+## 5. 启停
 
-`claim_token`证明“当前运行仍然拥有这条反馈”。后续每次更新反馈状态时，都要同时匹配：
+生产更新先停止领取，再更新代码和依赖，审计通过后由维护者显式 enable：
 
-```text
-feedback_id + claim_token
-```
+~~~bash
+sudo mdtoword-agentctl disable
+sudo git -C /opt/mdtoword pull --ff-only origin main
+sudo bash /opt/mdtoword/deploy/agent/deploy.sh
+sudo mdtoword-agentctl audit
+sudo mdtoword-agentctl enable
+~~~
 
-如果旧进程暂停太久、租约到期，而新进程重新领取了反馈，旧进程手里的token已经失效，
-不能继续覆盖新进程的状态。
+enable 要求输入 ENABLE。服务 active 只说明进程存在，不能替代 audit、版本检查、Worker
+认证和真实反馈验收。
 
-`claim_token`只保存在私有数据库和LangGraph State，不写入模型消息、Langfuse或公开网站。
+## 6. 维护者观察
 
-## 5. 租约和最大尝试次数
+看到“反馈被领取但页面没有进展”时，先查看：
 
-默认领取租约为300秒，最大领取次数为3次。
+- agent_runs 的 status、phase、last_error_code、lease；
+- Scheduler 最近日志；
+- repair:<run_id> checkpoint 是否有新的模型/工具消息；
+- Worker 是否监听本机端口并通过认证。
 
-- Agent正常运行时，当前`claim_token`持续用于状态更新；
-- Agent在创建运行前崩溃，租约到期后可以重新领取；
-- 达到最大尝试次数后不再无限自动领取；
-- 已经创建`agent_runs`和checkpoint的任务优先按原`run_id`恢复，不重新创建一套运行。
-
-租约解决的是“领取后进程消失”，checkpoint解决的是“LangGraph执行到一半进程消失”。
-两者作用不同。
-
-## 6. 为什么当前只运行一个任务
-
-Scheduler用`asyncio.Lock`覆盖领取和整次运行，因此单个生产Scheduler同一时间只处理一条
-反馈。这样做符合当前反馈量，也减少以下冲突：
-
-- 多个任务同时占用模型和Docker资源；
-- 多个修复同时基于同一个`main`产生过期基线；
-- 小型ECS发生内存和CPU争用；
-- 排障时多个运行日志交错。
-
-代价是：如果一条任务执行很久，后续反馈需要等待。当前查询延迟通常是0到5秒，但排队
-时间还要加上正在执行任务的剩余时间。
-
-## 7. 服务如何安全启用
-
-生产Scheduler默认关闭。只有配置检查和只读审计通过，并显式设置：
-
-```text
-PRODUCTION_SCHEDULER_ENABLED=true
-```
-
-才允许领取反馈。标准部署先停止Scheduler、更新代码并重启Worker，再要求维护者输入
-`ENABLE`恢复领取。不能把systemd显示`active`当作新代码已经加载。
-
-对应实现：
-
-- [agent/scheduler.py](../../agent/scheduler.py)
-- [Supabase Repository](../../agent/repositories/supabase.py)
-- [领取函数Migration](../../agent/migrations/001_agent_foundation.sql)
-- [Scheduler systemd服务](../../deploy/agent/systemd/mdtoword-scheduler.service)
-
-## 8. 结合源码看领取顺序
-
-[agent/scheduler.py](../../agent/scheduler.py)的`_claim_and_run()`把“先恢复、再领取、单并发”
-写成了明确顺序：
-
-```python
-async with self._run_lock:
-    resumable = await self._run_repository.find_resumable()
-    if resumable is not None:
-        return await self._controller.resume(resumable.id)
-
-    claimed = await self._feedback_repository.claim_next(
-        now=datetime.now(UTC),
-        lease_seconds=self._lease_seconds,
-        max_attempts=self._max_attempts,
-    )
-    if claimed is None:
-        return None
-    return await self._controller.start(claimed)
-```
-
-常驻轮询也不是Linux cron，而是同一服务里的循环：
-
-```python
-while not stop_event.is_set():
-    await self.run_once()
-    try:
-        await asyncio.wait_for(
-            stop_event.wait(),
-            timeout=self._poll_interval_seconds,
-        )
-    except TimeoutError:
-        continue
-```
-
-真正的并发领取由[001_agent_foundation.sql](../../agent/migrations/001_agent_foundation.sql)中的
-数据库函数完成；Python锁只保证当前Scheduler单并发，不能代替数据库行锁。
+不要直接修改数据库状态来“解锁”任务。先判断是租约过期、可恢复错误、永久错误还是
+真正的代码故障，再使用原 run ID 恢复。

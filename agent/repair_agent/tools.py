@@ -139,6 +139,7 @@ async def submit_test_edits(
 
     state, context = runtime.state, runtime.context
     _require_phase(state, {"reproducing"})
+    # round number 来自受信 checkpoint，而不是模型参数；模型只能提交当前轮的候选。
     round_number = int(state.get("reproduction_round", 0)) + 1
     if round_number > context.max_reproduction_rounds:
         raise BudgetExceededError("reproduction round budget exhausted")
@@ -188,6 +189,7 @@ async def submit_fix_edits(
 
     state, context = runtime.state, runtime.context
     _require_phase(state, {"repairing"})
+    # 修复轮次与 test patch 引用都由本地状态保管，工具不接受模型自定义 job 或路径。
     round_number = int(state.get("repair_round", 0)) + 1
     if round_number > context.max_repair_rounds:
         raise BudgetExceededError("repair round budget exhausted")
@@ -235,6 +237,8 @@ async def run_sandbox(
     if len(reason.strip()) < 1 or len(reason) > 600:
         raise ValueError("reason must contain 1..600 characters")
     if state["phase"] == "reproducing":
+        # 模型只表达“需要验证”；Job 类型、快照、patch 和 selector 由本地状态组装，
+        # 避免命令、路径和作业身份从自然语言参数进入 Sandbox。
         return await _run_reproduction(runtime)
     return await _run_repair(runtime)
 
@@ -380,6 +384,8 @@ REPAIR_TOOLS = (
 async def run_conversion_probe(context: RepairAgentContext) -> ProbeOutcome:
     """用受信固定测试先区分转换抛错与转换成功，不调用模型。"""
 
+    # 探针是 Controller 的确定性动作，不消耗模型轮次；它只使用反馈原文生成固定
+    # fixture/test，并把 Sandbox 的真实结果转换成 inner agent 可消费的事实。
     snapshot = context.source_workspace.resolve(context.source_snapshot_ref)
     selector = f"test_feedback_{context.feedback_id.hex[:8]}_conversion_probe"
     fixture_name = f"{selector}.md"
@@ -474,6 +480,8 @@ async def run_conversion_probe(context: RepairAgentContext) -> ProbeOutcome:
 async def _run_reproduction(
     runtime: ToolRuntime[RepairAgentContext, RepairAgentState],
 ) -> Command:
+    # 复现阶段只验证“反馈所述失败是否真实存在”；成功条件由本地 classifier 决定，
+    # 模型不能用文字自评替代 Sandbox 证据。
     state, context = runtime.state, runtime.context
     patch_ref = state.get("test_patch_ref")
     selector = state.get("target_test_selector")
@@ -538,6 +546,8 @@ async def _run_reproduction(
 async def _run_repair(
     runtime: ToolRuntime[RepairAgentContext, RepairAgentState],
 ) -> Command:
+    # 修复阶段复用同一提交模式，但 JobType 和可信结果判定不同；分开实现可以清楚
+    # 地保持 reproducing 与 repairing 的阶段边界。
     state, context = runtime.state, runtime.context
     test_ref = state.get("test_patch_ref")
     fix_ref = state.get("fix_patch_ref")
@@ -606,6 +616,7 @@ def _job(
     fix_patch: bytes | None,
 ) -> SandboxJob:
     snapshot = context.source_workspace.resolve(context.source_snapshot_ref)
+    # UUID5 让同一 run、阶段、轮次和快照得到稳定 Job ID，重试/恢复时由 Worker 幂等去重。
     return SandboxJob(
         job_id=uuid5(
             NAMESPACE_URL,
@@ -630,6 +641,8 @@ def _command(
     tool_call_id = runtime.tool_call_id
     if tool_call_id is None:
         raise ToolAuthorizationError("tool call id is missing")
+    # 工具通过 Command 一次性提交状态更新和 ToolMessage；checkpoint 因此同时保存
+    # 受信产物引用与给模型看的结构化反馈，不会出现“工具成功但状态未写入”。
     return Command(
         update={
             **update,
@@ -644,6 +657,7 @@ def _command(
 
 
 def _require_phase(state: RepairAgentState, phases: set[str]) -> None:
+    # 动态过滤工具只是减少模型误用；函数级检查才是最终授权边界，恢复后仍必须执行。
     if state.get("phase") not in phases or state.get("terminal") is not None:
         raise ToolAuthorizationError("tool is not authorized in the current phase")
 

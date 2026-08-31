@@ -1,3 +1,9 @@
+"""Gate 的确定性业务 Policy。
+
+模型负责提供分类事实，Policy 负责把事实按固定优先级转换成可执行路由；
+安全拦截、最小证据和人工接管都在这里落地，而不是交给 Prompt 自律。
+"""
+
 import re
 
 from agent.domain.content import contains_mermaid_diagram

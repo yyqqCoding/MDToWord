@@ -81,6 +81,7 @@ class PatchPolicy:
         )
 
     def authorize_write(self, path: str, phase: str) -> str:
+        # 读写授权统一收口在这里；工具层只能传入候选路径，不能自行扩大白名单。
         try:
             normalized = normalize_repository_path(path)
         except SourceAccessError as exc:

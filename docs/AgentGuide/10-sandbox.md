@@ -1,275 +1,72 @@
-# Docker沙箱
+# Sandbox Worker
 
-## 1. 沙箱解决什么问题
+## 1. 为什么需要 Sandbox
 
-模型生成的测试和修复代码都可能出错，也可能包含危险行为。Agent主进程不能直接在自己的
-Python进程或ECS工作目录中运行这些代码。系统把它们交给独立Sandbox Worker，由Worker
-为每个任务启动一个全新Docker容器。
+Agent 会让模型生成测试和候选后端代码。即使模型可信，代码、依赖和测试输出也可能有
+错误或恶意行为，所以不能在 Controller 主机直接执行。Sandbox Worker 在固定镜像的新
+容器中运行，返回结构化结果。
 
-真正的优势不是“使用Docker”四个字，而是以下完整链条：
+## 2. Worker 边界
 
-```text
-结构化模型输出
-  → 补丁白名单检查
-  → 固定格式Job
-  → Worker认证和哈希检查
-  → 无网络、非root、限资源的一次性容器
-  → 解析JUnit而不是相信输出文字
-  → 检查运行前后源码差异
-  → 全新容器最终验证
-  → 只发布验证结果绑定的补丁
-```
+Worker 是独立进程，生产只监听 127.0.0.1:8090 或受控内网。它：
 
-## 2. Worker和任务容器不是一回事
+- 先校验 Bearer 认证，再解析有大小上限的请求；
+- 只接受 Job Schema、快照和 patch hash，不接受命令字符串；
+- 使用固定镜像、固定 argv、临时 workspace 和新容器；
+- 串行执行 Job，不持有模型、数据库、GitHub 或 Langfuse 凭据；
+- 任务结束销毁容器和 workspace。
 
-```text
-Agent主进程
-  持有数据库、模型、Langfuse和GitHub配置
-        ↓ 内部HTTP + Bearer认证
-Sandbox Worker
-  只持有SANDBOX_*配置，可以调用Docker Engine
-        ↓ docker run
-任务容器
-  没有业务Secret、网络或Docker Socket
-```
+## 3. 容器限制
 
-生产中Agent主进程和Worker位于同一台私有ECS，但它们是不同systemd服务、不同Linux用户、
-不同环境文件。Worker默认只监听`127.0.0.1:8090`。
+~~~text
+固定 image digest；--network=none；非 root；read-only root filesystem
+cap-drop=ALL；no-new-privileges；固定 CPU、内存和 PID 限制
+只挂载临时 workspace/tmpfs；不挂载 Docker Socket 和宿主机敏感目录
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1；禁止 pip install、下载源码和外部网络
+~~~
 
-## 3. Agent主进程提交什么
+容器内只运行预先登记的 Python/Pandoc/pytest 流程。测试选择器先通过安全正则，再作为
+独立 argv 参数，不能经 shell 拼接。
 
-Sandbox Job只允许四种类型：
+## 4. Job 类型
 
-| 类型 | 固定执行内容 |
+| 类型 | 运行内容 |
 |---|---|
-| `reproduce_target` | 原代码加测试补丁，运行指定回归测试 |
-| `validate_target` | 原代码加测试和修复补丁，运行指定回归测试 |
-| `validate_full` | 运行后端全量测试和DOCX检查 |
-| `compile_patch` | 编译修改后的Python文件 |
+| reproduce_target | 基线 + 测试补丁，运行目标测试 |
+| validate_target | 基线 + 测试/修复补丁，运行目标测试 |
+| validate_full | 基线 + 测试/修复补丁，运行全量测试和 DOCX 检查 |
+| compile_patch | 应用补丁后编译和 diff 检查 |
 
-Job字段包括：
+Controller 根据 phase、base_sha、patch 引用和固定配置生成 Job。模型只能调用 run_sandbox
+并填写 reason，不能选择 Job 类型、命令、超时、workspace 或 job_id。
 
-```text
-job_id, run_id, job_type, base_sha
-source_snapshot_sha256
-test_patch_sha256, fix_patch_sha256
-target_test_selector
-limits, expires_at
-```
+## 5. 结果和幂等
 
-Job中没有Shell命令、环境变量、挂载目录或Docker参数。模型不能通过Job改变执行方式。
+Worker 返回状态、退出码、是否超时、开始/结束时间、耗时、JUnit 摘要、DOCX 摘要、有限
+stdout/stderr 尾部、workspace diff hash、资源摘要和 error_code。完整日志放在受控
+Artifact，ToolMessage 只返回脱敏有限结果。
 
-源码压缩包、测试补丁和修复补丁通过内部HTTP传给Worker，并分别与SHA-256绑定。Worker先
-检查Bearer认证，而且认证发生在读取和解析最多71 MB的请求体之前。认证通过后才检查JSON
-Schema、任务是否过期、文件大小和哈希，未认证请求不能利用大请求体消耗Base64解析资源。
+同一 job_id 必须对应同一请求指纹；相同请求恢复时复用已完成结果，指纹不同返回冲突。
+Sandbox 临时连接错误由 Middleware 使用同一 job_id 最多重试三次，退避 1 秒和 2 秒。
+401、409、非法请求、无效 200 和安全拒绝不重试。
 
-## 4. Worker怎样准备工作区
+## 6. 宿主机部署
 
-Worker为每个Job创建新的临时目录：
+常驻生产由 systemd 管理。Worker 与 Controller 可同机但使用不同用户、配置和服务；审计
+必须证明端口已监听、未认证请求返回 401、镜像 digest 正确、任务容器没有业务 Secret。
+Worker 未就绪时 Scheduler 不应恢复自动领取。
 
-```text
-job-<job_id>/
-  source.tar.gz
-  workspace/
-  result/
-```
+本地开发可使用 Docker Desktop/WSL 启动 Worker；这只是开发环境，不是生产依赖。生产更新
+按 deployment-and-operations.md 的 deploy.sh 入口执行。
 
-然后：
+## 7. 验收
 
-1. 安全解压固定源码快照；
-2. 在容器看不到的位置建立Git基线；
-3. 使用`git apply --check`检查补丁；
-4. 依次应用已授权测试和修复补丁；
-5. 记录容器执行前的完整diff和SHA-256；
-6. 规范目录与文件权限，让固定非root用户可以读取；
-7. 生成固定`docker run`参数。
+至少验证：
 
-补丁由Worker在容器启动前应用。容器不负责决定应用什么补丁。
-
-## 5. Docker限制
-
-每个任务容器使用：
-
-```text
---rm
---network=none
---read-only
---cap-drop=ALL
---security-opt=no-new-privileges
---memory=2147483648
---cpus=2.0
---pids-limit=256
---user=65532:65532
---tmpfs=/tmp:rw,noexec,nosuid,nodev,size=536870912
-```
-
-含义如下：
-
-| 限制 | 作用 |
-|---|---|
-| 固定镜像digest | 防止同名镜像被替换后环境悄悄变化 |
-| `--network=none` | 测试不能访问GitHub、模型、云元数据或其他网络地址 |
-| 非root UID 65532 | 测试进程没有root权限 |
-| 根文件系统只读 | 不能修改镜像中的Python、Pandoc和受信检查代码 |
-| 删除全部capability | 不能使用额外Linux特权 |
-| no-new-privileges | 进程不能通过setuid等方式获得新权限 |
-| CPU、内存、进程数限制 | 防止死循环、fork bomb和内存耗尽拖垮主机 |
-| 墙钟超时 | 任务超时后终止容器 |
-
-## 6. 哪些位置可以写
-
-不能简单说“整个容器都不能写”。准确情况是：
-
-- 容器根文件系统只读；
-- `/tmp`是512 MiB临时内存盘，可写但`noexec/nosuid/nodev`；
-- `/result`可写，用于pytest生成JUnit；
-- `/workspace`作为受控挂载存在；源码目录通常为`0755`、文件为`0644`，固定非root用户
-  只能读取现有源码；
-- workspace顶层保留创建必要临时内容的能力；
-- 容器结束后Worker重新计算Git diff，任何超出批准补丁的变化都被拒绝。
-
-如果执行后diff与执行前批准的diff不一致：
-
-```text
-status = security_rejected
-error_code = workspace_modified
-```
-
-## 7. 容器中没有什么
-
-任务容器不会继承主机完整环境。启动Docker CLI时只保留`PATH`和`LANG`，容器内只设置固定
-测试变量。它没有：
-
-- `SUPABASE_AGENT_KEY`；
-- 模型API Key；
-- Langfuse Secret；
-- GitHub App私钥；
-- Worker认证Token；
-- 代理环境变量；
-- `/var/run/docker.sock`；
-- Agent主进程目录；
-- 用户主目录和`.env`。
-
-受信任DOCX检查代码位于镜像只读层`/opt/trusted/docx_assertions.py`，模型不能通过修改
-workspace替换它。
-
-## 8. 固定命令而不是模型命令
-
-Worker根据`job_type`选择Python参数。例如目标测试固定为：
-
-```text
-python -m pytest tests/test_feedback_regressions.py
-  -k <已校验的测试名>
-  -q -p no:cacheprovider
-  --junitxml=/result/junit.xml
-```
-
-全量验证固定运行后端pytest，编译任务固定运行`python -m compileall`。代码不使用`sh -c`
-或`bash -c`，因此模型不能借参数拼接新命令。
-
-`PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`阻止开发机或环境中未知pytest插件自动加载。
-
-## 9. 怎样判断执行结果
-
-Worker返回固定结构：
-
-```text
-job_id, status, exit_code, timed_out
-started_at, finished_at, duration_ms
-junit_summary, docx_summary
-stdout_tail, stderr_tail
-workspace_diff_sha256
-resource_summary, error_code
-```
-
-stdout和stderr分别最多4 KiB，并清理控制字符和疑似密钥。Agent主进程使用JUnit XML中的
-测试数量、失败数量、目标测试是否收集和失败类型判断，不解析普通输出中的成功文字。
-
-## 10. 超时、清理和幂等
-
-超时时Worker：
-
-1. 杀死Docker进程；
-2. 调用`docker rm -f <固定容器名>`；
-3. 返回`sandbox_timeout`；
-4. 删除本次临时工作目录；
-5. 后续验证创建新容器，不复用旧工作区。
-
-相同`job_id`和相同请求重复提交时，Worker从本地结果文件返回第一次结果，不重复启动
-容器。Sandbox Client遇到网络异常或408、429、5xx时包含首次最多三次attempt，等待1秒、
-2秒，并继续使用同一个`job_id`、`Idempotency-Key`和请求指纹；整个提交受Worker墙钟上限
-加60秒结果对账窗口约束。无效成功响应、认证失败和请求冲突不会重试。相同`job_id`但请求
-内容不同则返回冲突。
-
-## 11. 最终验证为什么使用新容器
-
-复现、目标验证和全量验证分别创建容器。最终验证重新从`base_sha`开始：
-
-```text
-容器A：原代码 + 测试补丁，目标必须失败
-容器B：原代码 + 测试补丁 + 修复补丁，目标必须通过
-容器C：重新创建环境，完成全量测试和DOCX检查
-```
-
-这可以排除缓存、临时文件、测试顺序和上一次执行副作用造成的假通过。
-
-## 12. 已实际验证的隔离项
-
-生产部署和真实Docker测试已经确认：
-
-- Worker和Scheduler由systemd常驻运行；
-- Worker只监听本机8090，安全组未公开端口；
-- 使用固定镜像digest；
-- 容器没有网络和业务密钥；
-- 容器不是root，看不到Docker Socket；
-- 根文件系统只读、capability为空、`NoNewPrivs`生效；
-- 2 GiB内存、2 CPU和256进程限制生效；
-- 超时容器与临时目录能够清理；
-- 相同Job不会重复执行；
-- 严格`UMask=0077`下新增fixture仍能被固定非root UID读取；
-- 修复后会在新容器中重新证明基线失败并验证目标与全量测试。
-
-对应实现：
-
-- [Docker Runner](../../agent/sandbox/docker_runner.py)
-- [Worker](../../agent/sandbox/worker.py)
-- [Job和Result结构](../../agent/sandbox/contracts.py)
-- [Sandbox镜像](../../agent/sandbox/Dockerfile)
-- [真实Docker测试](../../agent/tests/test_docker_integration.py)
-
-## 13. 结合源码看Docker限制
-
-[agent/sandbox/docker_runner.py](../../agent/sandbox/docker_runner.py)没有拼接Shell字符串，而是
-生成固定参数数组：
-
-```python
-return (
-    self._docker_binary, "run", "--rm",
-    f"--name={container_name}",
-    "--network=none",
-    "--read-only",
-    "--cap-drop=ALL",
-    "--security-opt=no-new-privileges",
-    f"--memory={job.limits.memory_bytes}",
-    f"--cpus={job.limits.cpus}",
-    f"--pids-limit={job.limits.pids}",
-    "--user=65532:65532",
-    self._image_digest,
-    *command,
-)
-```
-
-`command`也由`JobType`映射为固定pytest或compileall命令，Job结构里没有任意命令字段。
-
-[agent/sandbox/worker.py](../../agent/sandbox/worker.py)用`job_id`和请求指纹保证幂等：
-
-```python
-stored = self._store.read(artifacts.job.job_id)
-if stored is not None:
-    if stored.request_fingerprint != fingerprint:
-        raise SandboxJobConflictError(...)
-    return stored.result
-```
-
-因此Controller因网络失败用同一`job_id`重试时，Worker返回已有结果；如果有人复用ID但改变
-补丁内容，则直接冲突，不会执行第二份任务。
+1. 未认证请求在读取大正文前被拒绝；
+2. 容器无法访问网络、Docker Socket、宿主机敏感路径和 Secret；
+3. 命令字符串、任意路径和未登记 Job 被拒绝；
+4. 资源和超时限制有效；
+5. 同一 job_id 重试不重复执行已完成结果；
+6. 容器和 workspace 在结束后销毁；
+7. Sandbox 失败能关联到 run、phase、node 和 FailureSnapshot。

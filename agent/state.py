@@ -1,3 +1,9 @@
+"""外层 Graph 的可持久化业务状态。
+
+状态只保存阶段、计数和 Artifact 引用；用户原文、源码、补丁及模型消息等大对象
+分别存放在受控 Artifact 或 LangGraph checkpoint 中。
+"""
+
 from decimal import Decimal
 from typing import Literal
 from uuid import UUID
@@ -36,6 +42,7 @@ class AgentState(BaseModel):
     risk: RiskLevel = RiskLevel.UNKNOWN
     base_sha: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
     extension_version: str = "unknown"
+    # ref 字段把“业务状态”和“大对象内容”解耦：恢复时按引用重新读取并校验哈希。
     task_artifact_ref: str | None = None
     source_snapshot_ref: str | None = None
     gate_result_ref: str | None = None
@@ -59,6 +66,7 @@ class AgentState(BaseModel):
     fix_source_paths: tuple[str, ...] = ()
     reproduction_round: int = Field(default=0, ge=0)
     repair_round: int = Field(default=0, ge=0)
+    # 外层计数是单调摘要；内层工具循环还有自己的 checkpoint 计数，Controller 终结时会合并。
     model_calls: int = Field(default=0, ge=0)
     tool_calls: int = Field(default=0, ge=0)
     sandbox_duration_ms: int = Field(default=0, ge=0)
