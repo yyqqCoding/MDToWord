@@ -15,6 +15,7 @@ from langchain.agents.middleware import (
 from langchain.agents.middleware.model_call_limit import ModelCallLimitExceededError
 from langchain.agents.middleware.tool_call_limit import ToolCallLimitExceededError
 from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.errors import GraphRecursionError
 from pydantic import BaseModel, ConfigDict, Field
 
 from agent.domain.errors import (
@@ -48,6 +49,8 @@ from agent.telemetry.base import NoopTelemetry, Telemetry
 
 REPAIR_AGENT_PROMPT_VERSION = "repair-agent-v3"
 REPAIR_SUMMARY_PROMPT_VERSION = "repair-summary-v1"
+_GRAPH_FIXED_STEP_MARGIN = 32
+_GRAPH_TOOL_STEP_ALLOWANCE = 2
 
 
 class RepairAgentOutcome(BaseModel):
@@ -134,6 +137,13 @@ class RepairAgentRuntime:
             UsageAccountingMiddleware(),
             CompletionGuardMiddleware(),
         )
+        # LangGraph step包含Middleware、模型和工具节点，不等于模型调用次数。这个上限只做
+        # 最后的失控保护；正常业务停止由持久化Model/Tool Call Limit拥有。
+        self._recursion_limit = _graph_recursion_limit(
+            max_model_calls=max_model_calls,
+            max_tool_calls=max_tool_calls,
+            middleware_count=len(middleware),
+        )
         system_prompt = (
             files("agent.prompts").joinpath("repair_agent.md").read_text("utf-8")
         )
@@ -157,7 +167,7 @@ class RepairAgentRuntime:
     ) -> RepairAgentOutcome:
         config = {
             "configurable": {"thread_id": f"repair:{context.run_id}"},
-            "recursion_limit": 100,
+            "recursion_limit": self._recursion_limit,
         }
         snapshot = await self._graph.aget_state(config)
         try:
@@ -170,25 +180,34 @@ class RepairAgentRuntime:
                     initial["terminal"] = "completed"
                     return self._outcome(initial)
                 raw_output = await self._graph.ainvoke(initial, config, context=context)
-        except (ModelCallLimitExceededError, ToolCallLimitExceededError) as exc:
-            # 官方中间件异常没有项目 error_code；在内层 checkpoint 仍停留于待执行节点时
-            # 转成稳定预算错误，让显式恢复可以沿用原 thread 和候选补丁。
+        except (
+            ModelCallLimitExceededError,
+            ToolCallLimitExceededError,
+            GraphRecursionError,
+        ) as exc:
+            # 官方预算/Graph异常没有项目error_code；从内层checkpoint补齐计量并转成稳定
+            # 预算错误，让显式恢复可以沿用原thread和候选补丁。
             latest = await self._graph.aget_state(config)
             values = latest.values or snapshot.values
             phase = str(values.get("phase", "reproducing"))
             model_calls = int(values.get("model_calls", 0))
             tool_calls = int(values.get("tool_calls", 0))
+            if isinstance(exc, ModelCallLimitExceededError):
+                budget_type = "model_calls"
+            elif isinstance(exc, ToolCallLimitExceededError):
+                budget_type = "tool_calls"
+            else:
+                budget_type = "graph_steps"
+            safe_details: dict[str, str | int] = {
+                "budget_type": budget_type,
+                "model_calls": model_calls,
+                "tool_calls": tool_calls,
+            }
+            if isinstance(exc, GraphRecursionError):
+                safe_details["graph_step_limit"] = self._recursion_limit
             error = BudgetExceededError(
-                "repair agent call budget was exhausted",
-                safe_details={
-                    "budget_type": (
-                        "model_calls"
-                        if isinstance(exc, ModelCallLimitExceededError)
-                        else "tool_calls"
-                    ),
-                    "model_calls": model_calls,
-                    "tool_calls": tool_calls,
-                },
+                "repair agent execution budget was exhausted",
+                safe_details=safe_details,
                 operation="repair_agent",
                 phase=phase,
                 node="repair_agent",
@@ -259,6 +278,22 @@ class RepairAgentRuntime:
             cache_read_tokens=int(state.get("cache_read_tokens", 0)),
             estimated_cost=estimated_cost,
         )
+
+
+def _graph_recursion_limit(
+    *,
+    max_model_calls: int,
+    max_tool_calls: int,
+    middleware_count: int,
+) -> int:
+    """把业务调用预算换算为只做失控兜底的LangGraph step上限。"""
+
+    model_round_steps = middleware_count + 4
+    return (
+        _GRAPH_FIXED_STEP_MARGIN
+        + max_model_calls * model_round_steps
+        + max_tool_calls * _GRAPH_TOOL_STEP_ALLOWANCE
+    )
 
 
 def _initial_state(

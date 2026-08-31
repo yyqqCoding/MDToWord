@@ -269,6 +269,11 @@ MAX_SANDBOX_SECONDS_PER_RUN=900
 上下文不使用固定总 Token 上限；按主备模型有效窗口的 65%/85% 比例总结和停止，详见
 `repair-agent-loop.md`。
 
+LangGraph `recursion_limit` 是Middleware、模型和工具节点的执行step兜底，不是模型调用
+预算。Runtime必须根据Model/Tool Call Limit与已注册Middleware数量计算更高的step上限，
+使持久化调用预算先拥有正常终止；若兜底仍被触发，转换为
+`budget_exhausted`且`budget_type=graph_steps`，从内层checkpoint回填真实调用与Token计量。
+
 ## 10. 幂等与恢复
 
 LangGraph 节点可能因恢复而重新执行。所有副作用使用稳定的

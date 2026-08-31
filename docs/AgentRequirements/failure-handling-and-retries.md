@@ -487,7 +487,7 @@ GitHub 源码版本读取和快照下载接入通用短重试；发布与数据�
 | 白名单内源码读取参数、路径存在性或输出范围无效 | `source_request_invalid/invalid` | 不做传输重试 | ToolMessage返回模型并修正参数 |
 | 快照归档含越界路径、不安全entry或完整性逃逸 | `source_snapshot_security_rejected/security` | STOP | 安全终态 |
 | 源码快照无法物化、存储或通过普通格式校验 | `source_snapshot_error/permanent` | STOP | Failure Finalizer |
-| 当前run预算耗尽 | `budget_exhausted/business` | STOP | 既有预算终态 |
+| 当前run模型、工具或Graph step兜底预算耗尽 | `budget_exhausted/business` | STOP | 既有预算终态，可显式恢复 |
 | GitHub源码401或非限流403 | `source_auth_error/permanent` | STOP | feedback=`needs_human` |
 | GitHub源码连接异常、408、限流或5xx | `repository_unavailable/transient` | RETRY | attempt耗尽后终结 |
 | Repository确定性契约错误 | `repository_error/permanent` | STOP | 脱敏日志与人工排障 |

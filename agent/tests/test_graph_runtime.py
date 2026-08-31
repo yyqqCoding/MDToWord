@@ -475,14 +475,21 @@ def test_failure_finalization_persists_newer_checkpoint_usage(tmp_path: Path):
     assert failed_feedback.last_error_code == "timeout"
 
 
-def test_explicit_resume_reopens_legacy_model_call_limit_failure(tmp_path: Path):
+@pytest.mark.parametrize(
+    "legacy_error_type",
+    ("GraphRecursionError", "ModelCallLimitExceededError"),
+)
+def test_explicit_resume_reopens_legacy_agent_budget_failure(
+    tmp_path: Path,
+    legacy_error_type: str,
+):
     async def scenario():
         feedback = make_feedback()
         claim_token = UUID("11111111-1111-4111-8111-111111111111")
         feedback.status = FeedbackStatus.FAILED
         feedback.claim_token = claim_token
         feedback.last_error_code = "unexpected_error"
-        feedback.last_error_message = "ModelCallLimitExceededError"
+        feedback.last_error_message = legacy_error_type
         feedback_repository = FakeFeedbackRepository([feedback])
         run_id = uuid4()
         failure = FailureSnapshot(
@@ -495,7 +502,7 @@ def test_explicit_resume_reopens_legacy_model_call_limit_failure(tmp_path: Path)
             handling=FailureHandling.STOP,
             attempt=1,
             max_attempts=1,
-            safe_details={"error_type": "ModelCallLimitExceededError"},
+            safe_details={"error_type": legacy_error_type},
         )
         run = AgentRunRecord(
             id=run_id,
@@ -508,7 +515,7 @@ def test_explicit_resume_reopens_legacy_model_call_limit_failure(tmp_path: Path)
             artifact_path=f"run://{run_id}",
             task_artifact_ref=f"run://{run_id}/task.redacted.json",
             error_code="unexpected_error",
-            error_message="ModelCallLimitExceededError",
+            error_message=legacy_error_type,
             failure=failure,
         )
         run_repository = FakeAgentRunRepository([run])

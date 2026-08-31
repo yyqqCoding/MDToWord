@@ -1384,3 +1384,17 @@ Gate、源码快照、Sandbox Worker、最终独立验证与发布边界不变�
 - Repair Agent Prompt升至`repair-agent-v3`。并行只读中的可恢复错误不丢弃其他成功结果，
   真正安全拒绝仍终结run；旧安全终态不恢复，部署后重新提交相同反馈验收。Agent全量：
   383 passed、5 skipped，compileall通过。
+
+### Repair Agent Graph step预算回归（2026-08-31）
+
+- 新版生产 run `63cab3f3-e906-4c46-9179-62651473fcf4` 已使用`6b59ed0`与
+  `repair-agent-v3`，源码搜索/读取全部成功，但约9次模型响应和20次工具调用后先触发硬编码
+  `recursion_limit=100`；旧边界将`GraphRecursionError`记为`unexpected_error/permanent`，
+  且数据库只保留外层1次模型、1次工具，未回填内层真实计量；
+- Runtime根据Model/Tool Call Limit和Middleware数量计算Graph step兜底，使持久化的官方
+  调用限制先拥有业务终止；兜底若仍触发，转换为`budget_exhausted/business`、记录
+  `budget_type=graph_steps`与step上限，并从内层checkpoint回填模型、工具和Token累计；
+- 仅为失败快照明确包含`error_type=GraphRecursionError`且外层checkpoint仍在复现/修复阶段的
+  旧run开放显式恢复，与既有Model/Tool Call Limit兼容路径一致；Scheduler不自动重开，其他
+  `unexpected_error`仍不可恢复。生产部署后用同一run ID显式续跑；Agent全量：386 passed、
+  5 skipped，compileall通过。
