@@ -134,6 +134,22 @@ def test_unknown_exception_only_records_its_type():
     assert "must-not-appear" not in str(failure.model_dump())
 
 
+def test_tool_precondition_is_invalid_not_security():
+    from agent.domain.errors import ToolPreconditionError
+
+    failure = failure_cause_from_exception(
+        ToolPreconditionError(
+            "submit a fix first",
+            safe_details={"required_action": "submit_fix_edits"},
+        ),
+        operation="run_sandbox",
+    )
+
+    assert failure.code == "tool_precondition_failed"
+    assert failure.kind is FailureKind.INVALID
+    assert failure.safe_details == {"required_action": "submit_fix_edits"}
+
+
 def test_failure_recorder_is_fail_open_when_observer_raises(caplog):
     class FailingSink:
         def record_failure(self, event: FailureEvent) -> None:

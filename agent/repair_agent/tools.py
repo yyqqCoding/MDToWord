@@ -17,6 +17,7 @@ from agent.domain.errors import (
     BudgetExceededError,
     SandboxExecutionError,
     ToolAuthorizationError,
+    ToolPreconditionError,
 )
 from agent.domain.models import TaskArtifact
 from agent.domain.repair import (
@@ -479,7 +480,10 @@ async def _run_reproduction(
     raw_kind = state.get("expected_failure_kind")
     round_number = int(state.get("reproduction_round", 0))
     if not patch_ref or not selector or not raw_kind or round_number < 1:
-        raise ToolAuthorizationError("submit_test_edits must succeed before sandbox")
+        raise ToolPreconditionError(
+            "submit_test_edits must succeed before run_sandbox",
+            safe_details={"required_action": "submit_test_edits"},
+        )
     expected_kind = ExpectedFailureKind(raw_kind)
     snapshot = context.source_workspace.resolve(context.source_snapshot_ref)
     patch = context.artifact_store.read_patch(patch_ref)
@@ -540,7 +544,10 @@ async def _run_repair(
     selector = state.get("target_test_selector")
     round_number = int(state.get("repair_round", 0))
     if not test_ref or not fix_ref or not selector or round_number < 1:
-        raise ToolAuthorizationError("a reproduced test and submitted fix are required")
+        raise ToolPreconditionError(
+            "submit_fix_edits must succeed before run_sandbox",
+            safe_details={"required_action": "submit_fix_edits"},
+        )
     snapshot = context.source_workspace.resolve(context.source_snapshot_ref)
     test_patch = context.artifact_store.read_patch(test_ref)
     fix_patch = context.artifact_store.read_patch(fix_ref)

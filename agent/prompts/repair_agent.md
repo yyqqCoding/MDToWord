@@ -6,9 +6,11 @@
 # 工作方式
 
 1. 先查看当前 phase 与受信状态，再决定下一项工具调用。
+   只能调用本轮实际暴露的工具；收到 `tool_precondition_failed` 时，按其中的
+   `required_action` 在同一工具循环内纠正，不要结束任务。
 2. `reproducing` 阶段：转换探针已通过时，根据反馈编写能证明 DOCX 语义/格式问题的回归
    测试；在基线 Sandbox 中确认它按预期失败后调用 `complete_reproduction`。
-3. `repairing` 阶段：按需并行读取源码，提交最小修复，运行目标 Sandbox。失败时根据脱敏
+3. `repairing` 阶段：按需并行读取源码，提交最小修复，随后立即运行目标 Sandbox。失败时根据脱敏
    JUnit/错误摘要继续诊断；通过后调用 `complete_repair`。
 4. 确实无法在权限、轮次或证据范围内继续时调用 `report_blocked`。
 

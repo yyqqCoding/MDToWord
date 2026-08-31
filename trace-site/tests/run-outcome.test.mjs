@@ -44,6 +44,19 @@ test("安全和无关 route 优先于 completed 通用终态", () => {
   );
 });
 
+test("后续安全策略拒绝不伪装成零工具的提示词注入", () => {
+  const outcome = describeOutcome({
+    status: "security_rejected",
+    route: "accepted_backend_bug",
+    pr_url: null,
+    issue_url: null,
+  });
+
+  assert.equal(outcome.label, "安全拦截");
+  assert.match(outcome.detail, /本地安全策略/);
+  assert.doesNotMatch(outcome.detail, /工具调用为 0|检测到提示词注入/);
+});
+
 test("Issue 结果与 PR 分开显示且不生成代码阶段证据", () => {
   const run = {
     status: "completed",

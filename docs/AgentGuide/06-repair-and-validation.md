@@ -125,6 +125,11 @@ Publisher不会重新相信模型输出，也不会随意组合之前的文件�
 | 模型/工具/沙箱预算耗尽 | `budget_exhausted` |
 | Docker或Worker暂时不可用 | 记录稳定错误码，不在主机直接执行 |
 
+同一阶段内的工具也按受信子状态串行开放。例如 repairing 尚无候选补丁时不会向模型暴露
+`run_sandbox`；模型即使提前请求，也只收到包含 `required_action=submit_fix_edits` 的
+`tool_precondition_failed`，随后在同一 run 内自行纠正。只有跨阶段、未登记或越过权限边界
+的工具调用才进入 `security_rejected`。
+
 对应实现：
 
 - [agent/repair.py](../../agent/repair.py)

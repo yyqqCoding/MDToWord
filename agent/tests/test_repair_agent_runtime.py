@@ -3,6 +3,7 @@ import hashlib
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
@@ -12,7 +13,7 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from agent.domain.models import TaskArtifact
 from agent.domain.enums import FeedbackType
-from agent.domain.errors import BudgetExceededError
+from agent.domain.errors import BudgetExceededError, ToolAuthorizationError
 from agent.repair_agent.models import ChatModelBundle, ChatModelProfile
 from agent.repair_agent.runtime import RepairAgentRuntime
 from agent.repair_agent.tools import RepairAgentContext
@@ -305,3 +306,142 @@ def test_official_model_call_limit_becomes_resumable_budget_error(tmp_path: Path
     }
     assert error.additional_model_calls == 1
     assert artifacts.path_for(RUN_ID, "fix.patch").read_bytes()
+
+
+def test_premature_sandbox_call_is_corrected_within_same_agent_run(tmp_path: Path):
+    responses = [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {"name": "run_sandbox", "id": "early", "args": {"reason": "too early"}}
+            ],
+        ),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "submit_fix_edits",
+                    "id": "fix",
+                    "args": {
+                        "edits": [
+                            {
+                                "path": "backend/app/normalizer.py",
+                                "mode": "search_replace",
+                                "search": "def normalize(value):\n    return value\n",
+                                "replace": "def normalize(value):\n    return value.strip()\n",
+                                "content": None,
+                            }
+                        ],
+                        "summary": "normalize the failing conversion input",
+                        "risk": "low",
+                    },
+                }
+            ],
+        ),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {"name": "run_sandbox", "id": "sandbox", "args": {"reason": "verify fix"}}
+            ],
+        ),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "complete_repair",
+                    "id": "complete",
+                    "args": {"evidence_summary": "trusted target test passed"},
+                }
+            ],
+        ),
+        AIMessage(content="candidate ready"),
+    ]
+    model = _ToolCallingFakeModel(responses=responses)
+    profile = ChatModelProfile(
+        role="fake",
+        model_name="fake",
+        source="configured",
+        max_input_tokens=20_000,
+        tool_calling=True,
+    )
+    bundle = ChatModelBundle(
+        primary=model,
+        fallback=model,
+        summary=model,
+        primary_profile=profile,
+        fallback_profile=profile,
+        effective_context_window=20_000,
+        primary_input_cost_per_million=Decimal("0"),
+        primary_output_cost_per_million=Decimal("0"),
+        fallback_input_cost_per_million=Decimal("0"),
+        fallback_output_cost_per_million=Decimal("0"),
+    )
+    source = _SourceWorkspace(tmp_path / "source")
+    artifacts = ArtifactStore(tmp_path / "artifacts")
+    sandbox = _Sandbox()
+    runtime = RepairAgentRuntime(
+        bundle,
+        checkpointer=MemorySaver(),
+        max_model_calls=12,
+        max_tool_calls=30,
+    )
+    context = RepairAgentContext(
+        run_id=RUN_ID,
+        feedback_id=FEEDBACK_ID,
+        task=TaskArtifact(
+            feedback_id=FEEDBACK_ID,
+            feedback_type=FeedbackType.BUG,
+            description="conversion raises for this formula",
+            markdown_content="$$x$$",
+            content_fingerprint="b" * 64,
+        ),
+        source_snapshot_ref="source://synthetic",
+        source_workspace=source,
+        artifact_store=artifacts,
+        edit_tools=StructuredEditTools(PatchBuilder(PatchPolicy.load_default()), artifacts),
+        sandbox_client=sandbox,
+        max_reproduction_rounds=2,
+        max_repair_rounds=2,
+        max_sandbox_seconds=900,
+    )
+
+    outcome = asyncio.run(runtime.run(context, category="conversion_crash"))
+
+    assert outcome.completed is True
+    assert outcome.fix_patch_ref is not None
+    assert outcome.repair_result_ref is not None
+    assert outcome.repair_round == 1
+    assert len(sandbox.jobs) == 2
+
+
+def test_inner_agent_error_carries_checkpoint_phase_and_usage():
+    class FailingGraph:
+        async def aget_state(self, config):
+            del config
+            return SimpleNamespace(
+                values={
+                    "phase": "repairing",
+                    "model_calls": 4,
+                    "tool_calls": 7,
+                    "input_tokens": 120,
+                    "output_tokens": 30,
+                    "total_tokens": 150,
+                }
+            )
+
+        async def ainvoke(self, state, config, *, context):
+            del state, config, context
+            raise ToolAuthorizationError("cross-phase tool")
+
+    runtime = object.__new__(RepairAgentRuntime)
+    runtime._graph = FailingGraph()
+
+    with pytest.raises(ToolAuthorizationError) as exc_info:
+        asyncio.run(runtime.run(SimpleNamespace(run_id=RUN_ID), category="conversion_crash"))
+
+    error = exc_info.value
+    assert error.phase == "repairing"
+    assert error.node == "repair_agent"
+    assert error.additional_model_calls == 4
+    assert error.additional_tool_calls == 7
+    assert error.additional_total_tokens == 150

@@ -1,6 +1,7 @@
 """Repair Agent 的重试、阶段授权、并行与上下文 Middleware。"""
 
 import asyncio
+import json
 from collections.abc import Awaitable, Callable, Sequence
 from decimal import Decimal
 from importlib.resources import files
@@ -28,6 +29,7 @@ from agent.domain.errors import (
     ModelSafetyRefusalError,
     ModelTimeoutError,
     SandboxUnavailableError,
+    ToolAuthorizationError,
 )
 from agent.domain.failures import (
     FailureEvent,
@@ -235,7 +237,7 @@ class RepairTelemetryMiddleware(AgentMiddleware):
         with self.telemetry.start_generation(
             GenerationTrace(
                 operation="repair_agent_model",
-                prompt_version="repair-agent-v1",
+                prompt_version="repair-agent-v2",
                 provider="openai_compatible",
                 model=model_name,
                 input_summary={
@@ -337,8 +339,7 @@ class ParallelToolPolicyMiddleware(AgentMiddleware):
             return None
         calls = message.tool_calls
         names = [str(item.get("name", "")) for item in calls]
-        allowed = _allowed_tool_names(state)
-        reason = _parallel_rejection_reason(names, allowed)
+        reason = _parallel_rejection_reason(names, state)
         if reason is None:
             return None
         return {
@@ -458,8 +459,19 @@ class HardContextLimitMiddleware(AgentMiddleware):
 def safe_tool_error(exc: Exception, request: Any) -> str | None:
     """只把可操作的本地输入错误返回模型，永久基础设施错误继续上抛。"""
 
-    from agent.domain.errors import InvalidEditError
+    from agent.domain.errors import InvalidEditError, ToolPreconditionError
 
+    if isinstance(exc, ToolPreconditionError):
+        required_action = str(exc.safe_details.get("required_action") or "")[:120]
+        return json.dumps(
+            {
+                "accepted": False,
+                "error_code": "tool_precondition_failed",
+                "required_action": required_action,
+                "message": str(exc).replace("\n", " ")[:600],
+            },
+            ensure_ascii=False,
+        )
     if isinstance(
         exc,
         (
@@ -472,33 +484,91 @@ def safe_tool_error(exc: Exception, request: Any) -> str | None:
     return None
 
 
-def _allowed_tool_names(state: RepairAgentState) -> frozenset[str]:
+def _phase_authorized_tool_names(state: RepairAgentState) -> frozenset[str]:
     phase = state.get("phase")
     common = set(READ_ONLY_TOOLS) | {"write_todos", "report_blocked"}
     if phase == "reproducing":
-        common |= {"submit_test_edits", "run_sandbox"}
-        if state.get("reproduction_confirmed"):
-            common.add("complete_reproduction")
+        common |= {"submit_test_edits", "run_sandbox", "complete_reproduction"}
     elif phase == "repairing":
-        common |= {"submit_fix_edits", "run_sandbox"}
-        if state.get("repair_confirmed"):
-            common.add("complete_repair")
+        common |= {"submit_fix_edits", "run_sandbox", "complete_repair"}
     return frozenset(common)
+
+
+def _allowed_tool_names(state: RepairAgentState) -> frozenset[str]:
+    """按阶段内受信产物只暴露当前可执行的下一组工具。"""
+
+    phase = state.get("phase")
+    if phase == "reproducing":
+        if state.get("reproduction_confirmed"):
+            return frozenset({"complete_reproduction", "report_blocked"})
+        if state.get("test_patch_ref") and not state.get("reproduction_result_ref"):
+            return frozenset({"run_sandbox", "report_blocked"})
+        return frozenset(
+            set(READ_ONLY_TOOLS)
+            | {"write_todos", "submit_test_edits", "report_blocked"}
+        )
+    if phase == "repairing":
+        if state.get("repair_confirmed"):
+            return frozenset({"complete_repair", "report_blocked"})
+        if state.get("fix_patch_ref") and not state.get("repair_result_ref"):
+            return frozenset({"run_sandbox", "report_blocked"})
+        return frozenset(
+            set(READ_ONLY_TOOLS)
+            | {"write_todos", "submit_fix_edits", "report_blocked"}
+        )
+    return frozenset()
 
 
 def _parallel_rejection_reason(
     names: Sequence[str],
-    allowed: frozenset[str],
+    state: RepairAgentState,
 ) -> str | None:
+    phase_authorized = _phase_authorized_tool_names(state)
+    unauthorized = sorted(set(names) - phase_authorized)
+    if unauthorized:
+        raise ToolAuthorizationError(
+            "tools are not authorized for the current phase",
+            safe_details={"tool_count": len(unauthorized)},
+        )
+    allowed = _allowed_tool_names(state)
     unknown = sorted(set(names) - allowed)
     if unknown:
-        return "当前阶段未授权工具：" + ", ".join(unknown)
+        return _tool_precondition_message(state, unknown)
     if sum(name in SANDBOX_TOOLS for name in names) > 1:
         return "同一批次最多调用一个 run_sandbox；请分轮执行。"
     exclusive = PATCH_TOOLS | TERMINAL_TOOLS
     if len(names) > 1 and any(name in exclusive for name in names):
         return "patch、完成、阻塞或 Todo 工具必须单独调用，不能与其他工具并行。"
     return None
+
+
+def _tool_precondition_message(
+    state: RepairAgentState,
+    requested: Sequence[str],
+) -> str:
+    if state.get("phase") == "reproducing":
+        if state.get("reproduction_confirmed"):
+            required_action = "complete_reproduction"
+        elif state.get("test_patch_ref") and not state.get("reproduction_result_ref"):
+            required_action = "run_sandbox"
+        else:
+            required_action = "submit_test_edits"
+    elif state.get("repair_confirmed"):
+        required_action = "complete_repair"
+    elif state.get("fix_patch_ref") and not state.get("repair_result_ref"):
+        required_action = "run_sandbox"
+    else:
+        required_action = "submit_fix_edits"
+    return json.dumps(
+        {
+            "accepted": False,
+            "error_code": "tool_precondition_failed",
+            "requested_tools": list(requested),
+            "required_action": required_action,
+            "message": f"当前受信状态尚不能执行所请求工具；请先调用 {required_action}。",
+        },
+        ensure_ascii=False,
+    )
 
 
 def _last_ai_message(state: RepairAgentState) -> AIMessage | None:
