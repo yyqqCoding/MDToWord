@@ -209,6 +209,12 @@ class BudgetExceededError(AgentError):
     error_code = "budget_exhausted"
 
 
+class UnexpectedRuntimeError(AgentError):
+    """在受信运行边界捕获的未知异常，只公开原始异常类型。"""
+
+    error_code = "unexpected_error"
+
+
 class PublicationError(AgentError):
     """GitHub 发布失败的稳定边界；消息不得包含令牌、响应正文或用户内容。"""
 

@@ -406,6 +406,10 @@ timeout 后请求可能已经在上游执行，因此只确认实际收到的 us
 或成本。每次请求 attempt 在 Trace 中单独计数，最终数据库 Token 仍只累计 Provider 返回的
 可信 usage。
 
+HTTP 5xx表示完整`500..599`范围，包含LangChain包装的`OpenAIAPIError`，不能依赖少数状态码
+枚举。未知SDK或编程异常仍fail closed为`unexpected_error/permanent`，但运行边界必须从内层
+checkpoint补齐真实位置和累计计量，只记录异常类型而不记录异常消息。
+
 ### 8.2 Sandbox
 
 | 条件 | code/kind | Retry Policy | 后续处理 |

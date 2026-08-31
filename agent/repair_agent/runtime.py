@@ -15,13 +15,14 @@ from langchain.agents.middleware import (
 from langchain.agents.middleware.model_call_limit import ModelCallLimitExceededError
 from langchain.agents.middleware.tool_call_limit import ToolCallLimitExceededError
 from langgraph.checkpoint.base import BaseCheckpointSaver
-from langgraph.errors import GraphRecursionError
+from langgraph.errors import GraphBubbleUp, GraphRecursionError
 from pydantic import BaseModel, ConfigDict, Field
 
 from agent.domain.errors import (
     AgentError,
     BudgetExceededError,
     InvalidModelResponseError,
+    UnexpectedRuntimeError,
 )
 from agent.domain.models import TaskArtifact
 from agent.repair_agent.middleware import (
@@ -234,6 +235,27 @@ class RepairAgentRuntime:
             exc.additional_output_tokens = int(values.get("output_tokens", 0))
             exc.additional_total_tokens = int(values.get("total_tokens", 0))
             raise
+        except GraphBubbleUp:
+            # LangGraph interrupt/控制流必须保持原语义，不能包装成普通运行失败。
+            raise
+        except Exception as exc:
+            # 未登记SDK包装或编程错误也必须从内层checkpoint补齐真实位置与计量；只公开
+            # 异常类型，不把可能含响应正文、源码或凭据的message带出受信边界。
+            latest = await self._graph.aget_state(config)
+            values = latest.values or snapshot.values
+            error = UnexpectedRuntimeError(
+                "repair agent raised an unexpected exception",
+                safe_details={"error_type": type(exc).__name__[:120]},
+                operation="repair_agent",
+                phase=str(values.get("phase", "reproducing")),
+                node="repair_agent",
+            )
+            error.additional_model_calls = int(values.get("model_calls", 0))
+            error.additional_tool_calls = int(values.get("tool_calls", 0))
+            error.additional_input_tokens = int(values.get("input_tokens", 0))
+            error.additional_output_tokens = int(values.get("output_tokens", 0))
+            error.additional_total_tokens = int(values.get("total_tokens", 0))
+            raise error from exc
         state = RepairAgentState(**raw_output)
         return self._outcome(state)
 

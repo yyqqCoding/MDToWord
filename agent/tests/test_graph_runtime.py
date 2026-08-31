@@ -477,7 +477,7 @@ def test_failure_finalization_persists_newer_checkpoint_usage(tmp_path: Path):
 
 @pytest.mark.parametrize(
     "legacy_error_type",
-    ("GraphRecursionError", "ModelCallLimitExceededError"),
+    ("GraphRecursionError", "ModelCallLimitExceededError", "OpenAIAPIError"),
 )
 def test_explicit_resume_reopens_legacy_agent_budget_failure(
     tmp_path: Path,

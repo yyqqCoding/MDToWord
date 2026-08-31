@@ -1398,3 +1398,16 @@ Gate、源码快照、Sandbox Worker、最终独立验证与发布边界不变�
   旧run开放显式恢复，与既有Model/Tool Call Limit兼容路径一致；Scheduler不自动重开，其他
   `unexpected_error`仍不可恢复。生产部署后用同一run ID显式续跑；Agent全量：386 passed、
   5 skipped，compileall通过。
+
+### Repair Agent LangChain 5xx包装回归（2026-08-31）
+
+- 同一run显式续跑后，第一轮模型调用在一次timeout后恢复；下一轮主模型两次timeout，备用
+  模型返回`OpenAIAPIError`。旧映射只枚举部分5xx状态，未识别LangChain包装，导致第三次
+  attempt穿透为`unexpected_error/permanent`；未知异常又未从内层checkpoint定位，页面错误
+  显示`phase=budget_exhausted`并丢失真实累计；
+- Repair Agent现按完整`500..599`映射`provider_unavailable/transient`，覆盖
+  `OpenAIAPIError`并保留第三次attempt与安全HTTP状态。其他未知异常包装为稳定
+  `unexpected_error`，只保留原异常类型并补齐内层phase、node、模型/工具和Token累计；
+- 仅为旧失败快照明确包含`error_type=OpenAIAPIError`且checkpoint仍在复现/修复阶段的run增加
+  显式恢复兼容；Scheduler不自动重开，其他未知错误不恢复。生产部署后再次续跑同一run；
+  Agent全量：390 passed、5 skipped，compileall通过。

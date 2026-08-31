@@ -140,6 +140,12 @@ attempt 3: 备用模型
 重试。主备接口继续使用统一 `openai_compatible` 口径，不增加供应商状态或
 `provider_failover` 观测事件。
 
+5xx按完整`500..599`范围判断，并覆盖LangChain对OpenAI兼容服务端错误包装的
+`OpenAIAPIError`；不能只枚举500、502、503、504。第三次备用模型仍失败时记录真实
+`attempt=3/max_attempts=3`和安全HTTP状态后终结，不得退化为`unexpected_error`。
+Repair Agent工具循环内的其他未知异常在受信边界包装为`unexpected_error`，但必须从内层
+checkpoint补齐真实phase、node和调用/Token累计，且只公开原始异常类型。
+
 `run_sandbox` 的连接异常、408、429 和 5xx 使用官方 `ToolRetryMiddleware`，包含首次最多
 三次、等待 1 秒和 2 秒，并复用同一 job ID、幂等键和请求指纹。Repair Agent 路径中的
 Sandbox Client 自身重试必须关闭，避免嵌套成九次。认证、冲突、非法请求、无效 200、

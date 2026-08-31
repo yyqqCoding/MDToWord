@@ -319,7 +319,14 @@ def failure_cause_from_exception(
         code = "unexpected_error"
     details = dict(getattr(exc, "safe_details", {}) or {})
     if code == "unexpected_error":
-        details = {"error_type": type(exc).__name__[:120]}
+        original_type = details.get("error_type")
+        details = {
+            "error_type": (
+                original_type[:120]
+                if isinstance(original_type, str) and original_type
+                else type(exc).__name__[:120]
+            )
+        }
     return failure_cause_from_code(
         code,
         component=_component_for_exception(exc),

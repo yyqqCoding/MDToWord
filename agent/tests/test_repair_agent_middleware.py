@@ -1,14 +1,17 @@
 import asyncio
 
+import httpx
 import pytest
 from types import SimpleNamespace
 from langchain.agents.middleware import ModelRequest, ModelResponse
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_openai.chat_models.base import OpenAIAPIError
 
 from agent.domain.errors import (
     ModelAuthError,
     ModelContextTooLargeError,
+    ModelProviderError,
     ModelTimeoutError,
     SourceAccessError,
     SourceRequestError,
@@ -81,6 +84,45 @@ def test_model_resilience_does_not_retry_permanent_error():
         return calls
 
     assert asyncio.run(scenario()) == 1
+
+
+def test_model_resilience_maps_all_upstream_5xx_and_uses_fallback():
+    async def scenario():
+        primary = FakeListChatModel(responses=["unused"])
+        fallback = FakeListChatModel(responses=["unused"])
+        calls: list[object] = []
+        sleeps: list[float] = []
+
+        async def handler(request: ModelRequest) -> ModelResponse:
+            calls.append(request.model)
+            response = httpx.Response(
+                520,
+                request=httpx.Request(
+                    "POST",
+                    "https://provider.example/v1/chat/completions",
+                ),
+            )
+            raise OpenAIAPIError(
+                message="upstream failed",
+                response=response,
+                body=None,
+            )
+
+        middleware = ModelResilienceMiddleware(
+            fallback,
+            sleep=lambda delay: _record_sleep(sleeps, delay),
+        )
+        with pytest.raises(ModelProviderError) as raised:
+            await middleware.awrap_model_call(_request(primary), handler)
+        return primary, fallback, calls, sleeps, raised.value
+
+    primary, fallback, calls, sleeps, error = asyncio.run(scenario())
+
+    assert calls == [primary, primary, fallback]
+    assert sleeps == [1.0, 2.0]
+    assert error.attempt == 3
+    assert error.max_attempts == 3
+    assert error.safe_details == {"http_status": 520}
 
 
 def test_parallel_policy_rejects_two_sandboxes_before_execution():
