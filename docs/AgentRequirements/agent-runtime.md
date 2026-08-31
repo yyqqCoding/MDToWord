@@ -266,6 +266,9 @@ MAX_SANDBOX_SECONDS_PER_RUN=900
 任一上限触发后进入 `budget_exhausted`，不能由模型请求继续，也不会被 Scheduler 自动
 恢复。维护者提高对应 thread 总预算后，可以显式指定同一 `--resume-run-id`；恢复必须
 复用原 checkpoint、累计计数和候选补丁，不能重新领取 feedback 或重置已用预算。
+内层 thread 用累计计数执行总预算；每次 invoke 返回外层 Graph 和失败 Finalizer 的必须是相对
+进入该 invoke 时 checkpoint 的非负增量，避免多次显式恢复重复累计调用数、Token、Sandbox
+耗时和成本。
 上下文不使用固定总 Token 上限；按主备模型有效窗口的 65%/85% 比例总结和停止，详见
 `repair-agent-loop.md`。
 

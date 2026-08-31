@@ -87,7 +87,9 @@ terminal: completed | blocked | null
 边界。
 
 并行只读批次中，`source_request_invalid` 只使对应调用返回错误 ToolMessage，其他成功读取
-仍保留给模型；任一调用触发 `source_access_denied` 时仍终结整个 run。公开观测只记录原因
+仍保留给模型；安全规范化后的白名单外读取也属于该可恢复错误，并要求先调用
+`search_source`。绝对路径、路径穿越、隐藏路径或符号链接触发 `source_access_denied` 时仍
+终结整个 run。公开观测只记录原因
 枚举和通过规范化、白名单校验后的路径，不记录危险原始路径。
 
 ### 4.1 并行调用
@@ -144,7 +146,9 @@ attempt 3: 备用模型
 `OpenAIAPIError`；不能只枚举500、502、503、504。第三次备用模型仍失败时记录真实
 `attempt=3/max_attempts=3`和安全HTTP状态后终结，不得退化为`unexpected_error`。
 Repair Agent工具循环内的其他未知异常在受信边界包装为`unexpected_error`，但必须从内层
-checkpoint补齐真实phase、node和调用/Token累计，且只公开原始异常类型。
+checkpoint补齐真实phase、node和本次 invoke 新增的调用/Token，且只公开原始异常类型。
+内层 checkpoint 保留 thread 历史累计，外层 `agent_runs` 只能合并本次增量，显式续跑不得把
+历史计量重复累加。
 
 `run_sandbox` 的连接异常、408、429 和 5xx 使用官方 `ToolRetryMiddleware`，包含首次最多
 三次、等待 1 秒和 2 秒，并复用同一 job ID、幂等键和请求指纹。Repair Agent 路径中的

@@ -46,14 +46,18 @@ Graph 节点消费”已被直接替换；模型通过工具参数逐步提交�
 约束：路径必须是仓库相对路径且通过读取白名单；拒绝绝对路径、`..`、符号链接、
 隐藏密钥文件和超限范围。
 
-绝对路径、路径穿越、隐藏路径、符号链接和读取白名单外路径属于
-`source_access_denied/security`，立即终结。已通过规范化与白名单校验后，文件不存在、
+绝对路径、路径穿越、隐藏路径和符号链接属于
+`source_access_denied/security`，立即终结。已通过安全规范化但位于读取白名单外的路径不查询
+存在性，返回 `source_request_invalid/invalid` 与 `required_action=search_source`；模型必须先
+搜索实际可读路径。已通过读取白名单校验后，文件不存在、
 行号无效、起始行超过文件末尾、输出范围过大等属于
 `source_request_invalid/invalid`；工具返回 `reason`、安全路径、行号和
 `required_action=correct_source_request`，模型必须在同一 run 内修正参数，不对相同请求做
 传输重试。失败调用正常计入工具预算。
 
-`backend/app/mermaid_renderer.py` 是只读平台能力说明，不在任何写入白名单中。模型不能
+`backend/app/**/*.py` 均可只读诊断，但修复写入仍只允许 `normalizer.py` 与
+`pandoc_runner.py`；例如 `main.py`、`settings.py`、`mermaid_renderer.py` 均不可写。
+`reference.docx` 等非 Python 资产不可读。模型不能
 把可执行程序、浏览器参数、环境变量或配置路径作为工具参数。
 
 ### 2.3 `submit_test_edits`

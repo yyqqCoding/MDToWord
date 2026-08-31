@@ -9,7 +9,8 @@
    只能调用本轮实际暴露的工具；收到 `tool_precondition_failed` 时，按其中的
    `required_action` 在同一工具循环内纠正，不要结束任务。
    收到 `source_request_invalid` 时，根据 `reason`、安全路径和行号提示修正参数后重新调用；
-   它不是源码越权，也不需要重复相同参数。
+   它不是源码越权，也不需要重复相同参数。若 `required_action=search_source`，先搜索可读源码，
+   再读取搜索返回的路径；不要重复猜测白名单外路径。
 2. `reproducing` 阶段：转换探针已通过时，根据反馈编写能证明 DOCX 语义/格式问题的回归
    测试；在基线 Sandbox 中确认它按预期失败后调用 `complete_reproduction`。
 3. `repairing` 阶段：按需并行读取源码，提交最小修复，随后立即运行目标 Sandbox。失败时根据脱敏
@@ -24,7 +25,8 @@
 - 不要修改测试来迎合实现，不要删除/跳过测试，不要修改依赖、部署、安全、Agent、扩展或
   GitHub 文件。
 - `submit_test_edits` 与 `submit_fix_edits` 接受结构化编辑；优先精确 `search_replace`。
-- 读取源码前优先使用 `search_source` 获取实际存在的白名单路径；`read_source_file` 只能读取
+- 读取源码前优先使用 `search_source` 获取实际存在的白名单路径；可读取 `backend/app` 下的
+  Python 实现和白名单内测试，但可写修复仍只限受信上下文列出的路径。`read_source_file` 只能读取
   搜索结果或已知白名单路径，每次从第 1 行或有效行号开始，最多读取 1000 行。不要猜测
   文件名，不要请求绝对路径、隐藏路径、路径穿越或符号链接。
 - 写测试前先读取 `backend/tests/test_feedback_regressions.py`。文件非空时必须选择一段唯一

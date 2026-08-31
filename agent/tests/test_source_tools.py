@@ -19,6 +19,15 @@ def _snapshot(tmp_path: Path) -> Path:
         "def convert_markdown_to_docx(text):\n    return text\n",
         encoding="utf-8",
     )
+    (root / "backend/app/main.py").write_text(
+        "def create_app():\n    return None\n",
+        encoding="utf-8",
+    )
+    (root / "backend/app/settings.py").write_text(
+        "class Settings:\n    pass\n",
+        encoding="utf-8",
+    )
+    (root / "backend/app/reference.docx").write_bytes(b"PK\x00binary")
     (root / "backend/tests/test_normalizer.py").write_text(
         "def test_normalize_markdown():\n    assert True\n",
         encoding="utf-8",
@@ -51,8 +60,10 @@ def test_list_readable_paths_contains_only_existing_allowlisted_files(tmp_path: 
     assert paths == (
         "AGENTS.md",
         "README.md",
+        "backend/app/main.py",
         "backend/app/normalizer.py",
         "backend/app/pandoc_runner.py",
+        "backend/app/settings.py",
         "backend/pyproject.toml",
         "backend/tests/test_normalizer.py",
     )
@@ -65,7 +76,6 @@ def test_list_readable_paths_contains_only_existing_allowlisted_files(tmp_path: 
         "../.env",
         "/etc/passwd",
         r"C:\\Users\\secret.txt",
-        "extension/secret.txt",
         ".env",
         "backend/tests/../app/normalizer.py",
     ),
@@ -80,10 +90,13 @@ def test_read_source_file_rejects_untrusted_paths(tmp_path: Path, path: str):
 def test_read_source_file_preserves_safe_reason_for_outside_allowlist(tmp_path: Path):
     reader = SourceReader(_snapshot(tmp_path))
 
-    with pytest.raises(SourceAccessError) as raised:
+    with pytest.raises(SourceRequestError) as raised:
         reader.read_source_file("extension/secret.txt", start_line=1, end_line=20)
 
-    assert raised.value.safe_details == {"reason": "outside_allowlist"}
+    assert raised.value.safe_details == {
+        "reason": "outside_allowlist",
+        "required_action": "search_source",
+    }
 
 
 def test_read_source_file_reports_missing_allowlisted_path_as_correctable(tmp_path: Path):
@@ -160,6 +173,21 @@ def test_search_source_is_literal_scoped_and_bounded(tmp_path: Path):
         ("backend/tests/test_normalizer.py", 1),
     ]
     assert all("must not leak" not in item.snippet for item in results)
+
+
+def test_search_backend_app_discovers_python_implementations_but_not_binary(tmp_path: Path):
+    reader = SourceReader(_snapshot(tmp_path))
+
+    results = reader.search_source(
+        "create_app",
+        path_scope=PathScope.BACKEND_APP,
+        max_results=10,
+    )
+
+    assert [(item.path, item.line) for item in results] == [
+        ("backend/app/main.py", 1),
+    ]
+    assert "backend/app/reference.docx" not in reader.list_readable_paths()
 
 
 def test_search_source_does_not_interpret_regular_expressions(tmp_path: Path):

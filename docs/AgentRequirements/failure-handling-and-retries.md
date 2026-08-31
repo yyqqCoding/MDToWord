@@ -487,7 +487,8 @@ GitHub 源码版本读取和快照下载接入通用短重试；发布与数据�
 |---|---|---|---|
 | 工具未获当前节点授权 | `tool_not_authorized/security` | STOP | 安全终态 |
 | 当前阶段工具缺少受信前置产物 | `tool_precondition_failed/invalid` | 不做传输重试 | ToolMessage返回模型并执行required_action |
-| 源码访问越权或受信重定向拒绝 | `source_access_denied/security` | STOP | 安全终态 |
+| 危险源码路径或受信重定向拒绝 | `source_access_denied/security` | STOP | 安全终态 |
+| 安全规范化后的白名单外路径 | `source_request_invalid/invalid` | 不做传输重试 | ToolMessage要求先搜索可读路径 |
 | 白名单内源码读取参数、路径存在性或输出范围无效 | `source_request_invalid/invalid` | 不做传输重试 | ToolMessage返回模型并修正参数 |
 | 快照归档含越界路径、不安全entry或完整性逃逸 | `source_snapshot_security_rejected/security` | STOP | 安全终态 |
 | 源码快照无法物化、存储或通过普通格式校验 | `source_snapshot_error/permanent` | STOP | Failure Finalizer |

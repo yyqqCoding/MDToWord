@@ -324,10 +324,64 @@ def test_graph_step_limit_scales_beyond_model_and_tool_budgets():
     assert limit > 100
 
 
+def test_resumed_success_reports_only_current_invocation_usage_delta():
+    runtime = object.__new__(RepairAgentRuntime)
+    runtime._models = SimpleNamespace(
+        primary_input_cost_per_million=Decimal("1"),
+        primary_output_cost_per_million=Decimal("2"),
+    )
+
+    outcome = runtime._outcome(
+        {
+            "terminal": "completed",
+            "phase": "repairing",
+            "model_calls": 24,
+            "tool_calls": 34,
+            "sandbox_duration_ms": 8_000,
+            "input_tokens": 200_000,
+            "output_tokens": 20_000,
+            "total_tokens": 220_000,
+            "cache_read_tokens": 40_000,
+        },
+        baseline_values={
+            "model_calls": 13,
+            "tool_calls": 25,
+            "sandbox_duration_ms": 5_000,
+            "input_tokens": 120_000,
+            "output_tokens": 12_000,
+            "total_tokens": 132_000,
+            "cache_read_tokens": 30_000,
+        },
+    )
+
+    assert outcome.model_calls == 11
+    assert outcome.tool_calls == 9
+    assert outcome.sandbox_duration_ms == 3_000
+    assert outcome.input_tokens == 80_000
+    assert outcome.output_tokens == 8_000
+    assert outcome.total_tokens == 88_000
+    assert outcome.cache_read_tokens == 10_000
+    assert outcome.estimated_cost == Decimal("0.096")
+
+
 def test_graph_recursion_error_becomes_resumable_budget_error_with_usage():
     class FailingGraph:
+        state_reads = 0
+
         async def aget_state(self, config):
             assert config["recursion_limit"] == 892
+            self.state_reads += 1
+            if self.state_reads == 1:
+                return SimpleNamespace(
+                    values={
+                        "phase": "reproducing",
+                        "model_calls": 3,
+                        "tool_calls": 5,
+                        "input_tokens": 13_000,
+                        "output_tokens": 7_000,
+                        "total_tokens": 20_000,
+                    }
+                )
             return SimpleNamespace(
                 values={
                     "phase": "reproducing",
@@ -363,9 +417,9 @@ def test_graph_recursion_error_becomes_resumable_budget_error_with_usage():
         "graph_step_limit": 892,
     }
     assert error.phase == "reproducing"
-    assert error.additional_model_calls == 9
-    assert error.additional_tool_calls == 20
-    assert error.additional_total_tokens == 85_000
+    assert error.additional_model_calls == 6
+    assert error.additional_tool_calls == 15
+    assert error.additional_total_tokens == 65_000
 
 
 def test_premature_sandbox_call_is_corrected_within_same_agent_run(tmp_path: Path):
@@ -476,8 +530,22 @@ def test_premature_sandbox_call_is_corrected_within_same_agent_run(tmp_path: Pat
 
 def test_inner_agent_error_carries_checkpoint_phase_and_usage():
     class FailingGraph:
+        state_reads = 0
+
         async def aget_state(self, config):
             del config
+            self.state_reads += 1
+            if self.state_reads == 1:
+                return SimpleNamespace(
+                    values={
+                        "phase": "repairing",
+                        "model_calls": 1,
+                        "tool_calls": 2,
+                        "input_tokens": 20,
+                        "output_tokens": 5,
+                        "total_tokens": 25,
+                    }
+                )
             return SimpleNamespace(
                 values={
                     "phase": "repairing",
@@ -503,15 +571,29 @@ def test_inner_agent_error_carries_checkpoint_phase_and_usage():
     error = exc_info.value
     assert error.phase == "repairing"
     assert error.node == "repair_agent"
-    assert error.additional_model_calls == 4
-    assert error.additional_tool_calls == 7
-    assert error.additional_total_tokens == 150
+    assert error.additional_model_calls == 3
+    assert error.additional_tool_calls == 5
+    assert error.additional_total_tokens == 125
 
 
 def test_unknown_inner_error_is_located_and_preserves_checkpoint_usage():
     class FailingGraph:
+        state_reads = 0
+
         async def aget_state(self, config):
             del config
+            self.state_reads += 1
+            if self.state_reads == 1:
+                return SimpleNamespace(
+                    values={
+                        "phase": "repairing",
+                        "model_calls": 2,
+                        "tool_calls": 4,
+                        "input_tokens": 300,
+                        "output_tokens": 100,
+                        "total_tokens": 400,
+                    }
+                )
             return SimpleNamespace(
                 values={
                     "phase": "repairing",
@@ -538,6 +620,6 @@ def test_unknown_inner_error_is_located_and_preserves_checkpoint_usage():
     assert error.safe_details == {"error_type": "RuntimeError"}
     assert error.phase == "repairing"
     assert error.node == "repair_agent"
-    assert error.additional_model_calls == 6
-    assert error.additional_tool_calls == 12
-    assert error.additional_total_tokens == 1_000
+    assert error.additional_model_calls == 4
+    assert error.additional_tool_calls == 8
+    assert error.additional_total_tokens == 600

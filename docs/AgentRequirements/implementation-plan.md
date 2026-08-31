@@ -1411,3 +1411,20 @@ Gate、源码快照、Sandbox Worker、最终独立验证与发布边界不变�
 - 仅为旧失败快照明确包含`error_type=OpenAIAPIError`且checkpoint仍在复现/修复阶段的run增加
   显式恢复兼容；Scheduler不自动重开，其他未知错误不恢复。生产部署后再次续跑同一run；
   Agent全量：390 passed、5 skipped，compileall通过。
+
+### Repair Agent读取范围与续跑计量回归（2026-08-31）
+
+- 生产 run `63cab3f3-e906-4c46-9179-62651473fcf4` 在多轮显式续跑后请求了读取白名单外的
+  安全仓库相对路径，旧实现直接终结为 `source_access_denied/security`。同一 run 的 Trace
+  实际有 24 次 Repair模型调用、34 次源码读/搜索等工具调用，而运行摘要显示42次模型、79次
+  工具和565,713 Token，确认外层在每次恢复时重复加上了内层thread历史累计；
+- Patch Policy升至`patch-policy-v3`：只读诊断扩至固定源码快照中的`backend/app/**/*.py`，
+  但非Python资产不可读，自动修复写入仍严格只允许`normalizer.py`与`pandoc_runner.py`；
+- 安全规范化后的白名单外读取不查询目标存在性，改为
+  `source_request_invalid/invalid`与`required_action=search_source`返回模型并在同一工具循环
+  纠正。绝对路径、路径穿越、隐藏路径和符号链接仍为安全终态；
+- Repair Agent Prompt升至`repair-agent-v4`。Runtime以进入本次invoke时的checkpoint作为
+  计量基线，成功结果和异常补记均只向外层返回模型、工具、Token与Sandbox耗时的非负增量；
+  内层累计值继续用于thread总预算，不因恢复而重置；
+- 部署后重新提交同一反馈验收，不恢复已经安全终结的旧run。Agent全量：393 passed、
+  5 skipped；跳过项仍为需要真实Docker环境的集成测试，compileall通过。

@@ -251,6 +251,25 @@ def test_source_request_error_returns_safe_correction_to_model():
     assert '"path": "backend/app/normalizer.py"' in message
 
 
+def test_outside_read_allowlist_returns_search_correction_without_path():
+    message = safe_tool_error(
+        SourceRequestError(
+            "source path is outside the read allowlist",
+            safe_details={
+                "reason": "outside_allowlist",
+                "required_action": "search_source",
+            },
+        ),
+        None,
+    )
+
+    assert message is not None
+    assert '"error_code": "source_request_invalid"' in message
+    assert '"reason": "outside_allowlist"' in message
+    assert '"required_action": "search_source"' in message
+    assert '"path"' not in message
+
+
 def test_source_access_error_is_not_returned_to_model():
     assert (
         safe_tool_error(
