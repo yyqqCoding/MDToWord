@@ -39,6 +39,7 @@ GROUP_ARGUMENT_COMMANDS = {
     "underset",
     "overset",
 }
+CANCEL_COMMAND_PATTERN = re.compile(r"\\[bx]?cancel\b")
 
 
 def normalize_markdown(markdown: str) -> str:
@@ -264,8 +265,44 @@ def _repair_math(math: str) -> str:
     return math
 
 
+def _strip_unsupported_cancel_commands(content: str) -> str:
+    """Replace \\cancel/\\bcancel/\\xcancel{...} with their argument.
+
+    Pandoc's TeX math parser (texmath) does not support the cancel package
+    commands, so a ``\\cancel`` formula triggers a "Could not convert TeX math"
+    warning and aborts the DOCX export. Dropping the strike-through decoration
+    while keeping the argument keeps the equation editable and the math
+    equivalent (e.g. ``\\frac{\\cancel{x}y}{\\cancel{x}}`` becomes
+    ``\\frac{xy}{x}``).
+    """
+    result: list[str] = []
+    index = 0
+    while index < len(content):
+        match = CANCEL_COMMAND_PATTERN.search(content, index)
+        if match is None:
+            result.append(content[index:])
+            break
+        result.append(content[index : match.start()])
+        brace_index = match.end()
+        while brace_index < len(content) and content[brace_index].isspace():
+            brace_index += 1
+        if brace_index >= len(content) or content[brace_index] != "{":
+            result.append(match.group(0))
+            index = match.end()
+            continue
+        close_index = _find_matching_brace(content, brace_index)
+        if close_index is None:
+            result.append(match.group(0))
+            index = match.end()
+            continue
+        result.append(content[brace_index + 1 : close_index])
+        index = close_index + 1
+    return "".join(result)
+
+
 def _repair_math_content(content: str) -> str:
-    repaired = re.sub(r"\*\{([^}\n]+)\}", r"_{\1}", content)
+    repaired = _strip_unsupported_cancel_commands(content)
+    repaired = re.sub(r"\*\{([^}\n]+)\}", r"_{\1}", repaired)
     repaired = re.sub(r"(?<=[}|])\*([A-Za-z0-9])", r"_\1", repaired)
     repaired = _escape_literal_percent_signs(repaired)
     repaired = _repair_environment_line_breaks(repaired)
