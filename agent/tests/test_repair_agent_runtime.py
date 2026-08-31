@@ -10,12 +10,13 @@ import pytest
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.errors import GraphRecursionError
 
 from agent.domain.models import TaskArtifact
 from agent.domain.enums import FeedbackType
 from agent.domain.errors import BudgetExceededError, ToolAuthorizationError
 from agent.repair_agent.models import ChatModelBundle, ChatModelProfile
-from agent.repair_agent.runtime import RepairAgentRuntime
+from agent.repair_agent.runtime import RepairAgentRuntime, _graph_recursion_limit
 from agent.repair_agent.tools import RepairAgentContext
 from agent.sandbox.contracts import (
     JUnitSummary,
@@ -308,6 +309,61 @@ def test_official_model_call_limit_becomes_resumable_budget_error(tmp_path: Path
     assert artifacts.path_for(RUN_ID, "fix.patch").read_bytes()
 
 
+def test_graph_step_limit_scales_beyond_model_and_tool_budgets():
+    limit = _graph_recursion_limit(
+        max_model_calls=50,
+        max_tool_calls=30,
+        middleware_count=12,
+    )
+
+    assert limit == 892
+    assert limit > 100
+
+
+def test_graph_recursion_error_becomes_resumable_budget_error_with_usage():
+    class FailingGraph:
+        async def aget_state(self, config):
+            assert config["recursion_limit"] == 892
+            return SimpleNamespace(
+                values={
+                    "phase": "reproducing",
+                    "model_calls": 9,
+                    "tool_calls": 20,
+                    "input_tokens": 63_000,
+                    "output_tokens": 22_000,
+                    "total_tokens": 85_000,
+                }
+            )
+
+        async def ainvoke(self, state, config, *, context):
+            del state, config, context
+            raise GraphRecursionError("recursion limit reached")
+
+    runtime = object.__new__(RepairAgentRuntime)
+    runtime._graph = FailingGraph()
+    runtime._recursion_limit = 892
+
+    with pytest.raises(BudgetExceededError) as exc_info:
+        asyncio.run(
+            runtime.run(
+                SimpleNamespace(run_id=RUN_ID),
+                category="conversion_crash",
+            )
+        )
+
+    error = exc_info.value
+    assert error.safe_details == {
+        "budget_type": "graph_steps",
+        "model_calls": 9,
+        "tool_calls": 20,
+        "graph_step_limit": 892,
+    }
+    assert error.phase == "reproducing"
+    assert error.additional_model_calls == 9
+    assert error.additional_tool_calls == 20
+    assert error.additional_total_tokens == 85_000
+
+
 def test_premature_sandbox_call_is_corrected_within_same_agent_run(tmp_path: Path):
     responses = [
         AIMessage(
@@ -435,6 +491,7 @@ def test_inner_agent_error_carries_checkpoint_phase_and_usage():
 
     runtime = object.__new__(RepairAgentRuntime)
     runtime._graph = FailingGraph()
+    runtime._recursion_limit = 100
 
     with pytest.raises(ToolAuthorizationError) as exc_info:
         asyncio.run(runtime.run(SimpleNamespace(run_id=RUN_ID), category="conversion_crash"))
