@@ -1,6 +1,7 @@
 """基于官方 create_agent 的单 Repair Agent 工具循环。"""
 
 import json
+from collections.abc import Mapping
 from decimal import Decimal
 from importlib.resources import files
 from uuid import UUID
@@ -48,7 +49,7 @@ from agent.domain.failures import FailureRecorder
 from agent.telemetry.base import NoopTelemetry, Telemetry
 
 
-REPAIR_AGENT_PROMPT_VERSION = "repair-agent-v3"
+REPAIR_AGENT_PROMPT_VERSION = "repair-agent-v4"
 REPAIR_SUMMARY_PROMPT_VERSION = "repair-summary-v1"
 _GRAPH_FIXED_STEP_MARGIN = 32
 _GRAPH_TOOL_STEP_ALLOWANCE = 2
@@ -171,6 +172,7 @@ class RepairAgentRuntime:
             "recursion_limit": self._recursion_limit,
         }
         snapshot = await self._graph.aget_state(config)
+        baseline_values = dict(snapshot.values or {})
         try:
             if snapshot.values:
                 raw_output = await self._graph.ainvoke(None, config, context=context)
@@ -179,7 +181,7 @@ class RepairAgentRuntime:
                 initial = _initial_state(context, category=category, probe=probe)
                 if probe.reproduction_confirmed and not context.allow_repair:
                     initial["terminal"] = "completed"
-                    return self._outcome(initial)
+                    return self._outcome(initial, baseline_values=baseline_values)
                 raw_output = await self._graph.ainvoke(initial, config, context=context)
         except (
             ModelCallLimitExceededError,
@@ -213,11 +215,7 @@ class RepairAgentRuntime:
                 phase=phase,
                 node="repair_agent",
             )
-            error.additional_model_calls = model_calls
-            error.additional_tool_calls = tool_calls
-            error.additional_input_tokens = int(values.get("input_tokens", 0))
-            error.additional_output_tokens = int(values.get("output_tokens", 0))
-            error.additional_total_tokens = int(values.get("total_tokens", 0))
+            _attach_usage_deltas(error, values, baseline_values)
             raise error from exc
         except AgentError as exc:
             # create_agent 是外层 Graph 的单个节点；节点内异常发生时，外层 checkpoint
@@ -229,11 +227,7 @@ class RepairAgentRuntime:
                 phase=str(values.get("phase", "reproducing")),
                 node="repair_agent",
             )
-            exc.additional_model_calls = int(values.get("model_calls", 0))
-            exc.additional_tool_calls = int(values.get("tool_calls", 0))
-            exc.additional_input_tokens = int(values.get("input_tokens", 0))
-            exc.additional_output_tokens = int(values.get("output_tokens", 0))
-            exc.additional_total_tokens = int(values.get("total_tokens", 0))
+            _attach_usage_deltas(exc, values, baseline_values)
             raise
         except GraphBubbleUp:
             # LangGraph interrupt/控制流必须保持原语义，不能包装成普通运行失败。
@@ -250,23 +244,25 @@ class RepairAgentRuntime:
                 phase=str(values.get("phase", "reproducing")),
                 node="repair_agent",
             )
-            error.additional_model_calls = int(values.get("model_calls", 0))
-            error.additional_tool_calls = int(values.get("tool_calls", 0))
-            error.additional_input_tokens = int(values.get("input_tokens", 0))
-            error.additional_output_tokens = int(values.get("output_tokens", 0))
-            error.additional_total_tokens = int(values.get("total_tokens", 0))
+            _attach_usage_deltas(error, values, baseline_values)
             raise error from exc
         state = RepairAgentState(**raw_output)
-        return self._outcome(state)
+        return self._outcome(state, baseline_values=baseline_values)
 
-    def _outcome(self, state: RepairAgentState) -> RepairAgentOutcome:
+    def _outcome(
+        self,
+        state: RepairAgentState,
+        *,
+        baseline_values: Mapping[str, object] | None = None,
+    ) -> RepairAgentOutcome:
         terminal = state.get("terminal")
         if terminal not in {"completed", "blocked"}:
             raise InvalidModelResponseError(
                 "repair agent ended without a trusted completion tool"
             )
-        input_tokens = int(state.get("input_tokens", 0))
-        output_tokens = int(state.get("output_tokens", 0))
+        baseline = baseline_values or {}
+        input_tokens = _counter_delta(state, baseline, "input_tokens")
+        output_tokens = _counter_delta(state, baseline, "output_tokens")
         # 无法从被 Summary 替换的消息可靠地区分每个成功调用由主或备用完成；成本按主模型
         # 费率保守估算。未配置单价时仍为 0，不影响真实 Token 计量。
         estimated_cost = (
@@ -291,15 +287,48 @@ class RepairAgentRuntime:
             fix_summary=state.get("fix_summary"),
             reproduction_round=int(state.get("reproduction_round", 0)),
             repair_round=int(state.get("repair_round", 0)),
-            model_calls=int(state.get("model_calls", 0)),
-            tool_calls=int(state.get("tool_calls", 0)),
-            sandbox_duration_ms=int(state.get("sandbox_duration_ms", 0)),
+            model_calls=_counter_delta(state, baseline, "model_calls"),
+            tool_calls=_counter_delta(state, baseline, "tool_calls"),
+            sandbox_duration_ms=_counter_delta(
+                state,
+                baseline,
+                "sandbox_duration_ms",
+            ),
             input_tokens=input_tokens,
             output_tokens=output_tokens,
-            total_tokens=int(state.get("total_tokens", 0)),
-            cache_read_tokens=int(state.get("cache_read_tokens", 0)),
+            total_tokens=_counter_delta(state, baseline, "total_tokens"),
+            cache_read_tokens=_counter_delta(
+                state,
+                baseline,
+                "cache_read_tokens",
+            ),
             estimated_cost=estimated_cost,
         )
+
+
+def _counter_delta(
+    values: Mapping[str, object],
+    baseline: Mapping[str, object],
+    key: str,
+) -> int:
+    """把持久化 thread 累计值投影为本次外层节点的非负增量。"""
+
+    return max(0, int(values.get(key, 0)) - int(baseline.get(key, 0)))
+
+
+def _attach_usage_deltas(
+    error: AgentError,
+    values: Mapping[str, object],
+    baseline: Mapping[str, object],
+) -> None:
+    for key in (
+        "model_calls",
+        "tool_calls",
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+    ):
+        setattr(error, f"additional_{key}", _counter_delta(values, baseline, key))
 
 
 def _graph_recursion_limit(

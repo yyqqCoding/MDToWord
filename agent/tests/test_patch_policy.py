@@ -136,6 +136,16 @@ def test_trusted_mermaid_renderer_is_readable_but_not_editable(tmp_path: Path):
         policy.authorize_write("backend/app/mermaid_renderer.py", "fix")
 
 
+def test_backend_app_python_is_readable_without_expanding_fix_allowlist():
+    policy = PatchPolicy.load_default()
+
+    assert policy.can_read("backend/app/main.py") is True
+    assert policy.can_read("backend/app/settings.py") is True
+    assert policy.can_read("backend/app/reference.docx") is False
+    with pytest.raises(PatchPolicyError):
+        policy.authorize_write("backend/app/settings.py", "fix")
+
+
 @pytest.mark.parametrize(
     ("phase", "path"),
     (

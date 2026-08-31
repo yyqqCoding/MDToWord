@@ -356,7 +356,7 @@ Scheduler 每次优先恢复 checkpoint，再领取一条反馈，进程内并�
   tokens，并同时保存 `result.json`、`test.patch` 与 `repair-result.json`；阶段 E 真实
   服务终态验收完成；
 - 以上 Mermaid 转人工记录是依赖尚未获批时的历史证据。2026-08-12 维护者确认真实问题
-  可以引入审核后的依赖；当前 `publication-policy-v4/patch-policy-v2/fix-generation-v2`
+  可以引入审核后的依赖；当前 `publication-policy-v4/patch-policy-v3/fix-generation-v2`
   已预装固定 Mermaid CLI + Chromium + 中文字体，删除 Mermaid 提前终止，并在无网络、
   非 root、只读 Sandbox 中用中文流程图验证“旧基线 drawing 失败、接入后通过”。历史 run
   不重开；后续新 feedback 已完成真实 PR、合并、Render 部署与插件回放；

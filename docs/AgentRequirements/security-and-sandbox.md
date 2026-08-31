@@ -120,9 +120,7 @@ Supabase 或执行其他网络 I/O；请求在锁内消费额度并释放锁后�
 允许模型按需读取：
 
 ```text
-backend/app/normalizer.py
-backend/app/pandoc_runner.py
-backend/app/mermaid_renderer.py         # 只读受信平台 API
+backend/app/**/*.py                  # 后端 Python 实现，只读诊断
 backend/tests/**/*.py
 backend/pyproject.toml               # 只读
 AGENTS.md                            # 只读规则
@@ -139,7 +137,7 @@ README.md                            # 只读项目摘要
 ```
 
 拒绝绝对路径、`..`、符号链接解析到仓库外、`.git/`、`.env*`、密钥、构建产物、
-用户本机路径和未列出的配置。
+用户本机路径、非 Python 应用资产和未列出的配置。
 
 ## 6. 修改白名单
 
@@ -166,7 +164,7 @@ Render `0.1 CPU / 512 MiB` 下完整转换链路的 Chromium 冷启动可能超�
 明确但足够的 120 秒受信子进程硬上限。
 `mermaid_renderer.py` 可读不可写，模型只能在 `pandoc_runner.py` 接入它公开的受信函数。
 
-明确禁止：
+明确禁止自动修改（其中 Python 应用文件仍可只读诊断）：
 
 ```text
 extension/**

@@ -237,7 +237,7 @@ class RepairTelemetryMiddleware(AgentMiddleware):
         with self.telemetry.start_generation(
             GenerationTrace(
                 operation="repair_agent_model",
-                prompt_version="repair-agent-v3",
+                prompt_version="repair-agent-v4",
                 provider="openai_compatible",
                 model=model_name,
                 input_summary={
@@ -491,12 +491,15 @@ def safe_tool_error(exc: Exception, request: Any) -> str | None:
                 "max_results",
             }
         }
+        required_action = str(
+            exc.safe_details.get("required_action") or "correct_source_request"
+        )[:120]
         return json.dumps(
             {
                 "accepted": False,
                 "error_code": exc.error_code,
                 **details,
-                "required_action": "correct_source_request",
+                "required_action": required_action,
                 "message": str(exc).replace("\n", " ")[:600],
             },
             ensure_ascii=False,

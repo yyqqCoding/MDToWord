@@ -51,9 +51,14 @@ class SourceReader:
     ) -> SourceFileResult:
         normalized = normalize_repository_path(path)
         if not self._policy.can_read(normalized):
-            raise SourceAccessError(
-                "source path is outside the read allowlist",
-                safe_details={"reason": "outside_allowlist"},
+            # 规范化已通过，且尚未查询文件是否存在；这里只说明模型选错了读取范围，
+            # 不泄露目标内容或存在性。危险路径仍由 normalize_repository_path 安全终止。
+            raise SourceRequestError(
+                "source path is outside the read allowlist; use search_source to select an allowed path",
+                safe_details={
+                    "reason": "outside_allowlist",
+                    "required_action": "search_source",
+                },
             )
         if start_line < 1 or end_line < start_line or end_line - start_line > 999:
             raise SourceRequestError(
@@ -182,6 +187,12 @@ class SourceReader:
         for exact in self._policy.read_exact:
             if _in_scope(exact, scope) and (self._root / exact).is_file():
                 candidates.add(exact)
+        app_root = self._root / "backend/app"
+        if scope in {PathScope.BACKEND, PathScope.BACKEND_APP} and app_root.is_dir():
+            for candidate in app_root.rglob("*.py"):
+                relative = candidate.relative_to(self._root).as_posix()
+                if self._policy.can_read(relative):
+                    candidates.add(relative)
         tests_root = self._root / "backend/tests"
         if scope in {PathScope.BACKEND, PathScope.BACKEND_TESTS} and tests_root.is_dir():
             for candidate in tests_root.rglob("*.py"):
