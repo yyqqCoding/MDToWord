@@ -368,6 +368,41 @@ def test_langfuse_records_reproduction_tool_name_round_and_bounded_summary():
     assert client.observations[0].updates[0]["output"]["status"] == "completed"
 
 
+def test_langfuse_records_only_safe_tool_failure_details():
+    client = _FakeLangfuseClient()
+    telemetry = LangfuseTelemetry(
+        public_key="public",
+        secret_key="secret",
+        host="https://cloud.langfuse.com",
+        environment="development",
+        client=client,
+    )
+
+    with telemetry.start_tool(
+        ToolTrace(
+            operation="read-source-file",
+            round=2,
+            input_summary={"argument_names": ["path", "start_line", "end_line"]},
+        )
+    ) as observed:
+        observed.fail(
+            error_code="source_request_invalid",
+            error_type="SourceRequestError",
+            safe_details={
+                "reason": "line_after_eof",
+                "path": "backend/app/normalizer.py",
+                "contact": "user@example.com",
+            },
+        )
+
+    output = client.observations[0].updates[0]["output"]
+    assert output["safe_details"] == {
+        "reason": "line_after_eof",
+        "path": "backend/app/normalizer.py",
+        "contact": "[REDACTED]",
+    }
+
+
 def test_langfuse_start_failure_is_fail_open():
     class BrokenClient:
         def start_as_current_observation(self, **kwargs: object):

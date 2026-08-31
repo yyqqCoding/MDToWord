@@ -109,6 +109,11 @@ def test_failure_code_registry_is_stable_and_unknown_codes_fail_closed():
         component="sandbox",
         operation="classify_reproduction",
     )
+    correctable_source_request = failure_cause_from_code(
+        "source_request_invalid",
+        component="runtime",
+        operation="read_source_file",
+    )
     unknown = failure_cause_from_code(
         "new_unreviewed_code",
         component="runtime",
@@ -117,6 +122,7 @@ def test_failure_code_registry_is_stable_and_unknown_codes_fail_closed():
     )
 
     assert business.kind is FailureKind.BUSINESS
+    assert correctable_source_request.kind is FailureKind.INVALID
     assert unknown.code == "unexpected_error"
     assert unknown.kind is FailureKind.PERMANENT
     assert unknown.safe_details == {}

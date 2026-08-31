@@ -9,15 +9,27 @@ def normalize_repository_path(raw_path: str) -> str:
     """只接受规范的 POSIX 仓库相对路径，不对危险输入做自动修复。"""
 
     if not raw_path or "\x00" in raw_path or "\\" in raw_path:
-        raise SourceAccessError("repository path is invalid")
+        raise SourceAccessError(
+            "repository path is invalid",
+            safe_details={"reason": "unsafe_path"},
+        )
     if raw_path.startswith("/") or ":" in raw_path:
-        raise SourceAccessError("repository path must be relative")
+        raise SourceAccessError(
+            "repository path must be relative",
+            safe_details={"reason": "unsafe_path"},
+        )
     parts = raw_path.split("/")
     if any(part in {"", ".", ".."} or part.startswith(".") for part in parts):
-        raise SourceAccessError("repository path is not normalized")
+        raise SourceAccessError(
+            "repository path is not normalized",
+            safe_details={"reason": "unsafe_path"},
+        )
     path = PurePosixPath(raw_path)
     if path.is_absolute():
-        raise SourceAccessError("repository path must be relative")
+        raise SourceAccessError(
+            "repository path must be relative",
+            safe_details={"reason": "unsafe_path"},
+        )
     return path.as_posix()
 
 
@@ -36,7 +48,10 @@ def resolve_snapshot_path(
     for segment in normalized.split("/"):
         current = current / segment
         if current.is_symlink():
-            raise SourceAccessError("symbolic links are not allowed")
+            raise SourceAccessError(
+                "symbolic links are not allowed",
+                safe_details={"reason": "symlink_rejected"},
+            )
         if not current.exists():
             break
 
@@ -44,11 +59,17 @@ def resolve_snapshot_path(
         try:
             resolved = candidate.resolve(strict=True)
         except OSError as exc:
-            raise SourceAccessError("source path does not exist") from exc
+            raise SourceAccessError(
+                "source path does not exist",
+                safe_details={"reason": "path_not_found"},
+            ) from exc
     else:
         resolved = candidate.resolve(strict=False)
     try:
         resolved.relative_to(resolved_root)
     except ValueError as exc:
-        raise SourceAccessError("source path escapes snapshot root") from exc
+        raise SourceAccessError(
+            "source path escapes snapshot root",
+            safe_details={"reason": "unsafe_path"},
+        ) from exc
     return resolved

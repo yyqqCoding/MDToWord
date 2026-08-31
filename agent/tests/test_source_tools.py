@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from agent.domain.errors import SourceAccessError
+from agent.domain.errors import SourceAccessError, SourceRequestError
 from agent.tools.source import PathScope, SourceReader
 
 
@@ -77,6 +77,45 @@ def test_read_source_file_rejects_untrusted_paths(tmp_path: Path, path: str):
         reader.read_source_file(path, start_line=1, end_line=20)
 
 
+def test_read_source_file_preserves_safe_reason_for_outside_allowlist(tmp_path: Path):
+    reader = SourceReader(_snapshot(tmp_path))
+
+    with pytest.raises(SourceAccessError) as raised:
+        reader.read_source_file("extension/secret.txt", start_line=1, end_line=20)
+
+    assert raised.value.safe_details == {"reason": "outside_allowlist"}
+
+
+def test_read_source_file_reports_missing_allowlisted_path_as_correctable(tmp_path: Path):
+    reader = SourceReader(_snapshot(tmp_path))
+
+    with pytest.raises(SourceRequestError) as raised:
+        reader.read_source_file("backend/tests/missing.py", start_line=1, end_line=20)
+
+    assert raised.value.safe_details == {
+        "reason": "path_not_found",
+        "path": "backend/tests/missing.py",
+    }
+
+
+def test_read_source_file_reports_invalid_line_range_as_correctable(tmp_path: Path):
+    reader = SourceReader(_snapshot(tmp_path))
+
+    with pytest.raises(SourceRequestError) as raised:
+        reader.read_source_file(
+            "backend/app/normalizer.py",
+            start_line=20,
+            end_line=40,
+        )
+
+    assert raised.value.safe_details == {
+        "reason": "line_after_eof",
+        "path": "backend/app/normalizer.py",
+        "start_line": 20,
+        "total_lines": 2,
+    }
+
+
 def test_read_source_file_rejects_symlink_even_when_target_is_allowed(tmp_path: Path):
     root = _snapshot(tmp_path)
     link = root / "backend/tests/test_link.py"
@@ -91,6 +130,20 @@ def test_read_source_file_rejects_symlink_even_when_target_is_allowed(tmp_path: 
             start_line=1,
             end_line=20,
         )
+
+
+def test_search_source_reports_invalid_limit_as_correctable(tmp_path: Path):
+    with pytest.raises(SourceRequestError) as raised:
+        SourceReader(_snapshot(tmp_path)).search_source(
+            "normalize_markdown",
+            path_scope=PathScope.BACKEND,
+            max_results=21,
+        )
+
+    assert raised.value.safe_details == {
+        "reason": "invalid_result_limit",
+        "max_results": 21,
+    }
 
 
 def test_search_source_is_literal_scoped_and_bounded(tmp_path: Path):

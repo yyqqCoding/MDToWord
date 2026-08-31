@@ -46,7 +46,7 @@ from agent.domain.failures import FailureRecorder
 from agent.telemetry.base import NoopTelemetry, Telemetry
 
 
-REPAIR_AGENT_PROMPT_VERSION = "repair-agent-v2"
+REPAIR_AGENT_PROMPT_VERSION = "repair-agent-v3"
 REPAIR_SUMMARY_PROMPT_VERSION = "repair-summary-v1"
 
 

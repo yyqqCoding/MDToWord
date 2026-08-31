@@ -268,6 +268,7 @@ _KIND_BY_CODE: dict[str, FailureKind] = {
     "skipped_tests_increased": FailureKind.BUSINESS,
     "source_access_denied": FailureKind.SECURITY,
     "source_auth_error": FailureKind.PERMANENT,
+    "source_request_invalid": FailureKind.INVALID,
     "source_revision_error": FailureKind.PERMANENT,
     "source_snapshot_error": FailureKind.PERMANENT,
     "stale_base": FailureKind.BUSINESS,

@@ -299,12 +299,21 @@ class _LangfuseToolObservation:
         except Exception as exc:
             _warn(exc)
 
-    def fail(self, *, error_code: str, error_type: str) -> None:
+    def fail(
+        self,
+        *,
+        error_code: str,
+        error_type: str,
+        safe_details: dict[str, object] | None = None,
+    ) -> None:
         try:
+            output = {"error_code": error_code, "error_type": error_type}
+            if safe_details:
+                output["safe_details"] = mask_sensitive(safe_details)
             self._raw.update(
                 level="ERROR",
                 status_message=error_code,
-                output={"error_code": error_code, "error_type": error_type},
+                output=output,
             )
         except Exception as exc:
             _warn(exc)

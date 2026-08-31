@@ -86,6 +86,10 @@ terminal: completed | blocked | null
 每个工具在执行函数内部再次校验阶段、路径、预算和当前 patch，Middleware 不是唯一安全
 边界。
 
+并行只读批次中，`source_request_invalid` 只使对应调用返回错误 ToolMessage，其他成功读取
+仍保留给模型；任一调用触发 `source_access_denied` 时仍终结整个 run。公开观测只记录原因
+枚举和通过规范化、白名单校验后的路径，不记录危险原始路径。
+
 ### 4.1 并行调用
 
 模型 API 必须允许一次响应返回多个 tool call，但本地按副作用类别决定能否并行：
