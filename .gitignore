@@ -227,5 +227,15 @@ docs/*
 !docs/AgentGuide/
 !docs/AgentRequirements/
 !docs/AgentProblem/
+!docs/AgentStabilityAnalysis/
 # 前端（trace-site 等）设计文档入库管理
 !docs/WebRequirements/
+/docs/AgentStabilityAnalysis/01-baseline-and-risk-model.md
+/docs/AgentStabilityAnalysis/02-node-by-node-analysis.md
+/docs/AgentStabilityAnalysis/03-intent-gate-and-prompts.md
+/docs/AgentStabilityAnalysis/04-failure-retry-recovery.md
+/docs/AgentStabilityAnalysis/05-tool-execution-and-security.md
+/docs/AgentStabilityAnalysis/06-observability-testing-and-slo.md
+/docs/AgentStabilityAnalysis/07-roadmap-and-acceptance.md
+/docs/AgentStabilityAnalysis/08-interview-playbook.md
+/docs/AgentStabilityAnalysis/README.md
