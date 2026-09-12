@@ -41,6 +41,7 @@ GROUP_ARGUMENT_COMMANDS = {
 }
 CANCEL_COMMAND_PATTERN = re.compile(r"\\[bx]?cancel\b")
 PRESCRIPT_COMMAND_PATTERN = re.compile(r"\\prescript\b")
+CE_COMMAND_PATTERN = re.compile(r"\\ce\b")
 
 
 def normalize_markdown(markdown: str) -> str:
@@ -301,6 +302,42 @@ def _strip_unsupported_cancel_commands(content: str) -> str:
     return "".join(result)
 
 
+def _strip_ce_commands(content: str) -> str:
+    """Replace mhchem ``\\ce{...}`` with its inner argument.
+
+    Pandoc's TeX math parser (texmath) does not support the mhchem ``\\ce``
+    command, so a chemistry formula such as ``\\ce{2H2 + O2 -> 2H2O}``
+    triggers a "Could not convert TeX math" warning and aborts the DOCX
+    export. Dropping the ``\\ce`` wrapper while keeping the argument keeps the
+    equation editable and the chemistry readable (e.g. ``\\ce{H2O}`` becomes
+    ``H2O``). Inner content may itself contain ``\\ce`` calls; only the outer
+    wrapper is removed.
+    """
+    result: list[str] = []
+    index = 0
+    while index < len(content):
+        match = CE_COMMAND_PATTERN.search(content, index)
+        if match is None:
+            result.append(content[index:])
+            break
+        result.append(content[index : match.start()])
+        brace_index = match.end()
+        while brace_index < len(content) and content[brace_index].isspace():
+            brace_index += 1
+        if brace_index >= len(content) or content[brace_index] != "{":
+            result.append(match.group(0))
+            index = match.end()
+            continue
+        close_index = _find_matching_brace(content, brace_index)
+        if close_index is None:
+            result.append(match.group(0))
+            index = match.end()
+            continue
+        result.append(content[brace_index + 1 : close_index])
+        index = close_index + 1
+    return "".join(result)
+
+
 def _rewrite_prescript_commands(content: str) -> str:
     """Rewrite mathtools \\prescript into plain TeX left scripts.
 
@@ -353,6 +390,7 @@ def _rewrite_prescript_commands(content: str) -> str:
 def _repair_math_content(content: str) -> str:
     repaired = _rewrite_prescript_commands(content)
     repaired = _strip_unsupported_cancel_commands(repaired)
+    repaired = _strip_ce_commands(repaired)
     repaired = re.sub(r"\*\{([^}\n]+)\}", r"_{\1}", repaired)
     repaired = re.sub(r"(?<=[}|])\*([A-Za-z0-9])", r"_\1", repaired)
     repaired = _escape_literal_percent_signs(repaired)
