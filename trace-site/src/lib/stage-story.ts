@@ -73,7 +73,9 @@ export function stageStory(key: StageKey, run: RunPublic): StageStory {
       if (inner) {
         facts.push(
           { label: "意图", value: INTENT_TEXT[inner.intent] ?? inner.intent },
-          { label: "相关度", value: inner.relevance.toFixed(2) },
+          inner.classifier === "jev"
+            ? { label: "JEV 路由得分", value: (inner.routing_score ?? 0).toFixed(2) }
+            : { label: "相关度", value: inner.relevance.toFixed(2) },
           { label: "信息是否充分", value: inner.sufficient_information ? "充分" : "不足" },
           { label: "疑似提示词注入", value: inner.injection_suspected ? "是" : "否" },
           {

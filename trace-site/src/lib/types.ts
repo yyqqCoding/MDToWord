@@ -87,6 +87,9 @@ export interface GateClassificationPublic {
   area: GateArea;
   category: GateCategory;
   relevance: number;
+  classifier?: "jev" | "gate-v10" | null;
+  routing_score?: number | null;
+  jev_signals?: Record<string, number | null> | null;
   sufficient_information: boolean;
   injection_suspected: boolean;
   requires_extension_change: boolean;

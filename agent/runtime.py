@@ -19,6 +19,7 @@ from agent.operations.site_notify import TraceSiteNotifier, build_trace_site_not
 from agent.repair_agent.models import build_chat_model_bundle
 from agent.repair_agent.runtime import RepairAgentRuntime
 from agent.providers.openai_compatible import OpenAICompatibleProvider
+from agent.providers.jev import JevFallbackProvider, JevGateProvider
 from agent.publishing.github import (
     GitHubAppTokenProvider,
     GitHubIssuePublisher,
@@ -107,6 +108,15 @@ async def open_configured_runtime(
             ),
             failure_recorder=failure_recorder,
         )
+        if config.jev_api_key is not None:
+            provider = JevFallbackProvider(
+                JevGateProvider(
+                    api_key=config.jev_api_key.get_secret_value(),
+                    base_url=config.jev_base_url,
+                    timeout_seconds=config.jev_timeout_seconds,
+                ),
+                provider,
+            )
         artifacts = ArtifactStore(config.artifact_root)
         reproduction = None
         repair = None
