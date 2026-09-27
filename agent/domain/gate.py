@@ -14,6 +14,9 @@ class GateClassification(BaseModel):
     area: GateArea = GateArea.UNKNOWN
     category: GateCategory
     relevance: float = Field(ge=0, le=1)
+    classifier: str | None = Field(default=None, pattern=r"^(jev|gate-v10)$")
+    routing_score: float | None = Field(default=None, ge=0, le=1)
+    jev_signals: dict[str, object] | None = None
     sufficient_information: bool
     injection_suspected: bool
     requires_extension_change: bool

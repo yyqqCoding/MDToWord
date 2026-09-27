@@ -37,6 +37,10 @@ class AgentConfig(BaseModel):
     model_context_window: int | None = Field(default=None, ge=1)
     model_input_cost_per_million: Decimal = Field(default=Decimal("0"), ge=0)
     model_output_cost_per_million: Decimal = Field(default=Decimal("0"), ge=0)
+    jev_api_key: SecretStr | None = None
+    jev_base_url: str = "https://www.rsiai.net"
+    jev_model: str = "jev-1.13.0"
+    jev_timeout_seconds: float = Field(default=30.0, ge=1, le=120)
     fallback_model_enabled: bool = False
     fallback_model_name: str | None = None
     fallback_model_api_key: SecretStr | None = None
@@ -104,6 +108,7 @@ class AgentConfig(BaseModel):
 
     @field_validator(
         "model_base_url",
+        "jev_base_url",
         "fallback_model_base_url",
         "langfuse_host",
         "sandbox_worker_url",
@@ -226,6 +231,10 @@ class AgentConfig(BaseModel):
                 values,
                 "MODEL_OUTPUT_COST_PER_MILLION",
             ),
+            jev_api_key=_optional_secret(values, "JEV_API_KEY"),
+            jev_base_url=values.get("JEV_BASE_URL", "https://www.rsiai.net").strip().rstrip("/"),
+            jev_model=values.get("JEV_MODEL", "jev-1.13.0").strip(),
+            jev_timeout_seconds=_float_value(values, "JEV_TIMEOUT_SECONDS", 30.0),
             fallback_model_enabled=_bool_value(
                 values,
                 "FALLBACK_MODEL_ENABLED",

@@ -12,6 +12,7 @@ dependencies = [
   "langgraph-checkpoint-postgres>=3.1.0,<3.2.0",
   "PyJWT[crypto]>=2.10.0,<3.0.0",
   "pydantic>=2.8.0",
+  "typesafe-sdk>=0.1.0",
   "psycopg[binary,pool]>=3.2.0,<4.0.0",
 ]
 

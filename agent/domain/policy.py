@@ -73,6 +73,38 @@ def apply_gate_policy(
 
     classification = _normalize_classification(classification)
 
+    jev_signals = classification.jev_signals or {}
+    if classification.classifier == "jev":
+        injection_score = float(jev_signals.get("injection", 0.0) or 0.0)
+        mixed_score = float(jev_signals.get("mixed", 0.0) or 0.0)
+        related_score = float(jev_signals.get("related", 0.0) or 0.0)
+        if 0.35 < injection_score < 0.65:
+            return _classified_terminal(GateRoute.NEEDS_HUMAN, classification, "injection_uncertain", model_calls=model_calls)
+        if 0.35 < mixed_score < 0.65:
+            return _classified_terminal(
+                GateRoute.NEEDS_HUMAN,
+                classification,
+                "mixed_feedback_uncertain",
+                model_calls=model_calls,
+            )
+        if mixed_score >= 0.65:
+            return _classified_terminal(GateRoute.NEEDS_HUMAN, classification, "mixed_feedback", model_calls=model_calls)
+        if 0.35 < related_score < 0.65:
+            return _classified_terminal(GateRoute.NEEDS_HUMAN, classification, "related_uncertain", model_calls=model_calls)
+        if related_score <= 0.35:
+            return _classified_terminal(
+                GateRoute.REJECTED_IRRELEVANT,
+                classification,
+                "unrelated_feedback",
+                model_calls=model_calls,
+            )
+
+    routing_score = (
+        classification.routing_score
+        if classification.classifier == "jev" and classification.routing_score is not None
+        else classification.relevance
+    )
+
     if classification.injection_suspected:
         return _classified_terminal(
             GateRoute.QUARANTINED_SECURITY,
@@ -95,7 +127,7 @@ def apply_gate_policy(
             and classification.area is GateArea.EXTENSION
         )
     )
-    if issue_candidate and classification.relevance < min_confidence:
+    if issue_candidate and routing_score < min_confidence:
         return _classified_terminal(
             GateRoute.NEEDS_HUMAN,
             classification,
@@ -168,7 +200,7 @@ def apply_gate_policy(
             risk=RiskLevel.LOW,
             model_calls=model_calls,
         )
-    if classification.relevance < min_confidence:
+    if routing_score < min_confidence:
         return _classified_terminal(
             GateRoute.NEEDS_HUMAN,
             classification,
