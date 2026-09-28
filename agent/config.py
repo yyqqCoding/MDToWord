@@ -87,6 +87,8 @@ class AgentConfig(BaseModel):
     # 公开展示站点的完成回调。两项都留空时完全不推送，Agent 行为与之前一致。
     trace_site_webhook_url: str | None = None
     trace_site_webhook_secret: SecretStr | None = None
+    notification_mcp_url: str | None = None
+    notification_mcp_token: SecretStr | None = None
 
     @field_validator("supabase_url")
     @classmethod
@@ -109,6 +111,7 @@ class AgentConfig(BaseModel):
         "sandbox_worker_url",
         "github_api_url",
         "trace_site_webhook_url",
+        "notification_mcp_url",
     )
     @classmethod
     def require_http_external_url(cls, value: str | None) -> str | None:
@@ -322,6 +325,8 @@ class AgentConfig(BaseModel):
                 values,
                 "TRACE_SITE_WEBHOOK_SECRET",
             ),
+            notification_mcp_url=_optional_text(values, "NOTIFICATION_MCP_URL"),
+            notification_mcp_token=_optional_secret(values, "NOTIFICATION_MCP_TOKEN"),
         )
 
     def require_database_url(self) -> str:
@@ -426,6 +431,11 @@ class AgentConfig(BaseModel):
             self.trace_site_webhook_url,
             self.trace_site_webhook_secret.get_secret_value(),
         )
+
+    def notification_mcp_settings(self) -> tuple[str, str] | None:
+        if self.notification_mcp_url is None or self.notification_mcp_token is None:
+            return None
+        return self.notification_mcp_url, self.notification_mcp_token.get_secret_value()
 
     def require_stage_c_controller_settings(self) -> tuple[str, str, str, str]:
         """在阶段 D 接入源码与沙箱节点时一次性收紧阶段 C 必需配置。"""

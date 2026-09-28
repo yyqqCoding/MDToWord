@@ -16,6 +16,7 @@ from agent.graph import (
     ReproductionDependencies,
 )
 from agent.operations.site_notify import TraceSiteNotifier, build_trace_site_notifier
+from agent.operations.email_notify import EmailMcpNotifier, CompositeRunSettledListener
 from agent.repair_agent.models import build_chat_model_bundle
 from agent.repair_agent.runtime import RepairAgentRuntime
 from agent.providers.openai_compatible import OpenAICompatibleProvider
@@ -48,7 +49,7 @@ class ConfiguredRuntime:
     feedback_repository: SupabaseFeedbackRepository
     run_repository: SupabaseAgentRunRepository
     # 未配置展示站点回调时为 None，Scheduler 据此完全跳过推送。
-    trace_site_notifier: TraceSiteNotifier | None = None
+    trace_site_notifier: object | None = None
 
 
 class _SilentFailureRecorder(FailureRecorder):
@@ -236,6 +237,15 @@ async def open_configured_runtime(
             client=notifier_client or shared_client,
             telemetry=telemetry,
         )
+        notification_settings = config.notification_mcp_settings()
+        terminal_listener = CompositeRunSettledListener(
+            trace_site_notifier,
+            EmailMcpNotifier(
+                endpoint=notification_settings[0],
+                token=notification_settings[1],
+                client=notifier_client or shared_client,
+            ) if notification_settings else None,
+        )
         async with open_postgres_checkpointer(
             database_url,
             config.checkpoint_schema,
@@ -277,7 +287,7 @@ async def open_configured_runtime(
                 ),
                 feedback_repository=feedback_repository,
                 run_repository=run_repository,
-                trace_site_notifier=trace_site_notifier,
+            trace_site_notifier=terminal_listener,
             )
     finally:
         telemetry.flush()
