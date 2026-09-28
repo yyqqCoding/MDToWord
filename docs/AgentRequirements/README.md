@@ -47,6 +47,7 @@ Agent 不自动合并、部署或修改扩展，也不把模型的文字结论�
 | [observability.md](observability.md) | Trace、日志、指标、脱敏和展示数据 |
 | [deployment-and-operations.md](deployment-and-operations.md) | 部署、配置、运行、验收和常见排障 |
 | [implementation-plan.md](implementation-plan.md) | 当前阶段状态与关键验收证据 |
+| [notification-mcp.md](notification-mcp.md) | 终态邮件通知 MCP、幂等和验收契约 |
 
 每条规则只在一个文档中定义。其他文档只引用，不复制同一份白名单、状态转换或重试表。
 代码和已执行的验收是事实来源；文档只描述已经确认的行为。
