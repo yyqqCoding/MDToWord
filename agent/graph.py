@@ -221,6 +221,8 @@ def build_gate_graph(
             "area": result.area.value,
             "category": result.category.value,
             "risk": result.risk,
+            "provider": execution.provider,
+            "model": execution.model,
             "gate_result_ref": gate_ref,
             "model_calls": state.model_calls + result.model_calls,
             "tool_calls": state.tool_calls + result.tool_calls,
@@ -274,6 +276,8 @@ def build_gate_graph(
                 output_tokens=state.usage.output_tokens,
                 total_tokens=state.usage.total_tokens,
                 estimated_cost=state.usage.estimated_cost,
+                provider=state.provider,
+                model=state.model,
             )
             return {"status": AgentRunStatus.PREPARING_SOURCE}
         if publish_issue:
@@ -284,6 +288,8 @@ def build_gate_graph(
                 output_tokens=state.usage.output_tokens,
                 total_tokens=state.usage.total_tokens,
                 estimated_cost=state.usage.estimated_cost,
+                provider=state.provider,
+                model=state.model,
             )
             return {"status": AgentRunStatus.PUBLISHING_ISSUE}
         await run_repository.complete_gate(
@@ -293,6 +299,8 @@ def build_gate_graph(
             output_tokens=state.usage.output_tokens,
             total_tokens=state.usage.total_tokens,
             estimated_cost=state.usage.estimated_cost,
+            provider=state.provider,
+            model=state.model,
         )
         return {"status": AgentRunStatus.COMPLETED}
 

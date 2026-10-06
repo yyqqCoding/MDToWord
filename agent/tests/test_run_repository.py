@@ -63,6 +63,8 @@ def test_supabase_run_completion_writes_only_gate_summary():
         assert request.method == "PATCH"
         payload = json.loads(request.content)
         assert payload["classification"]["route"] == "needs_human"
+        assert payload["provider"] == "typesafe_jev"
+        assert payload["model"] == "jev-1.13.0"
         assert "markdown_content" not in json.dumps(payload)
         completed = run.model_copy(
             update={
@@ -70,6 +72,8 @@ def test_supabase_run_completion_writes_only_gate_summary():
                 "route": GateRoute.NEEDS_HUMAN,
                 "category": GateCategory.UNKNOWN,
                 "classification": gate_result,
+                "provider": "typesafe_jev",
+                "model": "jev-1.13.0",
                 "finished_at": datetime.now(UTC),
                 "model_calls": 1,
             }
@@ -83,12 +87,19 @@ def test_supabase_run_completion_writes_only_gate_summary():
                 "agent-secret",
                 client=client,
             )
-            return await repository.complete_gate(run.id, gate_result)
+            return await repository.complete_gate(
+                run.id,
+                gate_result,
+                provider="typesafe_jev",
+                model="jev-1.13.0",
+            )
 
     completed = asyncio.run(scenario())
 
     assert completed.status is AgentRunStatus.COMPLETED
     assert completed.route is GateRoute.NEEDS_HUMAN
+    assert completed.provider == "typesafe_jev"
+    assert completed.model == "jev-1.13.0"
 
 
 def test_supabase_run_completion_is_idempotent_after_database_write():

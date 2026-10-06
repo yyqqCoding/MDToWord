@@ -113,6 +113,7 @@ async def open_configured_runtime(
                 JevGateProvider(
                     api_key=config.jev_api_key.get_secret_value(),
                     base_url=config.jev_base_url,
+                    model=config.jev_model,
                     timeout_seconds=config.jev_timeout_seconds,
                 ),
                 provider,

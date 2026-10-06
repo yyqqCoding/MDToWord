@@ -36,6 +36,9 @@ class AgentState(BaseModel):
     trace_id: str = Field(min_length=1, max_length=200)
     status: AgentRunStatus
     dry_run: bool = True
+    # Gate 响应后的真实 Provider/Model；包装器初始化值不作为最终展示事实。
+    provider: str | None = None
+    model: str | None = None
     route: str | None = None
     area: str | None = None
     category: str | None = None
