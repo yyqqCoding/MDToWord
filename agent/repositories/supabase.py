@@ -466,6 +466,8 @@ class SupabaseAgentRunRepository:
         output_tokens: int = 0,
         total_tokens: int = 0,
         estimated_cost: Decimal = Decimal("0"),
+        provider: str | None = None,
+        model: str | None = None,
     ) -> AgentRunRecord:
         existing = await self.get(run_id)
         if existing is None:
@@ -478,10 +480,7 @@ class SupabaseAgentRunRepository:
             raise RepositoryError(
                 f"agent run {run_id} cannot complete from {existing.status.value}"
             )
-        return await self._patch(
-            run_id,
-            current=AgentRunStatus.GATING,
-            payload={
+        payload = {
                 "status": AgentRunStatus.COMPLETED.value,
                 "route": result.route.value,
                 "area": result.area.value,
@@ -494,7 +493,15 @@ class SupabaseAgentRunRepository:
                 "total_tokens": total_tokens,
                 "estimated_cost": str(estimated_cost),
                 "finished_at": datetime.now(UTC).isoformat(),
-            },
+            }
+        if provider is not None:
+            payload["provider"] = provider
+        if model is not None:
+            payload["model"] = model
+        return await self._patch(
+            run_id,
+            current=AgentRunStatus.GATING,
+            payload=payload,
         )
 
     async def mark_preparing_source(
@@ -506,16 +513,15 @@ class SupabaseAgentRunRepository:
         output_tokens: int = 0,
         total_tokens: int = 0,
         estimated_cost: Decimal = Decimal("0"),
+        provider: str | None = None,
+        model: str | None = None,
     ) -> AgentRunRecord:
         existing = await self.get(run_id)
         if existing is None:
             raise AgentRunNotFoundError(f"agent run {run_id} does not exist")
         if existing.status is AgentRunStatus.PREPARING_SOURCE:
             return existing
-        return await self._patch(
-            run_id,
-            current=AgentRunStatus.GATING,
-            payload={
+        payload = {
                 "status": AgentRunStatus.PREPARING_SOURCE.value,
                 "route": result.route.value,
                 "area": result.area.value,
@@ -527,7 +533,15 @@ class SupabaseAgentRunRepository:
                 "output_tokens": output_tokens,
                 "total_tokens": total_tokens,
                 "estimated_cost": str(estimated_cost),
-            },
+            }
+        if provider is not None:
+            payload["provider"] = provider
+        if model is not None:
+            payload["model"] = model
+        return await self._patch(
+            run_id,
+            current=AgentRunStatus.GATING,
+            payload=payload,
         )
 
     async def mark_publishing_issue(
@@ -539,16 +553,15 @@ class SupabaseAgentRunRepository:
         output_tokens: int = 0,
         total_tokens: int = 0,
         estimated_cost: Decimal = Decimal("0"),
+        provider: str | None = None,
+        model: str | None = None,
     ) -> AgentRunRecord:
         existing = await self.get(run_id)
         if existing is None:
             raise AgentRunNotFoundError(f"agent run {run_id} does not exist")
         if existing.status is AgentRunStatus.PUBLISHING_ISSUE:
             return existing
-        return await self._patch(
-            run_id,
-            current=AgentRunStatus.GATING,
-            payload={
+        payload = {
                 "status": AgentRunStatus.PUBLISHING_ISSUE.value,
                 "route": result.route.value,
                 "area": result.area.value,
@@ -560,7 +573,15 @@ class SupabaseAgentRunRepository:
                 "output_tokens": output_tokens,
                 "total_tokens": total_tokens,
                 "estimated_cost": str(estimated_cost),
-            },
+            }
+        if provider is not None:
+            payload["provider"] = provider
+        if model is not None:
+            payload["model"] = model
+        return await self._patch(
+            run_id,
+            current=AgentRunStatus.GATING,
+            payload=payload,
         )
 
     async def mark_reproducing(

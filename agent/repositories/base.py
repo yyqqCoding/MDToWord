@@ -103,6 +103,8 @@ class AgentRunRepository(Protocol):
         output_tokens: int = 0,
         total_tokens: int = 0,
         estimated_cost: Decimal = Decimal("0"),
+        provider: str | None = None,
+        model: str | None = None,
     ) -> AgentRunRecord: ...
 
     async def mark_preparing_source(
@@ -114,6 +116,8 @@ class AgentRunRepository(Protocol):
         output_tokens: int = 0,
         total_tokens: int = 0,
         estimated_cost: Decimal = Decimal("0"),
+        provider: str | None = None,
+        model: str | None = None,
     ) -> AgentRunRecord: ...
 
     async def mark_publishing_issue(
@@ -125,6 +129,8 @@ class AgentRunRepository(Protocol):
         output_tokens: int = 0,
         total_tokens: int = 0,
         estimated_cost: Decimal = Decimal("0"),
+        provider: str | None = None,
+        model: str | None = None,
     ) -> AgentRunRecord: ...
 
     async def mark_reproducing(

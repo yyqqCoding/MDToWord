@@ -396,6 +396,8 @@ class FakeAgentRunRepository:
         output_tokens: int = 0,
         total_tokens: int = 0,
         estimated_cost: Decimal = Decimal("0"),
+        provider: str | None = None,
+        model: str | None = None,
     ) -> AgentRunRecord:
         async with self._lock:
             run = self._require(run_id)
@@ -416,6 +418,10 @@ class FakeAgentRunRepository:
             run.output_tokens = output_tokens
             run.total_tokens = total_tokens
             run.estimated_cost = estimated_cost
+            if provider is not None:
+                run.provider = provider
+            if model is not None:
+                run.model = model
             run.finished_at = datetime.now(UTC)
             return run.model_copy(deep=True)
 
@@ -428,6 +434,8 @@ class FakeAgentRunRepository:
         output_tokens: int = 0,
         total_tokens: int = 0,
         estimated_cost: Decimal = Decimal("0"),
+        provider: str | None = None,
+        model: str | None = None,
     ) -> AgentRunRecord:
         async with self._lock:
             run = self._require(run_id)
@@ -445,6 +453,10 @@ class FakeAgentRunRepository:
             run.output_tokens = output_tokens
             run.total_tokens = total_tokens
             run.estimated_cost = estimated_cost
+            if provider is not None:
+                run.provider = provider
+            if model is not None:
+                run.model = model
             return run.model_copy(deep=True)
 
     async def mark_publishing_issue(
@@ -456,6 +468,8 @@ class FakeAgentRunRepository:
         output_tokens: int = 0,
         total_tokens: int = 0,
         estimated_cost: Decimal = Decimal("0"),
+        provider: str | None = None,
+        model: str | None = None,
     ) -> AgentRunRecord:
         async with self._lock:
             run = self._require(run_id)
@@ -473,6 +487,10 @@ class FakeAgentRunRepository:
             run.output_tokens = output_tokens
             run.total_tokens = total_tokens
             run.estimated_cost = estimated_cost
+            if provider is not None:
+                run.provider = provider
+            if model is not None:
+                run.model = model
             return run.model_copy(deep=True)
 
     async def mark_reproducing(

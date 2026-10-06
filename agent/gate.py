@@ -24,6 +24,8 @@ class GateExecution:
 
     result: GateResult
     classification: GateClassification | None = None
+    provider: str | None = None
+    model: str | None = None
     input_tokens: int = 0
     output_tokens: int = 0
     total_tokens: int = 0
@@ -89,6 +91,8 @@ async def execute_feedback_gate(
     return GateExecution(
         result=result,
         classification=response.output,
+        provider=response.provider,
+        model=response.model,
         input_tokens=response.input_tokens,
         output_tokens=response.output_tokens,
         total_tokens=response.total_tokens,

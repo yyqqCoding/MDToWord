@@ -245,9 +245,11 @@ class _LangfuseGenerationObservation:
     def succeed(self, response: StructuredModelResponse[object]) -> None:
         output = _safe_model_output(response.output.model_dump(mode="json"))
         update: dict[str, object] = {
+            "model": response.model,
             "output": mask_sensitive(output),
             "usage_details": exclusive_usage_buckets(response),
             "metadata": {
+                "provider": response.provider,
                 "provider_request_id": response.provider_request_id,
                 "retry_count": response.retry_count,
                 "status": "success",
