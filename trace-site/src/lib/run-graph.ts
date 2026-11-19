@@ -267,6 +267,14 @@ export function deriveStages(run: RunPublic, trace: RunTrace | null): StageView[
     (acc, stage, index) => (evidence[stage.key] ? index : acc),
     -1,
   );
+  const failurePhase = run.failure?.phase;
+  const recordedFailureIndex = isTerminal
+    ? RUN_STAGES.findIndex(
+        (stage) =>
+          stage.runStatus === failurePhase ||
+          (failurePhase === "publishing_issue" && stage.key === "publish"),
+      )
+    : -1;
   const genericFailureIndex =
     run.status === "failed" || run.status === "budget_exhausted"
       ? lastWithEvidence + 1
@@ -289,16 +297,27 @@ export function deriveStages(run: RunPublic, trace: RunTrace | null): StageView[
         label,
         hint,
         observationName: seen.name,
-        state: seen.failed ? "failed" : "done",
+        state:
+          index === recordedFailureIndex || failures[stage.key] || seen.failed
+            ? "failed"
+            : "done",
         durationMs: seen.durationMs,
         retries: seen.retries,
       };
     }
 
     let state: StageState;
-    if (evidence[stage.key]) {
+    if (index === recordedFailureIndex) {
+      state = "failed";
+    } else if (evidence[stage.key]) {
       state = failures[stage.key] ? "failed" : "done";
-    } else if (index === genericFailureIndex) {
+    } else if (recordedFailureIndex >= 0 && index < recordedFailureIndex) {
+      state =
+        stage.key === "prepare" ||
+        (run.route === "issue_required" && index > 1)
+          ? "skipped"
+          : "done";
+    } else if (recordedFailureIndex < 0 && index === genericFailureIndex) {
       state = "failed";
     } else if (activeIndex >= 0 && index === activeIndex) {
       state = "active";

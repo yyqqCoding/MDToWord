@@ -23,6 +23,28 @@ new Function("exports", "module", "require", compiled)(
 );
 const { describeOutcome, deriveStages, stageOf } = module.exports;
 
+test("修复预算耗尽时，即使缺少 Trace 和阶段摘要也能定位失败", () => {
+  const run = {
+    status: "budget_exhausted",
+    route: "accepted_backend_bug",
+    classification: {},
+    base_sha: "abc",
+    reproduction: null,
+    repair: null,
+    validation: null,
+    pr_url: null,
+    issue_url: null,
+    failure: { phase: "repairing" },
+  };
+
+  const states = Object.fromEntries(
+    deriveStages(run, null).map(({ key, state }) => [key, state]),
+  );
+  assert.equal(states.reproduce, "done");
+  assert.equal(states.repair, "failed");
+  assert.equal(states.validate, "skipped");
+});
+
 test("安全和无关 route 优先于 completed 通用终态", () => {
   assert.equal(
     describeOutcome({

@@ -221,6 +221,8 @@ Scheduler 不让一个普通运行异常杀死常驻进程；异常运行终结�
 - Recorder 是 fail-open 观察者，写日志或 Langfuse 失败不能改变主流程；
 - Finalizer 失败不能静默吞掉，必须让运行进入可诊断的运维错误；
 - budget_exhausted 不由 Scheduler 自动重开，维护者提高预算后可用原 run_id 显式续跑；
+- 当受信工具拒绝超出复现轮次、修复轮次或累计 Sandbox 耗时的操作时，终态失败记录的
+  safe_details 包含 budget_type、当前用量和 limit。上下文窗口超限继续使用独立的失败码。
 - stale_base 仍按既有规则最多重排一次，不属于短传输 RETRY；
 - 发布失败只恢复发布 checkpoint，不重新执行模型、Sandbox 或最终验证；
 - 安全、认证、配置和未知永久错误转人工或安全终态，不通过重试绕过。

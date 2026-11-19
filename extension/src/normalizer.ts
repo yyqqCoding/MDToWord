@@ -36,7 +36,8 @@ const GROUP_ARGUMENT_COMMANDS = new Set([
 ]);
 
 export function normalizeMarkdown(value: string): string {
-  let normalized = escapeYamlFrontMatterMarkers(normalizeTables(normalizeHeadings(value)))
+  const protectedValue = preserveUnsupportedChemistry(value);
+  let normalized = escapeYamlFrontMatterMarkers(normalizeTables(normalizeHeadings(protectedValue)))
     .replace(BLOCK_BRACKETS_PATTERN, (_match, formula: string) => replaceBlockFormula(formula))
     .replace(BARE_BLOCK_BRACKETS_PATTERN, (_match, formula: string) => replaceBlockFormula(formula));
 
@@ -226,7 +227,92 @@ function repairMath(value: string): string {
   return value;
 }
 
+// Keep the supported grammar in sync with backend/app/normalizer.py.
+const CHEMISTRY_ATOM = '[A-Z][a-z]?[0-9]*';
+const CHEMISTRY_SPECIES = new RegExp(
+  '^([0-9]*)[ \\t]*((?:' + CHEMISTRY_ATOM + '|\\((?:' + CHEMISTRY_ATOM + ')+\\)[0-9]*)+)' +
+    '(?:\\^\\{([0-9]*[+-])\\}|\\^([0-9]*[+-])|([+-]))?$',
+);
+const CHEMISTRY_OPERATORS: Record<string, string> = {
+  '+': '+',
+  '->': '\\rightarrow',
+  '<-': '\\leftarrow',
+  '<->': '\\leftrightarrow',
+  '<=>': '\\rightleftharpoons',
+};
+
+function normalizeChemistry(content: string): string | null {
+  const match = /^\\ce\{(.+)\}$/.exec(content.trim());
+  if (!match) return null;
+
+  const parts = match[1].split(/(<=>|<->|->|<-|[ \t]+\+[ \t]+)/);
+  for (let index = 0; index < parts.length; index += 2) {
+    const species = CHEMISTRY_SPECIES.exec(parts[index].trim());
+    if (!species) return null;
+
+    const [, coefficient, formula, groupedCharge, explicitCharge, sign] = species;
+    const subscripted = formula.replace(/[0-9]+/g, (count) => '_{' + count + '}');
+    const charge = groupedCharge || explicitCharge || sign;
+    parts[index] = coefficient + '\\mathrm{' + subscripted + '}' + (charge ? '^{' + charge + '}' : '');
+  }
+  for (let index = 1; index < parts.length; index += 2) {
+    parts[index] = CHEMISTRY_OPERATORS[parts[index].trim()];
+  }
+  return parts.join(' ');
+}
+
+const MATH_CLOSERS: ReadonlyMap<string, string> = new Map([
+  ['$', '$'],
+  ['$$', '$$'],
+  ['\\(', '\\)'],
+  ['\\[', '\\]'],
+]);
+
+function preserveUnsupportedChemistry(markdown: string): string {
+  if (!markdown.includes('\\ce{')) return markdown;
+
+  const pieces: string[] = [];
+  const tokens = markdown.matchAll(/(?<!\x60)(\x60+)(?!\x60)[\s\S]*?(?<!\x60)\1(?!\x60)|^[ \t]{0,3}(~{3,})[^\n]*\n[\s\S]*?^[ \t]{0,3}\2~*[ \t]*\r?$|(?<!\\)(?:\${1,2}|\\[()[\]])/gm);
+  let copied = 0;
+  let opening: { delimiter: string; start: number; end: number } | undefined;
+  let depth = 0;
+  let lineEnd = -1;
+  for (const token of tokens) {
+    const delimiter = token[0];
+    const start = token.index;
+    const end = start + delimiter.length;
+    if (opening && lineEnd !== -1 && start > lineEnd) {
+      opening = undefined;
+    }
+    if (!opening) {
+      if (MATH_CLOSERS.has(delimiter)) {
+        opening = { delimiter, start, end };
+        depth = 1;
+        lineEnd = delimiter === '$' ? markdown.indexOf('\n', end) : -1;
+      }
+      continue;
+    }
+    if (delimiter === MATH_CLOSERS.get(opening.delimiter)) depth -= 1;
+    else if (delimiter === opening.delimiter) depth += 1;
+    if (depth) continue;
+
+    const formula = markdown.slice(opening.end, start);
+    if (formula.includes('\\ce{') && normalizeChemistry(formula) === null) {
+      pieces.push(markdown.slice(copied, opening.start));
+      // Markdown decodes entities as literal text, even inside pipe tables.
+      const source = markdown.slice(opening.start, end);
+      pieces.push(source.replace(/[!-/:-@[-\x60{-~]/g, (char) => '&#' + char.charCodeAt(0) + ';'));
+      copied = end;
+    }
+    opening = undefined;
+  }
+  return pieces.join('') + markdown.slice(copied);
+}
+
 function repairMathContent(content: string): string {
+  const chemistry = normalizeChemistry(content);
+  if (chemistry !== null) return chemistry;
+
   let repaired = content.replace(/\*\{([^}\n]+)\}/g, '_{$1}').replace(/(?<=[}|])\*([A-Za-z0-9])/g, '_$1');
   repaired = escapeLiteralPercentSigns(repaired);
   repaired = repairEnvironmentLineBreaks(repaired);

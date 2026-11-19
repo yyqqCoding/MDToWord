@@ -1,4 +1,5 @@
 import io
+import subprocess
 import zipfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -10,6 +11,71 @@ from app.pandoc_runner import ConversionError, convert_markdown_to_docx
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def test_chemical_formulas_export_as_editable_equations(tmp_path):
+    markdown = (
+        r"$\ce{Ca(OH)2}$"
+        "\n\n"
+        r"\(\ce{SO4^{2-}}\)"
+        "\n\n"
+        r"\[\ce{NH4+ + OH- <=> NH3 + H2O}\]"
+        "\n\n"
+        r"$\ce{2H2 + O2 -> 2H2O}$"
+    )
+    with zipfile.ZipFile(io.BytesIO(convert_markdown_to_docx(markdown, tmp_path))) as archive:
+        root = ET.fromstring(archive.read("word/document.xml"))
+
+    ns = {"m": "http://schemas.openxmlformats.org/officeDocument/2006/math"}
+    equations = root.findall(".//m:oMath", ns)
+    assert len(equations) == 4
+    assert equations[0].find(".//m:sSub/m:sub", ns) is not None
+    charge = equations[1].findall(".//m:sSup/m:sup//m:t", ns)
+    assert "".join(node.text or "" for node in charge).replace("−", "-") == "2-"
+    assert "⇌" in "".join(equations[2].itertext())
+    assert "→" in "".join(equations[3].itertext())
+
+
+def test_unsupported_chemical_formulas_are_preserved_as_text(tmp_path):
+    nested_inline = r"\(\ce{C=C\(\boldsymbol{\ce{BBr3、HI}}\)C#C}\)"
+    nested_dollar = r"$\ce{OH^-\(\ce{C=C}\)CN^-}$"
+    table_formula = r"$\ce{A|B}$"
+    markdown = (
+        f"前文{nested_inline}后文 {nested_dollar} $\\ce{{H2O}}$\n\n"
+        f"| Compound |\n| --- |\n| {table_formula} |\n"
+    )
+    with zipfile.ZipFile(io.BytesIO(convert_markdown_to_docx(markdown, tmp_path))) as archive:
+        root = ET.fromstring(archive.read("word/document.xml"))
+
+    ns = {
+        "m": "http://schemas.openxmlformats.org/officeDocument/2006/math",
+        "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+    }
+    text = "".join(node.text or "" for node in root.findall(".//w:t", ns))
+    assert f"前文{nested_inline}后文 {nested_dollar}" in text
+    assert len(root.findall(".//m:oMath", ns)) == 1
+    cell_text = root.findall(".//w:tbl//w:t", ns)
+    assert table_formula in [node.text for node in cell_text]
+
+
+def test_formula_warnings_are_deduplicated_and_bounded(tmp_path):
+    formulas = ["x" * 200, "H₂O", "CO₂", "CH₄", "NaCl", "NH₃"]
+    warnings = [
+        f"[WARNING] Could not convert TeX math {formula}, rendering as TeX: detail"
+        for formula in [formulas[0], *formulas]
+    ]
+    completed = subprocess.CompletedProcess([], 0, stderr="\n".join(warnings))
+
+    with patch("app.pandoc_runner.subprocess.run", return_value=completed) as run:
+        with pytest.raises(ConversionError) as error:
+            convert_markdown_to_docx("text", tmp_path)
+
+    assert run.call_args.kwargs["encoding"] == "utf-8"
+    assert error.value.details == [
+        "Formula conversion warnings: 7. Distinct formula snippets: 6.",
+        "x" * 159 + "…",
+        *formulas[1:5],
+    ]
 
 
 def test_convert_markdown_to_docx_creates_word_document(tmp_path):

@@ -142,7 +142,14 @@ async def submit_test_edits(
     # round number 来自受信 checkpoint，而不是模型参数；模型只能提交当前轮的候选。
     round_number = int(state.get("reproduction_round", 0)) + 1
     if round_number > context.max_reproduction_rounds:
-        raise BudgetExceededError("reproduction round budget exhausted")
+        raise BudgetExceededError(
+            "reproduction round budget exhausted",
+            safe_details={
+                "budget_type": "reproduction_rounds",
+                "used": round_number - 1,
+                "limit": context.max_reproduction_rounds,
+            },
+        )
     prefix = f"test_feedback_{context.feedback_id.hex[:8]}_"
     if not target_test_selector.startswith(prefix):
         raise ValueError("target_test_selector must use the current feedback prefix")
@@ -192,7 +199,14 @@ async def submit_fix_edits(
     # 修复轮次与 test patch 引用都由本地状态保管，工具不接受模型自定义 job 或路径。
     round_number = int(state.get("repair_round", 0)) + 1
     if round_number > context.max_repair_rounds:
-        raise BudgetExceededError("repair round budget exhausted")
+        raise BudgetExceededError(
+            "repair round budget exhausted",
+            safe_details={
+                "budget_type": "repair_rounds",
+                "used": round_number - 1,
+                "limit": context.max_repair_rounds,
+            },
+        )
     if len(summary.strip()) < 1 or len(summary) > 1000:
         raise ValueError("summary must contain 1..1000 characters")
     snapshot = context.source_workspace.resolve(context.source_snapshot_ref)
@@ -232,8 +246,17 @@ async def run_sandbox(
 
     state, context = runtime.state, runtime.context
     _require_phase(state, {"reproducing", "repairing"})
-    if int(state.get("sandbox_duration_ms", 0)) >= context.max_sandbox_seconds * 1000:
-        raise BudgetExceededError("sandbox time budget exhausted")
+    sandbox_duration_ms = int(state.get("sandbox_duration_ms", 0))
+    sandbox_limit_ms = context.max_sandbox_seconds * 1000
+    if sandbox_duration_ms >= sandbox_limit_ms:
+        raise BudgetExceededError(
+            "sandbox time budget exhausted",
+            safe_details={
+                "budget_type": "sandbox_duration_ms",
+                "used": sandbox_duration_ms,
+                "limit": sandbox_limit_ms,
+            },
+        )
     if len(reason.strip()) < 1 or len(reason) > 600:
         raise ValueError("reason must contain 1..600 characters")
     if state["phase"] == "reproducing":

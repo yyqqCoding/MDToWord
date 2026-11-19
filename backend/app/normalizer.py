@@ -41,11 +41,53 @@ GROUP_ARGUMENT_COMMANDS = {
 }
 CANCEL_COMMAND_PATTERN = re.compile(r"\\[bx]?cancel\b")
 PRESCRIPT_COMMAND_PATTERN = re.compile(r"\\prescript\b")
+CHEMISTRY_FORMULA = re.compile(r"\s*\\ce\{(.+)\}\s*")
+MATH_OR_CODE = re.compile(
+    r"(?<!\x60)(\x60+)(?!\x60)[\s\S]*?(?<!\x60)\1(?!\x60)"
+    r"|^[ \t]{0,3}(~{3,})[^\n]*\n[\s\S]*?^[ \t]{0,3}\2~*[ \t]*(?:\r?$|\Z)"
+    r"|(?<!\\)(?:\${1,2}|\\[()[\]])",
+    re.MULTILINE,
+)
+MATH_CLOSERS = {"$": "$", "$$": "$$", r"\(": r"\)", r"\[": r"\]"}
+CHEMISTRY_OPERATOR = re.compile(r"(<=>|<->|->|<-|[ \t]+\+[ \t]+)")
+CHEMISTRY_OPERATORS = {
+    "+": "+",
+    "->": r"\rightarrow",
+    "<-": r"\leftarrow",
+    "<->": r"\leftrightarrow",
+    "<=>": r"\rightleftharpoons",
+}
+CHEMISTRY_ATOM = r"[A-Z][a-z]?[0-9]*"
+CHEMISTRY_SPECIES = re.compile(
+    rf"([0-9]*)[ \t]*((?:{CHEMISTRY_ATOM}|\((?:{CHEMISTRY_ATOM})+\)[0-9]*)+)"
+    r"(?:\^\{([0-9]*[+-])\}|\^([0-9]*[+-])|([+-]))?"
+)
+
+
+def _normalize_chemistry(content: str) -> str | None:
+    match = CHEMISTRY_FORMULA.fullmatch(content)
+    if not match:
+        return None
+
+    parts = CHEMISTRY_OPERATOR.split(match[1])
+    for index in range(0, len(parts), 2):
+        species = CHEMISTRY_SPECIES.fullmatch(parts[index].strip())
+        if not species:
+            return None
+        coefficient, formula, grouped_charge, explicit_charge, sign = species.groups()
+        formula = re.sub(r"[0-9]+", lambda count: f"_{{{count[0]}}}", formula)
+        charge = grouped_charge or explicit_charge or sign
+        parts[index] = coefficient + rf"\mathrm{{{formula}}}"
+        if charge:
+            parts[index] += f"^{{{charge}}}"
+    for index in range(1, len(parts), 2):
+        parts[index] = CHEMISTRY_OPERATORS[parts[index].strip()]
+    return " ".join(parts)
 
 
 def normalize_markdown(markdown: str) -> str:
     """Normalize supported formula delimiters into Pandoc-friendly Markdown."""
-    normalized = _normalize_headings(markdown)
+    normalized = _normalize_headings(_preserve_unsupported_chemistry(markdown))
     normalized = _normalize_tables(normalized)
     normalized = _escape_yaml_front_matter_markers(normalized)
     normalized = BLOCK_BRACKETS_PATTERN.sub(_replace_block_formula, normalized)
@@ -53,6 +95,42 @@ def normalize_markdown(markdown: str) -> str:
     normalized = _normalize_formula_spacing(normalized)
     normalized = INLINE_PARENS_PATTERN.sub(lambda match: f"${match.group(1).strip()}$", normalized)
     return _normalize_ai_parenthesized_math(normalized)
+
+
+def _preserve_unsupported_chemistry(markdown: str) -> str:
+    if r"\ce{" not in markdown:
+        return markdown
+    pieces: list[str] = []
+    copied = 0
+    opening = None
+    depth = 0
+    line_end = -1
+    for token in MATH_OR_CODE.finditer(markdown):
+        delimiter = token[0]
+        if opening is not None and line_end != -1 and token.start() > line_end:
+            opening = None
+        if opening is None:
+            if delimiter in MATH_CLOSERS:
+                opening, depth = token, 1
+                line_end = markdown.find("\n", token.end()) if delimiter == "$" else -1
+            continue
+        if delimiter == MATH_CLOSERS[opening[0]]:
+            depth -= 1
+        elif delimiter == opening[0]:
+            depth += 1
+        if depth:
+            continue
+
+        formula = markdown[opening.end():token.start()]
+        if r"\ce{" in formula and _normalize_chemistry(formula) is None:
+            pieces.append(markdown[copied:opening.start()])
+            # Markdown decodes entities as literal text, even inside pipe tables.
+            source = markdown[opening.start():token.end()]
+            pieces.append(re.sub(r"[!-/:-@[-\x60{-~]", lambda m: f"&#{ord(m[0])};", source))
+            copied = token.end()
+        opening = None
+
+    return "".join(pieces) + markdown[copied:]
 
 
 def _escape_yaml_front_matter_markers(markdown: str) -> str:
@@ -351,6 +429,9 @@ def _rewrite_prescript_commands(content: str) -> str:
 
 
 def _repair_math_content(content: str) -> str:
+    chemistry = _normalize_chemistry(content)
+    if chemistry is not None:
+        return chemistry
     repaired = _rewrite_prescript_commands(content)
     repaired = _strip_unsupported_cancel_commands(repaired)
     repaired = re.sub(r"\*\{([^}\n]+)\}", r"_{\1}", repaired)

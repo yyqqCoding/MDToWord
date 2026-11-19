@@ -97,6 +97,8 @@ def _convert(markdown: str, work_dir: Path) -> bytes:
             check=False,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=settings.pandoc_timeout_seconds,
         )
     except FileNotFoundError as exc:
@@ -108,9 +110,29 @@ def _convert(markdown: str, work_dir: Path) -> bytes:
     if completed.returncode != 0:
         raise ConversionError("Pandoc failed to convert the Markdown document.", details)
 
-    if _has_math_conversion_warning(details):
-        details = [line for line in completed.stderr.splitlines() if line.strip()]
-        raise ConversionError("Pandoc could not convert one or more formulas to editable Word equations.", details)
+    math_warnings = [
+        line for line in details if "Could not convert TeX math" in line
+    ]
+    if math_warnings:
+        formulas = list(dict.fromkeys(
+            line.split("Could not convert TeX math", 1)[1]
+            .partition(", rendering as TeX")[0]
+            .strip()
+            for line in math_warnings
+        ))
+        examples = [
+            formula if len(formula) <= 160 else formula[:159] + "…"
+            for formula in formulas[:5]
+            if formula
+        ]
+        raise ConversionError(
+            "Pandoc could not convert one or more formulas to editable Word equations.",
+            [
+                f"Formula conversion warnings: {len(math_warnings)}. "
+                f"Distinct formula snippets: {len(formulas)}.",
+                *examples,
+            ],
+        )
 
     if not output_path.exists():
         raise ConversionError("Pandoc completed but did not create a DOCX file.")
@@ -132,11 +154,6 @@ def _resolve_pandoc_binary() -> str:
         return configured
 
     return pypandoc.get_pandoc_path()
-
-
-def _has_math_conversion_warning(details: list[str]) -> bool:
-    return any("Could not convert TeX math" in line for line in details)
-
 
 def _apply_three_line_table_borders(docx_path: Path) -> None:
     with zipfile.ZipFile(docx_path) as archive:
