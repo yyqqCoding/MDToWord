@@ -1,184 +1,239 @@
-# 📝 MD To Word —— 一键把 AI 输出变成排版规范的 Word
+<div align="center">
+  <img src="docs/assets/readme-hero.svg" width="100%" alt="MD To Word 项目概念图：将 Markdown 中的标题、数学公式与表格转换为可编辑的 Word 文档" />
 
-> 把网页 AI（ChatGPT / Claude / DeepSeek / 文心 / 通义……）的回答 **直接复制**，转成可编辑的 `.docx`：
-> 表格变 **三线表**，公式变 **可编辑的 Word 公式**，`#` 变 **Word 标题样式**。✨
+  # MD To Word
 
-<p align="left">
-  <img alt="backend" src="https://img.shields.io/badge/backend-FastAPI%20%2B%20Pandoc-009688">
-  <img alt="extension" src="https://img.shields.io/badge/extension-React%20%2B%20TS%20%2B%20MV3-3178c6">
-  <img alt="docx" src="https://img.shields.io/badge/output-editable%20.docx-2b579a">
+  **把 AI 回答，变成真正可编辑、排版规范的 Word 文档。**
+
+  复制 ChatGPT、Claude、DeepSeek 等网页中的内容，粘贴到浏览器侧边栏，预览后导出 `.docx`。  
+  **三线表 · 原生 Word 公式 · 中文排版 · Markdown 自动修复**
+
+  <p>
+    <a href="https://microsoftedge.microsoft.com/addons/detail/md-to-word/cippambdocmalcoceomjlibolaeicmoe?hl=zh-CN"><img alt="Install on Edge" src="https://img.shields.io/badge/Install_on_Edge-0078D7?style=for-the-badge&amp;logo=microsoftedge&amp;logoColor=white" /></a>
+    <a href="#quick-start"><img alt="Get started" src="https://img.shields.io/badge/Get_Started-1B365B?style=for-the-badge&amp;logo=readthedocs&amp;logoColor=white" /></a>
+    <a href="https://github.com/yyqqCoding/MDToWord/issues"><img alt="Feedback and issues" src="https://img.shields.io/badge/Feedback-49566C?style=for-the-badge&amp;logo=github&amp;logoColor=white" /></a>
+  </p>
+
+  <p>
+    <img alt="FastAPI + Pandoc" src="https://img.shields.io/badge/Backend-FastAPI_%2B_Pandoc-0E8E82" />
+    <img alt="React + TypeScript" src="https://img.shields.io/badge/Extension-React_%2B_TypeScript-3178C6" />
+    <img alt="Manifest V3" src="https://img.shields.io/badge/Browser-Manifest_V3-7C77D1" />
+    <img alt="Editable DOCX" src="https://img.shields.io/badge/Output-Editable_DOCX-2867CF" />
+  </p>
+
+  <a href="#features">特色功能</a> · <a href="#quick-start">快速开始</a> · <a href="#architecture">技术架构</a> · <a href="#development">本地开发</a>
+</div>
+
+---
+
+<a id="why"></a>
+## 为什么做 MD To Word？
+
+AI 给出的内容在网页中排版整齐，复制进 Word 却经常变成一堆需要手动整理的 Markdown。
+
+| 常见痛点 | MD To Word 的处理方式 |
+| :-- | :-- |
+| 表格变成竖线和分隔符 | 转为 **Word 原生三线表** |
+| 公式变成乱码或只能截图 | 转为 **可继续编辑的 Word 公式（OMML）** |
+| `#`、`##` 标题没有层级 | 映射为 **Word 标题样式** |
+| 混杂不规范的 Markdown 写法 | **预览与导出前统一归一化** |
+| 长篇内容需要反复拼接 | **文件夹管理 + 多对话按顺序合并导出** |
+
+<a id="features"></a>
+## ✨ 特色功能
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <h3>🧮 可编辑数学公式</h3>
+      行内、块级公式转换为 Word 原生 OMML，不是截图；在 Word 中仍可编辑。
+    </td>
+    <td width="50%" valign="top">
+      <h3>📊 学术三线表</h3>
+      Markdown 表格转换为 Word 表格，并应用上下粗线、表头下细线的三线表样式。
+    </td>
+  </tr>
+  <tr>
+    <td valign="top">
+      <h3>👀 实时预览</h3>
+      基于 markdown-it 与 KaTeX 预览标题、表格和公式；导出前先检查内容。
+    </td>
+    <td valign="top">
+      <h3>📝 中文文档排版</h3>
+      基于 `reference.docx` 配置正文宋体、标题黑体、1.5 倍行距等常用样式。
+    </td>
+  </tr>
+  <tr>
+    <td valign="top">
+      <h3>🗂️ 多文件组织与合并</h3>
+      文件夹内保存多个 Markdown 对话框，按选择编号决定合并与导出顺序。
+    </td>
+    <td valign="top">
+      <h3>🔀 Mermaid 流程图</h3>
+      后端将 Mermaid 渲染为 PNG 并插入 Word；流程图可显示，但不可作为图形对象编辑。
+    </td>
+  </tr>
+  <tr>
+    <td valign="top">
+      <h3>🛡️ 非标准 Markdown 兜底</h3>
+      兼容常见的公式定界符、下标、表格分隔线和标题格式等异常写法。
+    </td>
+    <td valign="top">
+      <h3>💬 反馈与修复流程</h3>
+      内置问题反馈入口；后端缺陷可交由 Agent 复现和验证，成功后生成待审核 PR。
+    </td>
+  </tr>
+</table>
+
+> **预览接近导出效果。** 前端 `extension/src/normalizer.ts` 与后端 `backend/app/normalizer.py` 采用一致的归一化规则；Word 的实际字体布局仍以导出文件为准。
+
+<a id="quick-start"></a>
+## 🚀 快速开始
+
+### 方法一：直接安装 Edge 扩展
+
+<p>
+  <a href="https://microsoftedge.microsoft.com/addons/detail/md-to-word/cippambdocmalcoceomjlibolaeicmoe?hl=zh-CN"><img alt="Edge Add-ons" src="https://img.shields.io/badge/前往_Edge_插件商店-0078D7?style=flat-square&amp;logo=microsoftedge&amp;logoColor=white" /></a>
 </p>
 
----
-## 🎯 Edge插件地址
+| 步骤 | 操作 |
+| :--: | :-- |
+| **01** | 安装扩展，点击浏览器工具栏图标打开侧边栏。 |
+| **02** | 复制 AI 网页回答，粘贴到对话框；需要时可以创建文件夹或导入 `.md` 文件。 |
+| **03** | 预览标题、公式和表格，选好导出顺序，点击 **导出 Word**。 |
 
-[Edge浏览器插件地址](https://microsoftedge.microsoft.com/addons/detail/md-to-word/cippambdocmalcoceomjlibolaeicmoe?hl=zh-CN)
+### 方法二：本地加载扩展（Chrome / Edge）
 
+<details>
+<summary><strong>展开查看开发者模式安装步骤</strong></summary>
 
-## 🎯 为什么需要它
-AI 网页端给出的内容看着是 Markdown，但**复制到 Word 里往往一团糟** 😩：
+1. 在 `extension/` 目录执行 `npm install && npm run build`。
+2. 打开 `chrome://extensions` 或 `edge://extensions`。
+3. 启用「开发者模式」，点击「加载已解压的扩展程序」。
+4. 选择 `extension/dist`，随后打开侧边栏使用。
 
-- 表格变成一堆 `| --- | --- |` 竖线文字
-- 公式变成乱码，或只能截图，**不能编辑**
-- `#`、`##` 标题原样保留，没有变成 Word 的标题样式
-- 网页 AI 输出的还**不是纯正 Markdown**：行内公式写成 `(z_T)`、块公式用 `\[...\]` 或裸 `[...]`、下标写成 `*{LL}`、有时混入全角竖线 `｜` 或中文破折号……
+> 扩展默认连接线上转换服务；如需自建服务，可将地址改为 `http://127.0.0.1:8000`。
 
-**MD To Word** 把这些「脏」Markdown 自动修好，再交给 Pandoc 生成排版规范、可继续编辑的 Word 文档。👇
+</details>
 
----
+<a id="normalization"></a>
+## 🛡️ Markdown 兼容与修复
 
-## ✨ 核心功能
+网页 AI 输出并不总是标准 Markdown。MD To Word 会在转换前修复常见格式问题，尽量降低手动整理成本。
 
-| 功能 | 说明 |
-| --- | --- |
-| 📋 **直接复制即用** | 从 AI 网页复制内容，粘进侧边栏，点一下就能导出 `.docx`，无需手动整理格式 |
-| 📊 **表格 → 三线表** | Markdown 表格自动转成学术规范的**三线表**（上下粗线 + 表头下细线、无内部网格），可直接用于论文/报告 |
-| 🧮 **公式可编辑** | 行内/块级公式转成 **Word 原生公式（OMML）**，不是图片，能在 Word 里继续编辑 |
-| 🔀 **Mermaid 流程图** | Mermaid 源码在后端本地渲染为 PNG 后嵌入 Word（图像不可继续编辑） |
-| 🔠 **标题映射** | `#` → Word 一级标题、`##` → 二级…… `######` → 六级；超过六级自动降为正文 |
-| 🇨🇳 **中文排版** | 正文宋体、标题黑体、1.5 倍行距等中文论文常用样式（基于 `reference.docx`） |
-| 🛡️ **脏 Markdown 兜底** | 自动修复网页 AI 输出的非标准写法（见下） |
-| 👀 **实时预览** | 侧边栏内用 KaTeX + markdown-it 实时预览，所见接近所得 |
-| 🗂️ **文件夹管理** | 多对话、多文件夹组织内容，支持批量选择与导出顺序 |
-| 💬 **问题反馈** | 内置反馈入口，可提交转换失败的内容或功能建议，帮助持续改进 |
+| 输入中的常见问题 | 处理方式 |
+| :-- | :-- |
+| 块公式 `\[…\]`、独立的裸方括号块 | 归一化为 `$$…$$` |
+| 行内公式 `\(…\)`、特定 AI 公式 `(z_T)` | 归一化为 `$…$`；普通括号文本不变 |
+| 错误下标 `*{LL}` / `*2` | 修复为 `_{LL}` / `_2` |
+| `#标题` 没有空格 | 修复为 `# 标题` |
+| 表格前缺空行、使用 `｜` 和中文破折号 | 修复空行、分隔符与表格分隔行 |
+| 列表前缺空行 | 通过 Pandoc `lists_without_preceding_blankline` 兼容 |
+| 独立的 `---` 行 | 转义，避免误识别为 YAML 元数据 |
+| 高大括号、分数、范数等公式定界符 | 尝试调整定界符大小以改善 Word 显示 |
 
-### 🛡️ 兜底修复都修了啥？
+<details>
+<summary><strong>查看化学公式支持范围与导出自检</strong></summary>
 
-为了让「网页 AI 输出」也能稳定转换，转换前会自动归一化以下常见问题：
+- 数学定界符内的独立 `\ce{...}` 支持分子式、括号分组、离子电荷和反应箭头。例如：`$\ce{Ca(OH)2}$`、`$\ce{SO4^2-}$`、`$\ce{2H2 + O2 -> 2H2O}$`。
+- 反应物之间的加号两侧需要留空格，带数值的电荷用 `^` 标记。
+- 超出支持范围的化学公式（如嵌套公式、带条件箭头）在预览和 Word 导出中保留为原始文本，不强行错误解析。
+- 导出后会检查未解析的表格残留；检测到异常时在后端日志中告警。
 
-- 化学公式支持数学定界符内的独立 `\ce{...}`，包括分子式、括号分组、离子电荷和反应箭头，例如 `$\ce{Ca(OH)2}$`、`$\ce{SO4^2-}$` 和 `$\ce{2H2 + O2 -> 2H2O}$`。反应物之间的加号两侧留空格，带数值的电荷用 `^` 标记。超出支持范围的化学公式（例如嵌套公式和带条件的箭头）在预览和导出的 Word 中保留为原始文本。
-- 🔧 块公式 `\[...\]` 和裸括号块 `[ \n ... \n ]` → 标准 `$$...$$`
-- 🔧 行内 AI 公式 `(z_T)`、`\(...\)` → `$z_T$`（普通文字如 `(注)` 不动）
-- 🔧 AI 下标错误 `*{LL}`、`*2` → `_{LL}`、`_2`
-- 🔧 表格**紧贴标题缺空行**、**全角竖线 `｜`**、**分隔行用中文破折号 `——`** → 自动补空行、转半角、转 `-`
-- 🔧 列表紧贴段落无空行（开启 Pandoc `lists_without_preceding_blankline`）
-- 🔧 标题缺空格 `#标题` → `# 标题`
-- 🔧 **独立 `---` 行** → 转义为 `\---`，防止被 Pandoc 误判为 YAML 元数据导致转换失败
-- 🔧 高大括号 / 分数 / 范数等定界符自动放大，避免 Word 公式显示过小
-- 🩺 导出后自检：若仍有未被解析的表格残留，会在后端日志告警，便于排查
+</details>
 
-> 📐 预览（前端 `extension/src/normalizer.ts`）与导出（后端 `backend/app/normalizer.py`）使用**一致的归一化规则**，保证「预览长啥样，Word 就是啥样」。
+<a id="architecture"></a>
+## 🧱 技术架构
 
----
+~~~mermaid
+flowchart LR
+    A["AI 网页内容"] --> B["浏览器侧边栏<br/>React · TypeScript"]
+    B -->|"实时预览"| P["markdown-it · KaTeX"]
+    B -->|"POST /convert"| C["FastAPI<br/>Markdown 归一化"]
+    C --> D["Mermaid 渲染<br/>需要时生成 PNG"]
+    D --> E["Pandoc + reference.docx"]
+    E --> F["三线表后处理<br/>导出自检"]
+    F --> G["可编辑 .docx"]
+    classDef accent fill:#eaf3ff,stroke:#5b8fe8,color:#17345b;
+    class B,C,E,G accent;
+~~~
 
-## 🚀 快速开始（普通用户）
+| 目录 | 职责 |
+| :-- | :-- |
+| [`extension/`](extension/) | Chrome / Edge Manifest V3 侧边栏，编辑与实时预览 |
+| [`backend/`](backend/) | FastAPI、Pandoc、归一化、三线表处理与 DOCX 导出 |
+| [`agent/`](agent/) | 用户反馈分类、缺陷复现、补丁生成、验证与 PR 发布 |
+| [`trace-site/`](trace-site/) | 脱敏运行记录与 Agent 执行过程展示 |
+| [`docs/`](docs/) | Agent 权威需求、维护者指南与设计说明 |
 
-1. 🏗️ 构建扩展：在 `extension/` 下执行 `npm install && npm run build`
-2. 🧩 打开浏览器扩展页：`chrome://extensions` 或 `edge://extensions`
-3. 🛠️ 打开「开发者模式」
-4. 📂 选择「加载已解压的扩展程序」，指向 `extension/dist`
-5. 🖱️ 点击扩展图标，打开侧边栏
-6. 📋 把 AI 回答复制进去 → 预览确认 → 点击 **导出 Word** 🎉
+### 🤖 反馈驱动的 Agent
 
-> 默认连接线上转换服务。
-> 本地自建后端时，把服务地址改为 `http://127.0.0.1:8000`。
+用户提交反馈后，系统可以将后端缺陷交由 Agent 复现、生成修复并进行独立验证；**仅在验证通过后创建 PR，由维护者审核**。功能建议与前端问题走脱敏 Issue 路径，不自动修改扩展、合并代码或部署。
 
----
+相关设计：[部署与运行方式](docs/AgentRequirements/deployment-and-operations.md) · [维护者指南](docs/AgentGuide/README.md) · [面试问题整理](docs/AgentProblem/InterviewGuide/agent-interview-questions.md)
 
-## 🧱 项目结构
+<a id="development"></a>
+## 🛠️ 本地开发与验证
 
-```text
-backend/    🐍 FastAPI + Pandoc 转换服务（归一化 → Pandoc → 三线表后处理）
-extension/  🧩 浏览器扩展（React + TypeScript + Manifest V3 侧边栏）
-agent/      🤖 用户反馈分类、复现、修复、验证与 PR 发布
-docs/       📚 权威需求、维护者指南和 Agent 面试问题
-logs/       🧪 调试样例与效果图
-```
+<details>
+<summary><strong>后端服务 · FastAPI / Pandoc</strong></summary>
 
-### 🔁 转换流程
-
-```text
-AI 网页内容
-   │  复制粘贴
-   ▼
-扩展侧边栏 ──(实时预览: markdown-it + KaTeX)
-   │  POST /convert
-   ▼
-后端 normalize_markdown()  🛡️ 修复脏 Markdown
-   │
-   ▼
-本地 Mermaid CLI + Chromium（仅流程图，输出 PNG）
-   │
-   ▼
-Pandoc（math + tables + 图片 + reference.docx 中文样式）
-   │
-   ▼
-三线表后处理 + 导出自检  🩺
-   │
-   ▼
-可编辑的 .docx  📄✅
-```
-
----
-
-## 🛠️ 开发与验证
-
-### 后端 🐍
-
-```bash
+~~~bash
 cd backend
 uv venv .venv
 uv pip install -e ".[dev]"
-.venv/bin/uvicorn app.main:app --reload      # 启动服务
-.venv/bin/python -m pytest -v                 # 运行测试
-```
+.venv/bin/uvicorn app.main:app --reload
+.venv/bin/python -m pytest -v
+~~~
 
-> Pandoc 用于 `.docx` 转换。开发依赖含 `pypandoc_binary`，本地非 Mermaid 测试无需单独
-> 安装 Pandoc。Mermaid 真实转换请使用后端 Docker 镜像，以确保 CLI、Chromium 和中文
-> 字体版本与生产一致。
+Pandoc 用于 DOCX 转换。开发依赖中包含 `pypandoc_binary`，本地非 Mermaid 测试无需额外安装 Pandoc。需要真实验证 Mermaid 转换时，建议使用后端 Docker 镜像，以确保 CLI、Chromium 和中文字体版本一致。
 
-### 扩展 🧩
+</details>
 
-```bash
+<details>
+<summary><strong>浏览器扩展 · React / TypeScript</strong></summary>
+
+~~~bash
 cd extension
 npm install
-npm run dev      # 开发预览
-npm run build    # 构建 dist（tsc + vite）
-```
+npm run dev
+npm run build
+~~~
 
-### Docker 🐳
+`dist` 为构建产物，用于本地加载扩展，不提交到仓库。
 
-```bash
+</details>
+
+<details>
+<summary><strong>Docker 构建与部署说明</strong></summary>
+
+~~~bash
 cd backend
 docker build -t md-to-word-backend .
-```
+~~~
+
+- 后端从 `backend/` 部署至 Render，健康检查路径为 `/health`。
+- 扩展无需部署到 Render；重新构建并在浏览器的扩展管理页面刷新即可。
+- Render 的后端容器已包含 Mermaid CLI 与 Chromium，使用线上转换服务不需要开启本地 Docker。
+- Agent Sandbox 应在私有运行环境中与公开转换后端隔离；详见[部署与运行方式](docs/AgentRequirements/deployment-and-operations.md)。
+
+</details>
+
+<details>
+<summary><strong>Word 导出人工验收清单</strong></summary>
+
+- [ ] 正文文字可读，中文排版和样式正常
+- [ ] 表格是 Word 原生表格，三线表样式正确
+- [ ] 数学公式是可编辑的 Word 公式，而非图片
+- [ ] Mermaid 图作为清晰图片显示（图形不可编辑）
+- [ ] `#` 至 `######` 映射到正确标题层级，超过六级降为正文
+
+</details>
 
 ---
 
-## ✅ 人工验收清单
-
-用 Microsoft Word 打开导出的 `.docx`，确认：
-
-- [ ] 📝 正文文字可读、样式正常
-- [ ] 📊 表格是 Word 原生表格，且为三线表样式
-- [ ] 🧮 公式是可编辑的 Word 公式（不是图片）
-- [ ] 🔀 Mermaid 流程图显示为清晰图片（流程图本身不可编辑）
-- [ ] 🔠 标题层级映射正确（`#` → 一级标题……）
-
----
-
-## ☁️ 部署
-
-- 后端从 `backend/` 部署到 Render，健康检查路径 `/health`。
-- 扩展不部署到 Render：构建 `extension/dist` 后在浏览器刷新「已解压扩展」即可。
-- Render 后端容器已经包含 Mermaid CLI 与 Chromium；使用线上插件时不需要开启本地
-  Docker。
-- Agent Sandbox 本地可由 Docker Desktop/WSL 提供；7×24 小时自动处理反馈时，应另行
-  部署带 Docker Engine 的私有 Agent 主机，不与公开转换后端混合部署。
-
-Agent 总体方案和完整流程见
-[部署与运行方式](docs/AgentRequirements/deployment-and-operations.md)，维护者阅读指南见
-[AgentGuide](docs/AgentGuide/README.md)，面试问题见
-[AgentProblem/InterviewGuide](docs/AgentProblem/InterviewGuide/agent-interview-questions.md)。
-
----
-
-## 🙌 适用场景
-
-- 🎓 写论文 / 课程作业：让 AI 生成内容，复制即得规范 Word（三线表 + 可编辑公式）
-- 📑 写报告 / 文档：免去手动调格式
-- 🧑‍🏫 教学演示：Markdown 转 Word 的工程实践参考
-
-
-## 友情链接
-[LinuxDO](https://linux.do)
+<div align="center">
+  <p><strong>让 AI 负责生成内容，让 MD To Word 负责文档排版。</strong></p>
+  <p>适用于论文、课程作业、工作报告以及技术文档。</p>
+  <p><a href="https://microsoftedge.microsoft.com/addons/detail/md-to-word/cippambdocmalcoceomjlibolaeicmoe?hl=zh-CN">Edge 扩展</a> · <a href="https://github.com/yyqqCoding/MDToWord/issues">问题反馈</a> · <a href="https://linux.do">LinuxDO</a></p>
+</div>
